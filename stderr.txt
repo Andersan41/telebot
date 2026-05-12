@@ -1,0 +1,46 @@
+--- Logging error in Loguru Handler #1 ---
+Record was: {'elapsed': datetime.timedelta(seconds=3, microseconds=631935), 'exception': None, 'extra': {}, 'file': (name='main.py', path='C:\\Users\\Scanters\\Desktop\\TG BOT\\new bots\\1\\main.py'), 'function': 'main', 'level': (name='INFO', no=20, icon='\u2139\ufe0f'), 'line': 62, 'message': '\u2705 Bot is running. Press Ctrl+C to stop.', 'module': 'main', 'name': '__main__', 'process': (id=28272, name='MainProcess'), 'thread': (id=22340, name='MainThread'), 'time': datetime(2026, 5, 12, 16, 47, 38, 210192, tzinfo=datetime.timezone(datetime.timedelta(seconds=10800), 'Беларусь (зима)'))}
+Traceback (most recent call last):
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\loguru\_handler.py", line 206, in emit
+    self._sink.write(str_record)
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\loguru\_simple_sinks.py", line 16, in write
+    self._stream.write(message)
+  File "C:\Users\Scanters\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1251.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2705' in position 86: character maps to <undefined>
+--- End of logging error ---
+Error while getting Updates: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\ext\_updater.py", line 688, in _network_loop_retry
+    if not await action_cb():
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\ext\_updater.py", line 384, in polling_action_cb
+    raise exc
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\ext\_updater.py", line 373, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 558, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\_bot.py", line 525, in decorator
+    result = await func(self, *args, **kwargs)  # skipcq: PYL-E1102
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\_bot.py", line 3584, in get_updates
+    await self._post(
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\_bot.py", line 613, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 340, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\_bot.py", line 641, in _do_post
+    return await request.post(
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 200, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Scanters\Desktop\TG BOT\new bots\1\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 381, in _request_wrapper
+    raise Conflict(message)
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running

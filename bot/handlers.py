@@ -1,0 +1,152 @@
+"""
+bot/handlers.py — Обработчики команд Telegram бота
+"""
+from datetime import timezone
+from telegram import Update
+from telegram.ext import ContextTypes, CommandHandler, Application
+from telegram.constants import ParseMode
+from loguru import logger
+from config.settings import config
+from storage.database import db
+
+
+def _is_admin(user_id: int) -> bool:
+    return user_id in config.telegram.admin_ids
+
+
+def _admin_only(func):
+    """Декоратор — только для администраторов"""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.effective_user or not _is_admin(update.effective_user.id):
+            await update.message.reply_text("⛔ Доступ запрещён.")
+            return
+        return await func(update, context)
+    wrapper.__name__ = func.__name__
+    return wrapper
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 <b>Торговый сигнальный бот</b>\n\n"
+        "Я сканирую рынок на таймфреймах <b>1H</b> и <b>4H</b> "
+        "с подтверждением на <b>15M</b> и отправляю сигналы BUY/SELL.\n\n"
+        "📌 <b>Команды:</b>\n"
+        "/help — список команд\n"
+        "/status — состояние бота\n"
+        "/lastsignal — последние 5 сигналов\n"
+        "/symbols — список отслеживаемых монет\n"
+        "/scan — запустить сканирование вручную\n"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📖 <b>Справка</b>\n\n"
+        "<b>/start</b> — приветствие\n"
+        "<b>/status</b> — состояние сканера\n"
+        "<b>/lastsignal</b> — последние 5 сигналов\n"
+        "<b>/symbols</b> — отслеживаемые символы\n"
+        "<b>/scan</b> — ручной запуск сканирования (только для admin)\n"
+        "<b>/settings</b> — текущие настройки индикаторов (только для admin)\n\n"
+        "🔍 <b>Логика сигналов:</b>\n"
+        "• Supertrend + EMA + RSI + MACD + ADX + объём\n"
+        "• Минимум 4 из 7 условий\n"
+        "• Подтверждение на 15M обязательно\n"
+        "• SL/TP на основе ATR\n"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    symbols = config.trading.symbols
+    timeframes = config.trading.primary_timeframes
+    confirm_tf = config.trading.confirm_timeframe
+    text = (
+        "⚙️ <b>Статус бота</b>\n\n"
+        f"✅ Бот активен\n"
+        f"📊 Символов: <b>{len(symbols)}</b>\n"
+        f"⏱ Таймфреймы: <b>{', '.join(timeframes)}</b>\n"
+        f"🔁 Подтверждение: <b>{confirm_tf}</b>\n"
+        f"📋 Список: <code>{', '.join(symbols)}</code>\n"
+        f"⏰ Cooldown между сигналами: <b>{config.signal_cooldown_minutes} мин</b>\n"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_lastsignal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    signals = await db.get_recent_signals(limit=5)
+    if not signals:
+        await update.message.reply_text("📭 Сигналов пока нет.")
+        return
+
+    lines = ["📜 <b>Последние сигналы:</b>\n"]
+    for sig in signals:
+        emoji = "🟢" if sig.signal_type == "BUY" else "🔴"
+        dt = sig.created_at
+        if dt and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_str = dt.strftime("%Y-%m-%d %H:%M UTC") if dt else "—"
+        lines.append(
+            f"{emoji} <b>{sig.signal_type}</b> {sig.symbol} {sig.timeframe} "
+            f"@ {sig.close_price:.4f} | {dt_str}"
+        )
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    symbols = config.trading.symbols
+    lines = ["📊 <b>Отслеживаемые символы:</b>\n"]
+    for s in symbols:
+        lines.append(f"• {s}")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+@_admin_only
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручной запуск сканирования"""
+    from scheduler.scanner import run_scan_cycle
+    from bot.notifier import send_signal
+
+    await update.message.reply_text("🔍 Запускаю сканирование...")
+    try:
+        await run_scan_cycle(send_signal)
+        await update.message.reply_text("✅ Сканирование завершено.")
+    except Exception as e:
+        logger.error(f"Manual scan error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+
+@_admin_only
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg = config.trading
+    text = (
+        "⚙️ <b>Настройки индикаторов</b>\n\n"
+        f"EMA Fast: <b>{cfg.ema_fast}</b>\n"
+        f"EMA Slow: <b>{cfg.ema_slow}</b>\n"
+        f"EMA Trend: <b>{cfg.ema_trend}</b>\n"
+        f"RSI Period: <b>{cfg.rsi_period}</b>\n"
+        f"RSI Overbought: <b>{cfg.rsi_overbought}</b>\n"
+        f"RSI Oversold: <b>{cfg.rsi_oversold}</b>\n"
+        f"MACD: <b>{cfg.macd_fast}/{cfg.macd_slow}/{cfg.macd_signal}</b>\n"
+        f"ADX Period: <b>{cfg.adx_period}</b>\n"
+        f"ADX Min (anti-flat): <b>{cfg.adx_min}</b>\n"
+        f"ATR Period: <b>{cfg.atr_period}</b>\n"
+        f"ATR SL multiplier: <b>{cfg.atr_multiplier_sl}x</b>\n"
+        f"ATR TP multiplier: <b>{cfg.atr_multiplier_tp}x</b>\n"
+        f"Supertrend: <b>{cfg.supertrend_period}/{cfg.supertrend_multiplier}</b>\n"
+        f"Volume factor: <b>{cfg.volume_factor}x SMA</b>\n"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+def register_handlers(app: Application):
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("lastsignal", cmd_lastsignal))
+    app.add_handler(CommandHandler("symbols", cmd_symbols))
+    app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    logger.info("Telegram handlers registered")
