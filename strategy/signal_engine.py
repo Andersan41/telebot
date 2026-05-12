@@ -1,6 +1,7 @@
 """
 strategy/signal_engine.py — Логика принятия решения BUY / SELL / NO_SIGNAL
 """
+import html
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
@@ -49,7 +50,7 @@ class SignalResult:
         if self.reasons:
             lines.append(f"\n📋 <b>Причины:</b>")
             for r in self.reasons:
-                lines.append(f"  • {r}")
+                lines.append(f"  • {html.escape(r)}")
         lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(self.score, 5)} ({self.score}/7)")
         return "\n".join(lines)
 

@@ -2,6 +2,7 @@
 bot/menu.py — Inline keyboard navigation menu
 Adapted from test_bingx/menu.py for python-telegram-bot v20.x
 """
+import html
 from typing import Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -128,7 +129,15 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"⏳ Анализирую <b>{symbol}</b>…", parse_mode=ParseMode.HTML
         )
         result = await _do_full_analysis(symbol)
-        await query.edit_message_text(result, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+        try:
+            await query.edit_message_text(result, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"HTML edit error for {symbol}: {e}")
+            logger.error(f"Result text (first 500 chars): {result[:500]}")
+            await query.edit_message_text(
+                result.replace("<", "&lt;").replace(">", "&gt;"),
+                reply_markup=back_keyboard(), parse_mode=ParseMode.HTML
+            )
         return
 
     if data.startswith("token:"):
@@ -166,8 +175,10 @@ async def handle_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 result, chat_id=chat_id, message_id=m.message_id,
                 reply_markup=back_keyboard(), parse_mode=ParseMode.HTML
             )
-        except Exception:
-            await context.bot.send_message(chat_id, result, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"handle_menu_message HTML edit error for {symbol}: {e}")
+            logger.error(f"Result text (first 500 chars): {result[:500]}")
+            await context.bot.send_message(chat_id, result, reply_markup=back_keyboard())
 
 
 def _normalize_symbol(text: str) -> str:
@@ -201,7 +212,7 @@ def _format_settings() -> str:
         f"⏰ Cooldown: <b>{config.signal_cooldown_minutes} мин</b>\n",
         "📐 <b>Индикаторы:</b>",
         f"  EMA: {cfg.ema_fast}/{cfg.ema_slow}/{cfg.ema_trend}",
-        f"  RSI: period={cfg.rsi_period}, OB>{cfg.rsi_overbought}, OS<{cfg.rsi_oversold}",
+        f"  RSI: period={cfg.rsi_period}, OB&gt;{cfg.rsi_overbought}, OS&lt;{cfg.rsi_oversold}",
         f"  MACD: {cfg.macd_fast}/{cfg.macd_slow}/{cfg.macd_signal}",
         f"  ADX: period={cfg.adx_period}, min={cfg.adx_min}",
         f"  ATR: period={cfg.atr_period}  SL×{cfg.atr_multiplier_sl}  TP×{cfg.atr_multiplier_tp}",
@@ -224,7 +235,7 @@ async def _do_full_analysis(symbol: str) -> str:
         primary_tf = cfg.primary_timeframes[0]
         ind = await _get_indicators(symbol, primary_tf)
         if ind is None:
-            return f"❌ Не удалось получить данные для <b>{symbol}</b>\n\nПроверьте тикер (пример: BTC/USDT)"
+            return f"❌ Не удалось получить данные для <b>{html.escape(symbol)}</b>\n\nПроверьте тикер (пример: BTC/USDT)"
         result = signal_engine.evaluate(ind)
 
         lines = []
@@ -249,7 +260,7 @@ async def _do_full_analysis(symbol: str) -> str:
         if ind.trend_is_strong:
             lines.append(f"  ✅ Сильный тренд")
         else:
-            lines.append(f"  ❌ Флэт (ADX < {config.trading.adx_min})")
+            lines.append(f"  ❌ Флэт (ADX &lt; {config.trading.adx_min})")
 
         lines.append(f"\n🌡 ATR: <b>{_fmt_price(ind.atr)}</b>")
 
@@ -272,7 +283,7 @@ async def _do_full_analysis(symbol: str) -> str:
         if result.reasons:
             lines.append(f"\n📋 <b>Причины:</b>")
             for r in result.reasons:
-                lines.append(f"  • {r}")
+                lines.append(f"  • {html.escape(r)}")
 
         if result.score > 0:
             lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(result.score, 5)} ({result.score}/7)")
@@ -280,10 +291,12 @@ async def _do_full_analysis(symbol: str) -> str:
         chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{ind.symbol.replace('/', '')}"
         lines.append(f"\n📈 <a href='{chart_url}'>Открыть график</a>")
 
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        logger.debug(f"Do_full_analysis output for {symbol}:\n{text}")
+        return text
     except Exception as e:
         logger.error(f"Analysis error {symbol}: {e}", exc_info=True)
-        return f"❌ Ошибка анализа <b>{symbol}</b>: {e}"
+        return f"❌ Ошибка анализа <b>{html.escape(symbol)}</b>: {e}"
 
 
 async def _indicator_view(symbol: str) -> str:
@@ -335,7 +348,7 @@ def _format_indicator_view(ind: IndicatorValues, result: SignalResult) -> str:
     if result.reasons:
         lines.append(f"\n📋 <b>Причины:</b>")
         for r in result.reasons:
-            lines.append(f"  • {r}")
+            lines.append(f"  • {html.escape(r)}")
 
     if result.score > 0:
         lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(result.score, 5)} ({result.score}/7)")
