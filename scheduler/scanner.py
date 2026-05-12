@@ -11,6 +11,8 @@ from data.exchange_client import exchange_client
 from indicators.engine import indicator_engine, IndicatorValues
 from strategy.signal_engine import signal_engine, SignalResult, SignalType
 from storage.database import db
+from context.analyzer import context_engine, ContextSnapshot
+from context.scorer import context_scorer, ContextVerdict
 
 # Словарь для cooldown: {symbol_timeframe: last_signal_time}
 _last_signal_time: dict[str, datetime] = {}
@@ -75,8 +77,53 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         else:
             logger.warning(f"Could not get {confirm_tf} data for {symbol}, skipping confirmation")
 
-    # Шаг 3: Сохраняем в БД
-    await db.save_signal(
+    # Шаг 3: Контекстное обогащение
+    context_verdict: Optional[ContextVerdict] = None
+    if config.context_enabled:
+        try:
+            snapshot = await asyncio.wait_for(
+                context_engine.get_snapshot(symbol),
+                timeout=10.0,
+            )
+            context_verdict = context_scorer.score(result.signal.value, snapshot)
+
+            if config.context_block_on_blocked and context_verdict.verdict == "BLOCKED":
+                logger.info(
+                    f"Signal BLOCKED by context: {result.signal} {symbol} {timeframe} "
+                    f"(score={context_verdict.score:.2f})"
+                )
+                return None
+
+            logger.info(
+                f"Context verdict: {context_verdict.verdict} "
+                f"(score={context_verdict.score:.2f}) for {result.signal} {symbol}"
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Context enrichment timeout for {symbol}")
+        except Exception as e:
+            logger.warning(f"Context enrichment error for {symbol}: {e}")
+
+    # Сохраняем контекст в БД
+    if context_verdict is not None:
+        try:
+            await db.save_context_snapshot(
+                symbol=symbol,
+                signal_id=None,
+                verdict=context_verdict.verdict,
+                confidence=context_verdict.confidence,
+                score=context_verdict.score,
+                fear_greed=context_verdict.snapshot.fear_greed_value if context_verdict.snapshot else None,
+                funding_rate=context_verdict.snapshot.funding_rate if context_verdict.snapshot else None,
+                long_short_ratio=context_verdict.snapshot.long_short_ratio if context_verdict.snapshot else None,
+                open_interest_delta=context_verdict.snapshot.open_interest_delta if context_verdict.snapshot else None,
+                news_sentiment=context_verdict.snapshot.news_sentiment_score if context_verdict.snapshot else None,
+                raw_json=context_verdict.snapshot.to_json() if context_verdict.snapshot else None,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save context snapshot: {e}")
+
+    # Шаг 4: Сохраняем сигнал в БД
+    saved_signal = await db.save_signal(
         symbol=result.symbol,
         timeframe=result.timeframe,
         signal_type=result.signal.value,
@@ -88,11 +135,30 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         confirmed=True,
     )
 
-    # Шаг 4: Cooldown
+    # Сохраняем связь сигнала с контекстом
+    if context_verdict is not None:
+        try:
+            await db.save_context_snapshot(
+                symbol=symbol,
+                signal_id=saved_signal.id,
+                verdict=context_verdict.verdict,
+                confidence=context_verdict.confidence,
+                score=context_verdict.score,
+                fear_greed=context_verdict.snapshot.fear_greed_value if context_verdict.snapshot else None,
+                funding_rate=context_verdict.snapshot.funding_rate if context_verdict.snapshot else None,
+                long_short_ratio=context_verdict.snapshot.long_short_ratio if context_verdict.snapshot else None,
+                open_interest_delta=context_verdict.snapshot.open_interest_delta if context_verdict.snapshot else None,
+                news_sentiment=context_verdict.snapshot.news_sentiment_score if context_verdict.snapshot else None,
+                raw_json=context_verdict.snapshot.to_json() if context_verdict.snapshot else None,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save context snapshot with signal link: {e}")
+
+    # Шаг 5: Cooldown
     _set_cooldown(symbol, timeframe)
 
-    # Шаг 5: Уведомляем
-    await notify_callback(result)
+    # Шаг 6: Уведомляем
+    await notify_callback(result, context_verdict)
 
     return result
 

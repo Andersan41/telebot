@@ -4,7 +4,7 @@ storage/database.py — SQLAlchemy модели и методы работы с 
 import os
 from datetime import datetime, timezone
 from typing import Optional, List
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, select, desc
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, select, desc, ForeignKey
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
 from loguru import logger
@@ -36,6 +36,24 @@ class BotSetting(Base):
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ContextSnapshotModel(Base):
+    __tablename__ = "context_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), index=True)
+    signal_id = Column(Integer, ForeignKey("signals.id"), nullable=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    verdict = Column(String(20))
+    confidence = Column(Float)
+    score = Column(Float)
+    fear_greed = Column(Integer, nullable=True)
+    funding_rate = Column(Float, nullable=True)
+    long_short_ratio = Column(Float, nullable=True)
+    open_interest_delta = Column(Float, nullable=True)
+    news_sentiment = Column(Float, nullable=True)
+    raw_json = Column(Text, nullable=True)
 
 
 class Database:
@@ -124,6 +142,39 @@ class Database:
             else:
                 session.add(BotSetting(key=key, value=value))
             await session.commit()
+
+    async def save_context_snapshot(
+        self,
+        symbol: str,
+        signal_id: Optional[int],
+        verdict: str,
+        confidence: float,
+        score: float,
+        fear_greed: Optional[int] = None,
+        funding_rate: Optional[float] = None,
+        long_short_ratio: Optional[float] = None,
+        open_interest_delta: Optional[float] = None,
+        news_sentiment: Optional[float] = None,
+        raw_json: Optional[str] = None,
+    ) -> ContextSnapshotModel:
+        async with self._session_factory() as session:
+            snap = ContextSnapshotModel(
+                symbol=symbol,
+                signal_id=signal_id,
+                verdict=verdict,
+                confidence=confidence,
+                score=score,
+                fear_greed=fear_greed,
+                funding_rate=funding_rate,
+                long_short_ratio=long_short_ratio,
+                open_interest_delta=open_interest_delta,
+                news_sentiment=news_sentiment,
+                raw_json=raw_json,
+            )
+            session.add(snap)
+            await session.commit()
+            await session.refresh(snap)
+            return snap
 
 
 db = Database()

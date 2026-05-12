@@ -73,6 +73,25 @@ class AppConfig:
     # Cooldown между сигналами по одному инструменту (минуты)
     signal_cooldown_minutes: int = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "60"))
 
+    # Контекстный модуль
+    context_enabled: bool = os.getenv("CONTEXT_ENABLED", "true").lower() == "true"
+    context_min_verdict: str = os.getenv("CONTEXT_MIN_VERDICT", "WEAK")
+    context_block_on_blocked: bool = os.getenv("CONTEXT_BLOCK_ON_BLOCKED", "true").lower() == "true"
+    cryptopanic_api_key: str = os.getenv("CRYPTOPANIC_API_KEY", "")
+    coingecko_symbol_map_str: str = os.getenv("COINGECKO_SYMBOL_MAP", "BTC/USDT:bitcoin,ETH/USDT:ethereum")
+
+    def _parse_coingecko_map(self, map_str: str) -> dict[str, str]:
+        result = {}
+        for pair in map_str.split(","):
+            if ":" in pair:
+                symbol, slug = pair.strip().split(":")
+                result[symbol.strip()] = slug.strip()
+        return result
+
+    @property
+    def coingecko_symbol_map(self) -> dict[str, str]:
+        return self._parse_coingecko_map(self.coingecko_symbol_map_str)
+
 
 # Singleton
 config = AppConfig()
