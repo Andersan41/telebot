@@ -3,11 +3,16 @@ bot/handlers.py — Обработчики команд Telegram бота
 """
 from datetime import timezone
 from telegram import Update
-from telegram.ext import ContextTypes, CommandHandler, Application
+from telegram.ext import (
+    ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters, Application
+)
 from telegram.constants import ParseMode
 from loguru import logger
 from config.settings import config
 from storage.database import db
+from bot.menu import (
+    send_main_menu, handle_menu_callback, handle_menu_message
+)
 
 
 def _is_admin(user_id: int) -> bool:
@@ -26,18 +31,7 @@ def _admin_only(func):
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "👋 <b>Торговый сигнальный бот</b>\n\n"
-        "Я сканирую рынок на таймфреймах <b>1H</b> и <b>4H</b> "
-        "с подтверждением на <b>15M</b> и отправляю сигналы BUY/SELL.\n\n"
-        "📌 <b>Команды:</b>\n"
-        "/help — список команд\n"
-        "/status — состояние бота\n"
-        "/lastsignal — последние 5 сигналов\n"
-        "/symbols — список отслеживаемых монет\n"
-        "/scan — запустить сканирование вручную\n"
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await send_main_menu(update, context)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -149,4 +143,7 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("symbols", cmd_symbols))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("settings", cmd_settings))
-    logger.info("Telegram handlers registered")
+    # Menu navigation (callbacks + text input for custom token)
+    app.add_handler(CallbackQueryHandler(handle_menu_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_message))
+    logger.info("Telegram handlers registered (menu: callbacks + text input)")

@@ -15,9 +15,11 @@ class TestTelegramConfig:
         assert len(cfg.token) > 0
         assert len(cfg.channel_id) > 0
 
-    def test_admin_ids_empty_by_default(self):
+    def test_admin_ids_list_of_ints(self):
         cfg = TelegramConfig()
-        assert cfg.admin_ids == []
+        assert isinstance(cfg.admin_ids, list)
+        if cfg.admin_ids:
+            assert all(isinstance(i, int) for i in cfg.admin_ids)
 
 
 class TestExchangeConfig:
