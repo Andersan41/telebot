@@ -22,6 +22,7 @@ class SignalResult:
     symbol: str
     timeframe: str
     close: float
+    entry_price: Optional[float] = None
     sl: Optional[float] = None
     tp: Optional[float] = None
     reasons: List[str] = field(default_factory=list)
@@ -40,6 +41,8 @@ class SignalResult:
             f"⏱ <b>Таймфрейм:</b> {self.timeframe}",
             f"💰 <b>Цена:</b> {self.close:.4f}",
         ]
+        if self.entry_price:
+            lines.append(f"📍 <b>Вход:</b> {self.entry_price:.4f}")
         if self.sl:
             lines.append(f"🛑 <b>Stop Loss:</b> {self.sl:.4f}")
         if self.tp:

@@ -62,6 +62,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
 
     # Шаг 2: Подтверждение на 15M
     confirm_tf = config.trading.confirm_timeframe
+    entry_price: Optional[float] = None
     if confirm_tf != timeframe:
         ind_confirm = await _get_indicators(symbol, confirm_tf)
         if ind_confirm is not None:
@@ -72,10 +73,14 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     f"main={result.signal}, confirm={confirm_result.signal} — {symbol}"
                 )
                 return None
+            entry_price = ind_confirm.close
             logger.info(f"Signal CONFIRMED on {confirm_tf}: {result.signal} {symbol}")
             result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
         else:
             logger.warning(f"Could not get {confirm_tf} data for {symbol}, skipping confirmation")
+            entry_price = result.close
+    else:
+        entry_price = result.close
 
     # Шаг 3: Контекстное обогащение
     context_verdict: Optional[ContextVerdict] = None
@@ -158,6 +163,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
     _set_cooldown(symbol, timeframe)
 
     # Шаг 6: Уведомляем
+    result.entry_price = entry_price
     await notify_callback(result, context_verdict)
 
     return result

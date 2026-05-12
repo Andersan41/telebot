@@ -174,3 +174,70 @@ class TestSignalResult:
             close=1.0, score=3, reasons=[],
         )
         assert sig.is_actionable is False
+
+    def test_format_message_with_entry_price(self):
+        sig = SignalResult(
+            signal=SignalType.BUY,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            close=50000.0,
+            entry_price=49950.0,
+            sl=48500.0,
+            tp=53000.0,
+            score=5,
+            reasons=[],
+        )
+        msg = sig.format_message()
+        assert "Вход" in msg
+        assert "49950" in msg
+
+    def test_format_message_without_entry_price(self):
+        sig = SignalResult(
+            signal=SignalType.SELL,
+            symbol="ETH/USDT",
+            timeframe="4h",
+            close=3000.0,
+            sl=3150.0,
+            tp=2700.0,
+            score=6,
+            reasons=[],
+        )
+        msg = sig.format_message()
+        assert "SELL" in msg or "ПРОДАЖА" in msg
+        assert "Вход" not in msg
+
+    def test_entry_price_before_sl(self):
+        sig = SignalResult(
+            signal=SignalType.BUY,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            close=50000.0,
+            entry_price=49950.0,
+            sl=48500.0,
+            tp=53000.0,
+            score=5,
+            reasons=[],
+        )
+        msg = sig.format_message()
+        entry_idx = msg.index("Вход")
+        sl_idx = msg.index("Stop Loss")
+        assert entry_idx < sl_idx
+
+    def test_entry_price_in_sell(self):
+        sig = SignalResult(
+            signal=SignalType.SELL,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            close=50000.0,
+            entry_price=50050.0,
+            sl=51500.0,
+            tp=47000.0,
+            score=5,
+            reasons=[],
+        )
+        msg = sig.format_message()
+        assert "Вход" in msg
+        assert "50050" in msg
+        entry_idx = msg.index("Вход")
+        sl_idx = msg.index("Stop Loss")
+        assert entry_idx < sl_idx

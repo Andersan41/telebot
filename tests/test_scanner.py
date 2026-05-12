@@ -143,7 +143,6 @@ class TestScanSymbol:
             assert _is_cooldown_active("BTC/USDT", "1h") is True
 
 
-class TestRunScanCycle:
     @pytest.mark.asyncio
     async def test_scan_cycle_runs_all_symbols(self, mock_exchange, mock_ind_engine):
         with (
@@ -159,3 +158,86 @@ class TestRunScanCycle:
             )
             mock_db.save_signal = AsyncMock()
             await run_scan_cycle(AsyncMock())
+
+
+class TestEntryPrice:
+    @pytest.mark.asyncio
+    async def test_entry_price_set_on_same_timeframe(self, mock_signal_result, mock_exchange, mock_ind_engine):
+        mock_signal_result.entry_price = None
+        mock_exchange.fetch_ohlcv.return_value = {"close": [50000.0]}
+        with (
+            patch("scheduler.scanner.exchange_client", mock_exchange),
+            patch("scheduler.scanner.indicator_engine", mock_ind_engine),
+            patch("scheduler.scanner.signal_engine") as mock_sig,
+            patch("scheduler.scanner.db") as mock_db,
+            patch("scheduler.scanner.config.trading.confirm_timeframe", "1h"),
+        ):
+            mock_sig.evaluate.return_value = mock_signal_result
+            mock_db.save_signal = AsyncMock()
+            result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
+            assert result is not None
+            assert result.entry_price == 50000.0
+
+    @pytest.mark.asyncio
+    async def test_entry_price_from_confirm_candle(self, mock_signal_result, mock_exchange, mock_ind_engine):
+        mock_signal_result.entry_price = None
+        confirm_close = 50100.0
+        confirm_ind = MagicMock(close=confirm_close)
+        from strategy.signal_engine import SignalResult, SignalType
+        confirm_sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="15m", close=confirm_close, score=6, reasons=[],
+        )
+        with (
+            patch("scheduler.scanner.exchange_client", mock_exchange),
+            patch("scheduler.scanner.indicator_engine", mock_ind_engine),
+            patch("scheduler.scanner.signal_engine") as mock_sig,
+            patch("scheduler.scanner.db") as mock_db,
+            patch("scheduler.scanner.config.trading.confirm_timeframe", "15m"),
+        ):
+            mock_sig.evaluate.side_effect = [mock_signal_result, confirm_sig]
+            mock_ind_engine.calculate.return_value = confirm_ind
+            mock_db.save_signal = AsyncMock()
+            result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
+            assert result is not None
+            assert result.entry_price == confirm_close
+
+    @pytest.mark.asyncio
+    async def test_entry_price_from_close_when_no_confirm_data(self, mock_signal_result, mock_exchange, mock_ind_engine):
+        mock_signal_result.entry_price = None
+        mock_exchange.fetch_ohlcv.side_effect = [
+            {"close": [50000.0]},  # main timeframe
+            None,                  # confirm timeframe
+        ]
+        with (
+            patch("scheduler.scanner.exchange_client", mock_exchange),
+            patch("scheduler.scanner.indicator_engine", mock_ind_engine),
+            patch("scheduler.scanner.signal_engine") as mock_sig,
+            patch("scheduler.scanner.db") as mock_db,
+            patch("scheduler.scanner.config.trading.confirm_timeframe", "15m"),
+        ):
+            mock_sig.evaluate.return_value = mock_signal_result
+            mock_db.save_signal = AsyncMock()
+            result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
+            assert result is not None
+            assert result.entry_price == 50000.0
+
+    @pytest.mark.asyncio
+    async def test_entry_price_not_set_on_rejected_confirm(self, mock_signal_result, mock_exchange, mock_ind_engine):
+        mock_signal_result.entry_price = None
+        from strategy.signal_engine import SignalResult, SignalType
+        opposite = SignalResult(
+            signal=SignalType.SELL, symbol="BTC/USDT",
+            timeframe="15m", close=50000.0, score=5, reasons=[],
+        )
+        with (
+            patch("scheduler.scanner.exchange_client", mock_exchange),
+            patch("scheduler.scanner.indicator_engine", mock_ind_engine),
+            patch("scheduler.scanner.signal_engine") as mock_sig,
+            patch("scheduler.scanner.db") as mock_db,
+            patch("scheduler.scanner.config.trading.confirm_timeframe", "15m"),
+        ):
+            mock_sig.evaluate.side_effect = [mock_signal_result, opposite]
+            mock_db.save_signal = AsyncMock()
+            result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
+            assert result is None
