@@ -28,10 +28,13 @@ APScheduler cron tick
   │     │     │
   │     │     ├── 5. Контекстное обогащение  (только если CONTEXT_ENABLED)
   │     │     │     get_snapshot(symbol)   (timeout 10 s)
+  │     │     │         таймаут → продолжаем без context_verdict (warning),
+  │     │     │                    блок-проверки и save_context_snapshot пропускаются
   │     │     │     context_scorer.score(signal_direction, snapshot) → verdict
+  │     │     │     verdict == BLOCKED И CONTEXT_BLOCK_ON_BLOCKED → отмена (return None)
+  │     │     │     rank(verdict) < rank(CONTEXT_MIN_VERDICT)     → отмена (return None)
   │     │     │     save_context_snapshot(signal_id=None)  ← первая запись
-  │     │     │     verdict == BLOCKED И CONTEXT_BLOCK_ON_BLOCKED → отмена
-  │     │     │     rank(verdict) < rank(CONTEXT_MIN_VERDICT)     → отмена
+  │     │     │                                              (только если сигнал прошёл)
   │     │     │
   │     │     ├── 6. db.save_signal(confirmed=confirmed_on_lower_tf)
   │     │     │

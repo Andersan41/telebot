@@ -30,6 +30,11 @@
 - `get_snapshot(symbol)` → `ContextSnapshot`
 - Запускает все fetcher'ы параллельно через `asyncio.gather`.
 - Собирает: F&G, CoinGecko (24h/7d/vol/rank), trending, funding rate, OI, L/S, news.
+- **CoinGecko gating** (`analyzer.py:72`): если для символа нет записи в
+  `config.coingecko_symbol_map` — fetch не вызывается, все CoinGecko-поля
+  (`price_change_24h/7d`, `total_volume`, `market_cap_rank`, trending) молча
+  остаются `None`. Это не ошибка и не пишется в `snapshot.errors` — простой
+  «нет маппинга → нет данных».
 - News-сентимент от CryptoPanic и RSS аккумулируется в локальный список
   `[(score, count), ...]` и сворачивается **после** `asyncio.gather`
   в средневзвешенный по количеству статей `news_sentiment_score`. Порядок
@@ -52,13 +57,18 @@
 | Funding Rate   | 0.25 | < −0.5% → +0.9; <0.5% → +0.1; <2% → −0.4; ≥2% → −0.9                     | зеркально знаки                                 |
 | Long/Short     | 0.20 | <0.7 → +0.7; 0.7–1.2 → 0; >1.2 → −0.6                                    | <0.7 → −0.6; 0.7–1.2 → 0; >1.2 → +0.7           |
 | Open Interest  | 0.15 | **direction игнорируется**: Δ>2% → +0.5; Δ>0 → +0.2; Δ>−2% → −0.1; иначе −0.2 |                                            |
-| News Sentiment | 0.15 | Прямая передача score `[-1..1]`                                          | то же                                           |
+| News Sentiment | 0.15 | **direction игнорируется**: возвращается `news_sentiment_score` как есть (`scorer.py:223-224`) | то же                            |
 | Price Trend 7d | 0.10 | >5% → +0.5; >0 → +0.3; >−5% → 0; иначе −0.5                              | зеркально                                       |
 
 ⚠️ Колонка OI применяется **одинаково** для BUY и SELL — пробел в логике
 шкалы (для SELL рост OI идёт «в плюс» так же, как для BUY). Если рассматривать
 рост OI как подтверждение тренда — это корректно, но для SELL должно быть
-зеркально. См. [17-improvements.md](17-improvements.md).
+зеркально. См. [`plan/improvements/A3-oi-scoring-direction.md`](improvements/A3-oi-scoring-direction.md).
+
+⚠️ News Sentiment тоже игнорирует `direction`: для SELL-сигнала **позитивные**
+новости (`score > 0`) увеличивают итог в плюс (что для SELL означает поддержку
+рынка против сигнала, т.е. фактически бонус направлению противнику). Симметрия
+не реализована — это отдельный пробел того же класса, что OI.
 
 **Вердикты** (по итоговому score, диапазон [-1.0, 1.0]):
 

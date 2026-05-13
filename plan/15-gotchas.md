@@ -50,7 +50,10 @@
 15. **`Signal.confirmed`** теперь отражает реальный результат 15M-фильтра
     (`True` только если 15M подтвердил сигнал, иначе `False`).
 16. **Контекстный snapshot пишется дважды**: до `save_signal` (signal_id=None)
-    и после (с id). Это намеренный журнал, не баг.
+    и после (с id). Это намеренный журнал, не баг. Обе записи происходят
+    **только если сигнал прошёл** BLOCKED / `CONTEXT_MIN_VERDICT` (`scanner.py:111-123`
+    делает `return None` до сейва). При таймауте контекста (`asyncio.TimeoutError`,
+    `scanner.py:129`) сейвов нет вообще — `context_verdict` остаётся `None`.
 17. **`Database.__init__`** автоматически создаёт `./data/` (для SQLite).
 18. **Только spot-рынок** для OHLCV: ccxt-клиент создан с
     `options={"defaultType": "spot"}`. OI/L-S/Funding берутся отдельно по HTTP.

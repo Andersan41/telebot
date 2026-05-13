@@ -140,7 +140,7 @@ class SignalEngine:
         buy_score = len(buy_reasons)
         sell_score = len(sell_reasons)
 
-        # Минимальный порог — 4 из 7 возможных условий
+        # Минимальный порог — 4 из 6 возможных условий
         min_score = 4
 
         if buy_score >= min_score and buy_score > sell_score:

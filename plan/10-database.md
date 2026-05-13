@@ -21,7 +21,10 @@
 
 **Методы:**
 
-- `save_signal()` — сохраняет сигнал, возвращает модель с id
+- `save_signal()` — сохраняет сигнал, возвращает модель с id. **`sent_at`
+  ставится `datetime.now(timezone.utc)` безусловно при создании
+  (`database.py:99`)** — отдельного признака «сохранён, но ещё не отправлен»
+  у строки нет; колонка фиксирует время записи, а не реальной отправки в TG.
 - `get_last_signal(symbol, timeframe)` — последний сигнал по паре
 - `get_recent_signals(limit)` — N последних
 - `get_setting(key, default)` / `set_setting(key, value)` — настройки
@@ -38,3 +41,12 @@
 `scanner.scan_symbol` передаёт `confirmed=True` только если 15M-подтверждение
 действительно прошло. При `confirm_timeframe == primary_timeframe` или при
 недоступности 15M-данных в БД пишется `confirmed=False`.
+
+## Storage gap для CoinGecko-полей контекста
+
+`ContextSnapshotModel` (`database.py:42`) хранит из контекста только
+`fear_greed`, `funding_rate`, `long_short_ratio`, `open_interest_delta`,
+`news_sentiment` + полный JSON в `raw_json`. Отдельных колонок для
+`price_change_24h/7d`, `total_volume`, `market_cap_rank` (CoinGecko) **нет**.
+Если эти поля нужны для последующего анализа в SQL — придётся либо парсить
+`raw_json`, либо добавить колонки и миграцию.

@@ -9,8 +9,12 @@
     3. **MACD** — 12/26/9 (macd, signal, histogram) + prev histogram для пересечения
     4. **ADX + DMI** — период 14 (adx, dmi_plus, dmi_minus)
     5. **ATR** — период 14
-    6. **Volume SMA** — 20 период
-    7. **Supertrend** — 10/3.0 (значение + направление: 1 = up, -1 = down)
+    6. **Volume SMA** — длина **20 захардкожена** прямо в `engine.py:155`
+       (`ta.sma(df["volume"], length=20)`), а не из `TradingConfig`
+    7. **Supertrend** — 10/3.0 (значение + направление: 1 = up, -1 = down).
+       При отсутствии направления (например, недостаточно данных) `supertrend_dir`
+       возвращается как `0` (`engine.py:209`) — это не bullish и не bearish,
+       а нейтральное «неизвестно».
 
 - Вычисляемые свойства `IndicatorValues`:
     - `ema_bullish_cross` — fast пересекла slow снизу вверх
@@ -31,4 +35,6 @@
 - Все периоды (`ema_fast`, `rsi_period`, `adx_period`, …) и пороги
   (`rsi_bull_min`, `adx_min`, `volume_factor`, …) **жёстко заданы** в
   `TradingConfig` dataclass и **не управляются через .env** — изменение
-  требует правки `config/settings.py`. См. [17-improvements.md](17-improvements.md).
+  требует правки `config/settings.py`. Исключение: `volume_sma=20` (не в
+  `TradingConfig`, зашит в `engine.py:155`). См.
+  [`plan/improvements/A1-indicators-env.md`](improvements/A1-indicators-env.md).

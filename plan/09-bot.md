@@ -6,9 +6,14 @@
 - `/status` — статус бота: кол-во символов, таймфреймы, cooldown
 - `/lastsignal` — последние 5 сигналов из БД (с эмодзи + время UTC)
 - `/symbols` — список отслеживаемых символов
-- `/scan` — **admin-only**: ручной запуск `run_scan_cycle()` (выполняется синхронно с ожиданием)
+- `/scan` — **admin-only**: ручной запуск через `await run_scan_cycle(send_signal)`
+  (`handlers.py:108`) — асинхронно, ответ юзеру по окончании цикла
 - `/settings` — **admin-only**: текущие настройки индикаторов
-- **Role check**: декоратор `_admin_only` проверяет `user_id in TELEGRAM_ADMIN_IDS`
+- **Role check**: декоратор `_admin_only` (`handlers.py:22-30`) проверяет `user_id in TELEGRAM_ADMIN_IDS`
+- В `register_handlers` (`handlers.py:138-149`), помимо `CommandHandler`-ов,
+  регистрируются `CallbackQueryHandler(handle_menu_callback)` для inline-кнопок и
+  `MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_message)` для
+  произвольного текста (ввод тикера в режиме «Анализ»).
 
 **При каких условиях:**
 - Пользователь отправляет команду в личку боту

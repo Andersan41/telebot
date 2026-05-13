@@ -8,8 +8,10 @@
 - Создаёт `Application` от python-telegram-bot, регистрирует обработчики
 - Настраивает и запускает `TaskScheduler` (APScheduler)
 - Запускает polling (с `drop_pending_updates=True`)
-- Держит event loop через `asyncio.sleep(3600)`
+- Логирует стартовый блок: имя биржи, символы, таймфреймы, `confirm_timeframe`, канал (`main.py:48-53`)
+- Держит event loop через бесконечный `while True: await asyncio.sleep(3600)` (`main.py:65-66`)
 - Обрабатывает shutdown: останавливает scheduler, exchange, бота, app
+  (для updater проверка `app.updater.running` перед `stop()` — `main.py:77`)
 
 **При каких условиях:**
 - Всегда при запуске `python main.py`
