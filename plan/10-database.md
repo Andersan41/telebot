@@ -1,0 +1,30 @@
+# 2.13 storage/database.py — База данных
+
+**Что делает:**
+- SQLAlchemy 2.0 async engine (aiosqlite)
+- **3 таблицы:**
+
+1. **`signals`**:
+   - id (PK), symbol, timeframe, signal_type (BUY/SELL), close_price
+   - sl, tp, score, reasons (Text, \n-joined)
+   - confirmed (bool), created_at, sent_at
+
+2. **`bot_settings`**:
+   - key (PK), value (Text), updated_at
+
+3. **`context_snapshots`**:
+   - id (PK), symbol (indexed), signal_id (FK → signals.id, nullable)
+   - timestamp, verdict, confidence, score
+   - fear_greed, funding_rate, long_short_ratio, open_interest_delta, news_sentiment
+   - raw_json (Text)
+
+**Методы:**
+- `save_signal()` — сохраняет сигнал, возвращает модель с id
+- `get_last_signal(symbol, timeframe)` — последний сигнал по паре
+- `get_recent_signals(limit)` — N последних
+- `get_setting(key, default)` / `set_setting(key, value)` — настройки
+- `save_context_snapshot()` — сохраняет снимок контекста
+
+**При каких условиях:**
+- `init()` — при старте main.py (создание таблиц)
+- Остальные — вызовы из scanner.py и handlers.py
