@@ -54,7 +54,7 @@ class SignalResult:
             lines.append(f"\n📋 <b>Причины:</b>")
             for r in self.reasons:
                 lines.append(f"  • {html.escape(r)}")
-        lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(self.score, 5)} ({self.score}/7)")
+        lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(self.score, 5)} ({self.score}/6)")
         return "\n".join(lines)
 
 

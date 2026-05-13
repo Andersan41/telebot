@@ -1,18 +1,28 @@
 # 2.7 scheduler/tasks.py — Планировщик
 
 **Что делает:**
+
 - Использует `AsyncIOScheduler` (timezone=UTC)
-- Две cron-задачи:
-  1. **1H таймфрейм**: каждый час в `:02` минуты (после закрытия часовой свечи)
-  2. **4H таймфрейм**: `0,4,8,12,16,20 * * *` в `:05` минуты
+- Регистрирует две cron-задачи (см. ниже)
 - `max_instances=1, coalesce=True` — не запускает новый, если предыдущий не завершён
-- `setup()` — конфигурирует задачи
-- `start()` / `stop()` — управление жизненным циклом
+- `setup()` — конфигурирует задачи; `start()` / `stop()` — управление жизненным циклом
+
+**Cron-задачи:**
+
+| id            | Расписание                     | timeframes | Что делает                                                                  |
+|---------------|--------------------------------|------------|-----------------------------------------------------------------------------|
+| `hourly_scan` | `minute=2` (каждый час в :02)  | `["1h"]`   | `run_scan_cycle(notify, timeframes=["1h"])` — только 1H                     |
+| `4h_scan`     | `hour=0,4,8,12,16,20 minute=5` | `["4h"]`   | `run_scan_cycle(notify, timeframes=["4h"])` — только 4H                     |
+
+Каждый джоб передаёт в `_scan_job` свой список таймфреймов через
+`kwargs={"timeframes": [...]}`. `run_scan_cycle` обходит `symbols × tfs`. При
+ручном вызове из `cmd_scan` `timeframes=None` → берутся `primary_timeframes`
+целиком.
 
 **При каких условиях:**
+
 - `start()` — в main.py после настройки
 - `stop()` — при shutdown
-- Каждая задача вызывает `run_scan_cycle(notify_callback)`
 
 ---
 
@@ -20,35 +30,53 @@
 
 **Что делает (полный пайплайн):**
 
-**Шаг 1 — Сбор данных:** `exchange_client.fetch_ohlcv(symbol, timeframe)` → `indicator_engine.calculate(df)`
+**Шаг 1 — Cooldown:** проверка `_last_signal_time[{symbol}_{timeframe}]`. Если
+дельта < `SIGNAL_COOLDOWN_MINUTES` — возврат `None`.
 
-**Шаг 2 — Оценка:** `signal_engine.evaluate(indicator_values)` → SignalResult
+**Шаг 2 — Сбор данных:** `exchange_client.fetch_ohlcv()` →
+`indicator_engine.calculate()` → `IndicatorValues`. При None — возврат.
 
-**Шаг 3 — Подтверждение на 15M:** Если сигнал есть и confirm_timeframe ≠ primary:
-- Загружаем 15M данные для того же символа
-- Оцениваем на 15M тот же engine
-- Если направление сигнала на 15M **не совпадает** с основным → сигнал отклоняется
-- Если совпадает → добавляется причина "✅ Подтверждение на {confirm_tf}", entry_price = close на 15M
+**Шаг 3 — Оценка:** `signal_engine.evaluate(ind)`. Если `NO_SIGNAL` — возврат.
 
-**Шаг 4 — Контекстное обогащение (если CONTEXT_ENABLED):**
-- Запускается `context_engine.get_snapshot(symbol)` (timeout 10s)
-- `context_scorer.score()` → вердикт (CONFIRMED/WEAK/CONFLICTED/BLOCKED)
-- Если `CONTEXT_BLOCK_ON_BLOCKED=True` и вердикт BLOCKED → сигнал отклоняется
-- Сохраняется снимок в БД (один раз до сохранения сигнала, второй — с signal_id)
+**Шаг 4 — Подтверждение на 15M:** только если `confirm_timeframe != timeframe`:
 
-**Шаг 5 — Сохранение в БД:** `db.save_signal(...)` → сигнал с логами, SL, TP, score
+- Загружаем 15M, оцениваем тем же engine.
+- Если направление 15M **не совпадает** с основным → сигнал отклоняется.
+- Если совпадает → `entry_price = close на 15M`, в `reasons` пишется
+  «✅ Подтверждение на {confirm_tf}», `confirmed_on_lower_tf = True`.
+- Если 15M-данные не получились — подтверждение пропускается с warning,
+  `entry_price = result.close`, `confirmed_on_lower_tf = False`.
 
-**Шаг 6 — Cooldown:** Запоминается время последнего сигнала для `{symbol}_{timeframe}`
-- Длительность: `SIGNAL_COOLDOWN_MINUTES` (по умолчанию 60)
-- Если cooldown активен — `scan_symbol()` возвращает None без проверки
+⚠️ Подтверждение работает **только** в scanner. В меню (`_do_full_analysis`)
+сигнал считается без 15M — выводимая «оценка» может отличаться от того, что
+прислал бы scheduler.
 
-**Шаг 7 — Уведомление:** `notify_callback(result, context_verdict)` → отправка в Telegram
+**Шаг 5 — Контекстное обогащение (если `CONTEXT_ENABLED`):**
+
+- `await asyncio.wait_for(context_engine.get_snapshot(symbol), timeout=10.0)`
+- `context_scorer.score()` → `ContextVerdict`
+- Если `CONTEXT_BLOCK_ON_BLOCKED=True` и вердикт `BLOCKED` → отмена сигнала.
+- Если фактический `verdict` ниже `CONTEXT_MIN_VERDICT` (по рангу
+  `BLOCKED<CONFLICTED<WEAK<CONFIRMED`) → отмена сигнала.
+- Снимок контекста сохраняется в БД **дважды**: до `save_signal` (с `signal_id=None`)
+  и после (с реальным `signal_id`). Дубль фиксируется намеренно — для журналов.
+
+**Шаг 6 — Сохранение в БД:** `db.save_signal(..., confirmed=confirmed_on_lower_tf)`.
+
+**Шаг 7 — Cooldown:** `_set_cooldown(symbol, timeframe)` — фиксируется в
+`_last_signal_time` (in-memory, без персистентности — после рестарта обнуляется).
+
+**Шаг 8 — Уведомление:** `result.entry_price = entry_price`;
+`await notify_callback(result, context_verdict)`.
 
 **Масштабирование:**
-- `run_scan_cycle()` обходит все символы × все таймфреймы параллельно (`asyncio.gather`)
-- Сигналы считаются: `signals_found / total_tasks`
+
+- `run_scan_cycle(notify, timeframes=None)` обходит все символы × переданные TF
+  параллельно (`asyncio.gather`).
+- Сигналы считаются: `signals_found / total_tasks`.
 
 **При каких условиях:**
-- Вызывается из `_scan_job()` по расписанию
-- Вызывается из `cmd_scan()` (ручной запуск админом)
-- Каждый символ × таймфрейм — отдельная корутина
+
+- Вызывается из `_scan_job()` по расписанию (со своим списком TF).
+- Вызывается из `cmd_scan()` (ручной запуск админом, без явного списка TF).
+- Каждый символ × таймфрейм — отдельная корутина.

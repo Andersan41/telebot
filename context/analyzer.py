@@ -65,8 +65,10 @@ class ContextEngine:
             symbol=symbol,
             timestamp=datetime.now(timezone.utc),
         )
+        # Аккумулятор news_sentiment: (score, count) от каждого источника.
+        # Объединяем в конце, чтобы не зависеть от порядка завершения корутин.
+        news_collected: list[tuple[float, int]] = []
 
-        base_currency = symbol.split("/")[0]
         coin_id = config.coingecko_symbol_map.get(symbol)
 
         tasks = [
@@ -79,11 +81,21 @@ class ContextEngine:
         ]
 
         if config.cryptopanic_api_key:
-            tasks.append(self._safe_fetch("CryptoPanic", self._fetch_cryptopanic, snapshot, symbol))
+            tasks.append(
+                self._safe_fetch("CryptoPanic", self._fetch_cryptopanic, snapshot, symbol, news_collected)
+            )
 
-        tasks.append(self._safe_fetch("RSS", self._fetch_rss, snapshot, symbol))
+        tasks.append(self._safe_fetch("RSS", self._fetch_rss, snapshot, symbol, news_collected))
 
         await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Свернём накопленные оценки новостей в один итоговый score, взвешенный
+        # по количеству статей. Если оба источника промолчали — поле остаётся None.
+        if news_collected:
+            total_count = sum(c for _, c in news_collected) or 1
+            snapshot.news_sentiment_score = sum(s * c for s, c in news_collected) / total_count
+            snapshot.news_count = sum(c for _, c in news_collected)
+
         return snapshot
 
     async def _safe_fetch(self, name: str, coro_func, snapshot: ContextSnapshot, *args):
@@ -122,25 +134,26 @@ class ContextEngine:
     async def _fetch_open_interest(self, snapshot: ContextSnapshot, symbol: str):
         data = await context_fetcher.fetch_open_interest(symbol)
         if data:
-            snapshot.open_interest_delta = data.get("open_interest")
+            snapshot.open_interest_delta = data.get("open_interest_delta")
 
     async def _fetch_long_short_ratio(self, snapshot: ContextSnapshot, symbol: str):
         ratio = await context_fetcher.fetch_long_short_ratio(symbol)
         if ratio is not None:
             snapshot.long_short_ratio = ratio
 
-    async def _fetch_cryptopanic(self, snapshot: ContextSnapshot, symbol: str):
+    async def _fetch_cryptopanic(
+        self, snapshot: ContextSnapshot, symbol: str, collected: list[tuple[float, int]]
+    ):
         data = await context_fetcher.fetch_cryptopanic(symbol)
-        if data:
-            snapshot.news_sentiment_score = data["score"]
-            snapshot.news_count = data["count"]
+        if data and data.get("count"):
+            collected.append((float(data["score"]), int(data["count"])))
 
-    async def _fetch_rss(self, snapshot: ContextSnapshot, symbol: str):
+    async def _fetch_rss(
+        self, snapshot: ContextSnapshot, symbol: str, collected: list[tuple[float, int]]
+    ):
         data = await context_fetcher.fetch_rss_news(symbol)
-        if data:
-            if snapshot.news_sentiment_score is None:
-                snapshot.news_sentiment_score = data["score"]
-            snapshot.news_count += data["count"]
+        if data and data.get("count"):
+            collected.append((float(data["score"]), int(data["count"])))
 
     def _get_base_currency(self, symbol: str) -> str:
         return symbol.split("/")[0]

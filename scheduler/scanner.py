@@ -17,6 +17,20 @@ from context.scorer import context_scorer, ContextVerdict
 # Словарь для cooldown: {symbol_timeframe: last_signal_time}
 _last_signal_time: dict[str, datetime] = {}
 
+# Порядок вердиктов от худшего к лучшему — используется для CONTEXT_MIN_VERDICT.
+_VERDICT_RANK = {"BLOCKED": 0, "CONFLICTED": 1, "WEAK": 2, "CONFIRMED": 3}
+
+
+def _verdict_passes_min(verdict: str) -> bool:
+    """True, если фактический verdict ≥ настроенного CONTEXT_MIN_VERDICT.
+
+    Пустая строка / неизвестное значение → гейт отключён.
+    """
+    min_v = (config.context_min_verdict or "").strip().upper()
+    if min_v not in _VERDICT_RANK:
+        return True
+    return _VERDICT_RANK.get(verdict, 0) >= _VERDICT_RANK[min_v]
+
 
 def _is_cooldown_active(symbol: str, timeframe: str) -> bool:
     key = f"{symbol}_{timeframe}"
@@ -63,6 +77,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
     # Шаг 2: Подтверждение на 15M
     confirm_tf = config.trading.confirm_timeframe
     entry_price: Optional[float] = None
+    confirmed_on_lower_tf = False
     if confirm_tf != timeframe:
         ind_confirm = await _get_indicators(symbol, confirm_tf)
         if ind_confirm is not None:
@@ -74,6 +89,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                 )
                 return None
             entry_price = ind_confirm.close
+            confirmed_on_lower_tf = True
             logger.info(f"Signal CONFIRMED on {confirm_tf}: {result.signal} {symbol}")
             result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
         else:
@@ -96,6 +112,13 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                 logger.info(
                     f"Signal BLOCKED by context: {result.signal} {symbol} {timeframe} "
                     f"(score={context_verdict.score:.2f})"
+                )
+                return None
+
+            if not _verdict_passes_min(context_verdict.verdict):
+                logger.info(
+                    f"Signal rejected by CONTEXT_MIN_VERDICT={config.context_min_verdict}: "
+                    f"actual={context_verdict.verdict} for {result.signal} {symbol} {timeframe}"
                 )
                 return None
 
@@ -137,7 +160,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         tp=result.tp,
         score=result.score,
         reasons=result.reasons,
-        confirmed=True,
+        confirmed=confirmed_on_lower_tf,
     )
 
     # Сохраняем связь сигнала с контекстом
@@ -169,18 +192,23 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
     return result
 
 
-async def run_scan_cycle(notify_callback):
+async def run_scan_cycle(notify_callback, timeframes: Optional[list[str]] = None):
     """
     Один цикл сканирования — обходим все символы и таймфреймы параллельно.
+
+    `timeframes=None` → берёт `config.trading.primary_timeframes` целиком
+    (поведение по умолчанию для ручного запуска /scan).
+    Cron-джоб может передавать конкретный список, чтобы не дублировать
+    сканирование других ТФ.
     """
     symbols = config.trading.symbols
-    timeframes = config.trading.primary_timeframes
+    tfs = timeframes if timeframes is not None else config.trading.primary_timeframes
 
-    logger.info(f"Starting scan: {len(symbols)} symbols × {timeframes}")
+    logger.info(f"Starting scan: {len(symbols)} symbols × {tfs}")
 
     tasks = []
     for symbol in symbols:
-        for tf in timeframes:
+        for tf in tfs:
             tasks.append(scan_symbol(symbol, tf, notify_callback))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)

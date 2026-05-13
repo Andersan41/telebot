@@ -1,44 +1,55 @@
 # 2.6 strategy/signal_engine.py — Логика сигналов
 
 **Что делает:**
+
 - `evaluate(indicator_values)` → `SignalResult(BUY/SELL/NO_SIGNAL)`
 
-**7 критериев для BUY:**
-1. Supertrend восходящий
-2. EMA alignment бычье (fast > slow > trend)
-3. EMA fast > slow (или пересечение снизу вверх)
-4. RSI в зоне силы (50–70)
-5. MACD гистограмма положительная (или пересечение вверх)
-6. ADX >= 20 (сильный тренд) — **глобальный фильтр, без него NO_SIGNAL**
-7. Объём выше среднего
+## Условия и их реальный учёт в score
 
-**7 критериев для SELL:**
-1. Supertrend нисходящий
-2. EMA alignment медвежье (fast < slow < trend)
-3. EMA fast < slow (или пересечение сверху вниз)
-4. RSI в зоне слабости (30–50)
-5. MACD гистограмма отрицательная (или пересечение вниз)
-6. ADX >= 20
-7. Объём выше среднего
+Декларативно — «7 факторов», но в реальном подсчёте `buy_score`/`sell_score`
+участвуют 5 уникальных условий + объём (нейтрально, добавляется в оба списка).
+ADX выступает не критерием, а жёстким фильтром.
 
-**Логика принятия решения:**
-- ADX < 20 → NO_SIGNAL (флэт, игнорируем)
-- BUY_score >= 4 И BUY_score > SELL_score → BUY
-- SELL_score >= 4 И SELL_score > BUY_score → SELL
+| # | Фактор          | Где                                       | Влияние на BUY / SELL score                                                           |
+|---|-----------------|-------------------------------------------|---------------------------------------------------------------------------------------|
+| 1 | Supertrend      | направление                               | bullish → +1 BUY; bearish → +1 SELL                                                   |
+| 2 | EMA alignment   | fast><slow><trend                         | bullish_alignment → +1 BUY; bearish → +1 SELL                                         |
+| 3 | EMA cross / pos | одна ветка `if/elif/elif/elif`            | bullish cross или fast>slow → +1 BUY; bearish cross или fast<slow → +1 SELL           |
+| 4 | RSI             | положение в зоне                          | `rsi_bull_min ≤ rsi < overbought` → +1 BUY; `oversold < rsi ≤ rsi_bear_max` → +1 SELL |
+| 5 | MACD            | знак гистограммы (+приоритет пересечения) | `macd_hist > 0` → +1 BUY; `< 0` → +1 SELL                                             |
+| 6 | Volume          | `volume > sma × volume_factor`            | **+1 одновременно в BUY и SELL** (нейтральный «усилитель»)                            |
+| – | ADX             | `adx >= adx_min`                          | **фильтр**: если ниже — `NO_SIGNAL` сразу; иначе только добавляется в `reasons`       |
+| – | DMI+/DMI-       | сравнение                                 | только в `reasons`, в score не идёт                                                   |
+
+**Максимально достижимый score одной стороны — 6** (все 5 уникальных + Volume).
+Симметричное добавление Volume в оба score никогда не даёт обеим сторонам пройти
+порог одновременно — побеждает сторона с большим перевесом.
+
+`format_message()` и view'ы в `bot/menu.py` выводят `({score}/6)`.
+
+## Логика принятия решения
+
+- `ADX < adx_min` → NO_SIGNAL (флэт, игнорируем)
+- `buy_score >= 4` И `buy_score > sell_score` → BUY
+- `sell_score >= 4` И `sell_score > buy_score` → SELL
 - Иначе → NO_SIGNAL
 
-**SL/TP расчёт (через ATR):**
-- BUY: SL = close - ATR × 1.5, TP = close + ATR × 3.0
-- SELL: SL = close + ATR × 1.5, TP = close - ATR × 3.0
-- Округляется до 8 знаков
+## SL/TP (через ATR)
 
-**Форматирование сообщения:**
-- `format_message()` → HTML для Telegram:
-  - Эмодзи + тип сигнала (🟢 BUY / 🔴 SELL)
-  - Инструмент, таймфрейм, цена
-  - Entry price, SL, TP, R/R (risk/reward)
-  - Список причин (каждое совпавшее условие)
-  - Сила сигнала: ⭐ (score/7)
+- BUY:  SL = `close − ATR × atr_multiplier_sl` (1.5), TP = `close + ATR × atr_multiplier_tp` (3.0)
+- SELL: SL = `close + ATR × atr_multiplier_sl`, TP = `close − ATR × atr_multiplier_tp`
+- Округление до 8 знаков
 
-**При каких условиях:**
+## Форматирование сообщения
+
+`format_message()` → HTML для Telegram:
+
+- Эмодзи + тип сигнала (🟢 BUY / 🔴 SELL)
+- Инструмент, таймфрейм, цена
+- Entry price (если есть), SL, TP, R/R
+- Список причин (все совпавшие условия)
+- «Сила сигнала: ⭐⭐⭐ (score/6)»
+
+**При каких условиях вызывается:**
+
 - Должен быть получен валидный `IndicatorValues` от `indicator_engine.calculate()`

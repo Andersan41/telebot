@@ -21,6 +21,9 @@ class ContextFetcher:
         self._rss_cache: Dict[str, tuple] = {}
         self._fng_cache: tuple = (None, None)
         self._trending_cache: tuple = (None, None)
+        # Последнее наблюдённое значение OI per-symbol — для расчёта дельты.
+        # In-memory: после рестарта первый расчёт даст delta=0.0.
+        self._last_oi: Dict[str, float] = {}
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -123,17 +126,26 @@ class ContextFetcher:
     # --- 4. Binance Funding Rate ---
 
     async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
-        """Binance Funding Rate via ccxt."""
+        """Binance USDT-margined futures funding rate via direct HTTP.
+
+        ccxt-spot не поддерживает futures funding, а futures-инстанс отдельно
+        не создаётся — берём публичный premiumIndex с fapi.binance.com тем же
+        способом, что и open interest / long-short ratio.
+        """
         try:
-            from data.exchange_client import exchange_client
-            if exchange_client._exchange is None:
-                return None
-            rate = exchange_client._exchange.fetch_funding_rate(symbol)
-            if rate and "fundingRate" in rate:
-                result = float(rate["fundingRate"])
+            session = await self._get_session()
+            binance_symbol = symbol.replace("/", "")
+            url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={binance_symbol}"
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Funding rate API returned status {resp.status} for {symbol}")
+                    return None
+                data = await resp.json()
+                if "lastFundingRate" not in data:
+                    return None
+                result = float(data["lastFundingRate"])
                 logger.debug(f"Funding rate {symbol}: {result:.6f}")
                 return result
-            return None
         except Exception as e:
             logger.warning(f"Error fetching funding rate for {symbol}: {e}")
             return None
@@ -141,7 +153,12 @@ class ContextFetcher:
     # --- 5. Binance Open Interest ---
 
     async def fetch_open_interest(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Binance Open Interest via direct HTTP."""
+        """Binance Open Interest via direct HTTP.
+
+        Возвращает текущее абсолютное значение и % изменение относительно
+        предыдущего вызова для того же символа. На первом вызове delta=0.0
+        (предыдущее значение неизвестно).
+        """
         try:
             session = await self._get_session()
             binance_symbol = symbol.replace("/", "")
@@ -151,13 +168,21 @@ class ContextFetcher:
                     logger.warning(f"Open Interest API returned status {resp.status}")
                     return None
                 data = await resp.json()
+                current = float(data.get("openInterest", 0))
+                previous = self._last_oi.get(symbol)
+                if previous and previous > 0:
+                    delta_pct = (current - previous) / previous * 100.0
+                else:
+                    delta_pct = 0.0
+                self._last_oi[symbol] = current
                 result = {
-                    "open_interest": float(data.get("openInterest", 0)),
+                    "open_interest": current,
+                    "open_interest_delta": delta_pct,
                     "timestamp": datetime.fromtimestamp(
                         data.get("time", 0) / 1000, tz=timezone.utc
                     ),
                 }
-                logger.debug(f"OI {symbol}: {result['open_interest']}")
+                logger.debug(f"OI {symbol}: {current} (Δ {delta_pct:+.2f}%)")
                 return result
         except Exception as e:
             logger.warning(f"Error fetching OI for {symbol}: {e}")

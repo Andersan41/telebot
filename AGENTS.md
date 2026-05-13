@@ -1,73 +1,75 @@
 # AGENTS.md — Trading Signal Bot
 
 ## Quick start
+
 ```bash
-cp .env.example .env   # fill in required variables
-python -m venv .venv && .venv\Scripts\activate   # Windows
+cp .env.example .env # fill in required vars
+python -m venv .venv && source .venv/bin/activate # .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 python main.py
 ```
-Or Docker: `docker-compose build && docker-compose up -d`
 
-### Required `.env` variables
-```env
-TELEGRAM_BOT_TOKEN=your_token
-TELEGRAM_CHANNEL_ID=-100xxxxxx
-SYMBOLS=BTC/USDT,ETH/USDT
-PRIMARY_TIMEFRAMES=1h,4h
-
-BINANCE_API_KEY=your_key
-BINANCE_API_SECRET=your_secret
-
-# Optional (defaults shown):
-USE_TESTNET=false
-TELEGRAM_ADMIN_IDS=123456789
-CONFIRM_TIMEFRAME=15m
-DATABASE_URL=sqlite+aiosqlite:///./data/signals.db
-LOG_LEVEL=INFO
-LOG_FILE=logs/bot.log
-SIGNAL_COOLDOWN_MINUTES=60
-```
+Docker: `docker-compose build && docker-compose up -d`
 
 ## Tests
+
 ```bash
-pytest -v              # all
-pytest tests/test_signal.py -v   # single file
-```
-No `pip install -e .` — every test file does `sys.path.insert(0, root)` at the top.
-Tests use `pytest.mark.asyncio` with `asyncio_mode = auto` (pytest.ini).
-
-## Architecture
-```
-main.py                 # entrypoint: async event loop, starts bot + scheduler
-config/settings.py      # .env → dataclass config (singleton: config)
-config/logger.py        # loguru setup (called at import time)
-data/exchange_client.py # ccxt async → OHLCV DataFrame (singleton: exchange_client)
-indicators/engine.py    # pandas-ta: EMA, RSI, MACD, ADX, ATR, Supertrend (singleton: indicator_engine)
-strategy/signal_engine.py  # BUY/SELL/NO_SIGNAL logic, SL/TP calc (singleton: signal_engine)
-scheduler/scanner.py    # scan symbols × timeframes, confirm on 15m, cooldown (asyncio.gather)
-scheduler/tasks.py      # APScheduler: hourly + 4h cron jobs
-bot/handlers.py         # Telegram command handlers + menu callbacks
-bot/menu.py             # inline keyboard navigation
-bot/notifier.py         # send signals to Telegram channel
-storage/database.py     # SQLAlchemy async → SQLite (singleton: db)
+pytest -v # all
+pytest tests/test_signal.py -v # one file
 ```
 
-## Key patterns
-- **Singletons everywhere**: `config`, `exchange_client`, `indicator_engine`, `signal_engine`, `db`
-- **Config**: `.env` loaded at import time (`config/settings.py:9`), values mapped to dataclasses
-- **Logging**: loguru, configured by importing `import config.logger` (done in main.py)
-- **Async**: all I/O is async (ccxt, aiosqlite, telegram-bot v20)
-- **Signal logic**: 4 of 7 conditions required; ADX < 20 = flat = no signal; 15m confirmation required
+No `pip install -e .` — every test file does `sys.path.insert(0, root)`. `asyncio_mode = auto`
+in `pytest.ini`; use `@pytest.mark.asyncio` on async tests.
 
-## Gotchas
-- **Telegram HTML**: when sending with `parse_mode=ParseMode.HTML`, escape `<` and `>` in dynamic text with `html.escape()` or `&lt;`/`&gt;`. Telegram's parser will crash on bare `<` in plain text (e.g. "ADX < 20").
-- **pandas-ta column naming**: Supertrend columns start with `SUPERT_` (value) and `SUPERTd_` (direction); ADX columns start with `ADX_`, `DMP_`, `DMN_`. The engine handles this dynamically.
-- **`exchange_client.fetch_ohlcv` drops the last candle** (unresolved) before returning.
-- **`main.py` adds root to `sys.path`** — don't run files from subdirectories without this.
-- **`.gitignore` excludes `.env`, `data/*.db`, `logs/*.log`** — these are created at runtime.
+## Plan & architecture
+
+`plan/00index.md` is the entry point — full module tree, singletons, and pipeline live in
+`plan/01-architecture.md`, `plan/07-scheduler.md`, `plan/11-pipeline.md`. Update those files
+when behavior changes, not this one.
+
+## Signal logic
+
+- **4 of 6** conditions required: Supertrend, EMA alignment, EMA cross/pos, RSI, MACD, Volume.
+- ADX < `adx_min` (default 20) → flat → `NO_SIGNAL` (hard filter, not a counted criterion).
+- Volume contributes to **both** buy and sell score — boosts each equally, so the relative
+  margin still decides the winner.
+- Confirmation on `CONFIRM_TIMEFRAME` (default `15m`) only when it differs from the primary TF;
+  mismatch → reject. `Signal.confirmed` records the real outcome.
+- Cooldown per `symbol_timeframe` is `SIGNAL_COOLDOWN_MINUTES` (default 60), in-memory only —
+  resets on restart.
+- Context gate: `CONTEXT_BLOCK_ON_BLOCKED` rejects BLOCKED; `CONTEXT_MIN_VERDICT` is a rank
+  gate (`BLOCKED < CONFLICTED < WEAK < CONFIRMED`). Empty value disables the gate.
 
 ## Scheduler
-- **1H timeframe**: runs every hour at minute 2 (after candle closes)
-- **4H timeframe**: cron `0 0,4,8,12,16,20 * * *` (UTC), minute 5
-- **Confirmation**: always checks 15m before sending signal; cooldown applies per symbol/timeframe pair (default: 60 min)
+
+- `hourly_scan` (cron `:02`) → `run_scan_cycle(timeframes=["1h"])`.
+- `4h_scan` (cron `0,4,8,12,16,20 :05`) → `run_scan_cycle(timeframes=["4h"])`.
+- `cmd_scan` (admin `/scan`) → `run_scan_cycle()` over all `primary_timeframes`.
+
+## Project-specific gotchas
+
+- **Telegram HTML**: `parse_mode=ParseMode.HTML` requires `html.escape()` on every dynamic
+  substring — bare `<` (e.g. `ADX < 20`) crashes Telegram's parser. `_do_full_analysis` re-escapes
+  on `BadRequest`.
+- **pandas-ta columns**: Supertrend → `SUPERT_…` / `SUPERTd_…`; ADX → `ADX_…`, `DMP_…`, `DMN_…`.
+  `indicators/engine.py` resolves them dynamically; verify prefixes on pandas-ta upgrades.
+- **`exchange_client.fetch_ohlcv` drops the last candle** (`df.iloc[:-1]`) to avoid signalling
+  off an open bar.
+- **Context fetcher singleton state**: `_fng_cache`, `_trending_cache`, `_rss_cache`,
+  `_last_oi[symbol]`. Tests should instantiate a fresh `ContextFetcher` / `ContextEngine`
+  rather than reuse the module-level singletons.
+- **`main.py` adds project root to `sys.path`** — running submodules without it will fail
+  sibling imports.
+
+## Required `.env`
+
+See `plan/14-env-config.md` for the full list. Minimum:
+
+```env
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHANNEL_ID=
+SYMBOLS=BTC/USDT,ETH/USDT
+PRIMARY_TIMEFRAMES=1h,4h
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+```
