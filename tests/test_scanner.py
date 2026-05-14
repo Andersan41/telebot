@@ -6,13 +6,23 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scheduler.scanner import scan_symbol, run_scan_cycle, _is_cooldown_active, _set_cooldown, _last_signal_time
+from scheduler.scanner import scan_symbol, run_scan_cycle, _is_cooldown_active, _set_cooldown
 
 
-@pytest.fixture(autouse=True)
-def clear_cooldown():
-    _last_signal_time.clear()
-    yield
+@pytest.fixture
+def mock_cooldown(monkeypatch):
+    """Подменяет db.get_cooldown / db.set_cooldown на in-memory dict."""
+    store: dict[tuple[str, str], "datetime"] = {}
+
+    async def fake_get(symbol, timeframe):
+        return store.get((symbol, timeframe))
+
+    async def fake_set(symbol, timeframe, ts):
+        store[(symbol, timeframe)] = ts
+
+    monkeypatch.setattr("scheduler.scanner.db.get_cooldown", fake_get)
+    monkeypatch.setattr("scheduler.scanner.db.set_cooldown", fake_set)
+    return store
 
 
 @pytest.fixture
@@ -46,39 +56,52 @@ def mock_ind_engine():
 
 
 class TestCooldown:
-    def test_no_cooldown_initially(self):
-        assert _is_cooldown_active("BTC/USDT", "1h") is False
+    @pytest.mark.asyncio
+    async def test_no_cooldown_initially(self, mock_cooldown):
+        assert await _is_cooldown_active("BTC/USDT", "1h") is False
 
-    def test_cooldown_active_after_set(self):
-        _set_cooldown("BTC/USDT", "1h")
-        assert _is_cooldown_active("BTC/USDT", "1h") is True
+    @pytest.mark.asyncio
+    async def test_cooldown_blocks_repeat(self, mock_cooldown):
+        await _set_cooldown("BTC/USDT", "1h")
+        assert await _is_cooldown_active("BTC/USDT", "1h") is True
 
-    def test_different_symbol_no_cooldown(self):
-        _set_cooldown("BTC/USDT", "1h")
-        assert _is_cooldown_active("ETH/USDT", "1h") is False
+    @pytest.mark.asyncio
+    async def test_cooldown_other_symbol_independent(self, mock_cooldown):
+        await _set_cooldown("BTC/USDT", "1h")
+        assert await _is_cooldown_active("ETH/USDT", "1h") is False
 
-    def test_different_timeframe_no_cooldown(self):
-        _set_cooldown("BTC/USDT", "1h")
-        assert _is_cooldown_active("BTC/USDT", "4h") is False
+    @pytest.mark.asyncio
+    async def test_cooldown_different_timeframe_independent(self, mock_cooldown):
+        await _set_cooldown("BTC/USDT", "1h")
+        assert await _is_cooldown_active("BTC/USDT", "4h") is False
 
 
 class TestScanSymbol:
     @pytest.mark.asyncio
-    async def test_returns_none_when_cooldown(self, mock_signal_result):
-        _set_cooldown("BTC/USDT", "1h")
+    async def test_returns_none_when_cooldown(self, mock_signal_result, mock_cooldown):
+        await _set_cooldown("BTC/USDT", "1h")
         result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
         assert result is None
 
     @pytest.mark.asyncio
     async def test_full_successful_scan(self, mock_signal_result, mock_exchange, mock_ind_engine):
+        from context.scorer import ContextVerdict
         with (
             patch("scheduler.scanner.exchange_client", mock_exchange),
             patch("scheduler.scanner.indicator_engine", mock_ind_engine),
             patch("scheduler.scanner.signal_engine") as mock_sig,
             patch("scheduler.scanner.db") as mock_db,
+            patch("scheduler.scanner.context_engine") as mock_ctx_engine,
+            patch("scheduler.scanner.context_scorer") as mock_ctx_scorer,
         ):
             mock_sig.evaluate.return_value = mock_signal_result
             mock_db.save_signal = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
+            mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
+            mock_ctx_scorer.score.return_value = ContextVerdict(
+                verdict="WEAK", confidence=0.15, score=0.15,
+            )
 
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
 
@@ -124,23 +147,31 @@ class TestScanSymbol:
         ):
             mock_sig.evaluate.side_effect = [mock_signal_result, opposite]
             mock_db.save_signal = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
             assert result is None
 
     @pytest.mark.asyncio
-    async def test_sets_cooldown_after_signal(self, mock_signal_result, mock_exchange, mock_ind_engine):
+    async def test_sets_cooldown_after_signal(self, mock_signal_result, mock_exchange, mock_ind_engine, mock_cooldown):
+        from context.scorer import ContextVerdict
+        from storage.database import db
         with (
             patch("scheduler.scanner.exchange_client", mock_exchange),
             patch("scheduler.scanner.indicator_engine", mock_ind_engine),
             patch("scheduler.scanner.signal_engine") as mock_sig,
-            patch("scheduler.scanner.db") as mock_db,
+            patch("scheduler.scanner.context_engine") as mock_ctx_engine,
+            patch("scheduler.scanner.context_scorer") as mock_ctx_scorer,
         ):
             mock_sig.evaluate.return_value = mock_signal_result
-            mock_db.save_signal = AsyncMock()
+            db.save_signal = AsyncMock()
+            mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
+            mock_ctx_scorer.score.return_value = ContextVerdict(
+                verdict="WEAK", confidence=0.15, score=0.15,
+            )
 
-            _last_signal_time.clear()
             await scan_symbol("BTC/USDT", "1h", AsyncMock())
-            assert _is_cooldown_active("BTC/USDT", "1h") is True
+            assert await _is_cooldown_active("BTC/USDT", "1h") is True
 
 
     @pytest.mark.asyncio
@@ -157,6 +188,8 @@ class TestScanSymbol:
                 timeframe="1h", close=50000.0, score=2, reasons=[],
             )
             mock_db.save_signal = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
             await run_scan_cycle(AsyncMock())
 
 
@@ -165,15 +198,24 @@ class TestEntryPrice:
     async def test_entry_price_set_on_same_timeframe(self, mock_signal_result, mock_exchange, mock_ind_engine):
         mock_signal_result.entry_price = None
         mock_exchange.fetch_ohlcv.return_value = {"close": [50000.0]}
+        from context.scorer import ContextVerdict
         with (
             patch("scheduler.scanner.exchange_client", mock_exchange),
             patch("scheduler.scanner.indicator_engine", mock_ind_engine),
             patch("scheduler.scanner.signal_engine") as mock_sig,
             patch("scheduler.scanner.db") as mock_db,
             patch("scheduler.scanner.config.trading.confirm_timeframe", "1h"),
+            patch("scheduler.scanner.context_engine") as mock_ctx_engine,
+            patch("scheduler.scanner.context_scorer") as mock_ctx_scorer,
         ):
             mock_sig.evaluate.return_value = mock_signal_result
             mock_db.save_signal = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
+            mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
+            mock_ctx_scorer.score.return_value = ContextVerdict(
+                verdict="WEAK", confidence=0.15, score=0.15,
+            )
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
             assert result is not None
             assert result.entry_price == 50000.0
@@ -188,22 +230,32 @@ class TestEntryPrice:
             signal=SignalType.BUY, symbol="BTC/USDT",
             timeframe="15m", close=confirm_close, score=6, reasons=[],
         )
+        from context.scorer import ContextVerdict
         with (
             patch("scheduler.scanner.exchange_client", mock_exchange),
             patch("scheduler.scanner.indicator_engine", mock_ind_engine),
             patch("scheduler.scanner.signal_engine") as mock_sig,
             patch("scheduler.scanner.db") as mock_db,
             patch("scheduler.scanner.config.trading.confirm_timeframe", "15m"),
+            patch("scheduler.scanner.context_engine") as mock_ctx_engine,
+            patch("scheduler.scanner.context_scorer") as mock_ctx_scorer,
         ):
             mock_sig.evaluate.side_effect = [mock_signal_result, confirm_sig]
             mock_ind_engine.calculate.return_value = confirm_ind
             mock_db.save_signal = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
+            mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
+            mock_ctx_scorer.score.return_value = ContextVerdict(
+                verdict="WEAK", confidence=0.15, score=0.15,
+            )
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
             assert result is not None
             assert result.entry_price == confirm_close
 
     @pytest.mark.asyncio
     async def test_entry_price_from_close_when_no_confirm_data(self, mock_signal_result, mock_exchange, mock_ind_engine):
+        from context.scorer import ContextVerdict
         mock_signal_result.entry_price = None
         mock_exchange.fetch_ohlcv.side_effect = [
             {"close": [50000.0]},  # main timeframe
@@ -215,9 +267,17 @@ class TestEntryPrice:
             patch("scheduler.scanner.signal_engine") as mock_sig,
             patch("scheduler.scanner.db") as mock_db,
             patch("scheduler.scanner.config.trading.confirm_timeframe", "15m"),
+            patch("scheduler.scanner.context_engine") as mock_ctx_engine,
+            patch("scheduler.scanner.context_scorer") as mock_ctx_scorer,
         ):
             mock_sig.evaluate.return_value = mock_signal_result
             mock_db.save_signal = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
+            mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
+            mock_ctx_scorer.score.return_value = ContextVerdict(
+                verdict="WEAK", confidence=0.15, score=0.15,
+            )
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
             assert result is not None
             assert result.entry_price == 50000.0
@@ -239,5 +299,7 @@ class TestEntryPrice:
         ):
             mock_sig.evaluate.side_effect = [mock_signal_result, opposite]
             mock_db.save_signal = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
             assert result is None

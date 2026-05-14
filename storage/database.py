@@ -143,6 +143,24 @@ class Database:
                 session.add(BotSetting(key=key, value=value))
             await session.commit()
 
+    async def get_cooldown(
+        self, symbol: str, timeframe: str
+    ) -> Optional[datetime]:
+        key = f"cooldown:{symbol}:{timeframe}"
+        val = await self.get_setting(key, "")
+        if not val:
+            return None
+        try:
+            return datetime.fromisoformat(val)
+        except ValueError:
+            return None
+
+    async def set_cooldown(
+        self, symbol: str, timeframe: str, ts: datetime
+    ) -> None:
+        key = f"cooldown:{symbol}:{timeframe}"
+        await self.set_setting(key, ts.isoformat())
+
     async def save_context_snapshot(
         self,
         symbol: str,

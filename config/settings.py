@@ -36,29 +36,29 @@ class TradingConfig:
     ])
     confirm_timeframe: str = os.getenv("CONFIRM_TIMEFRAME", "15m")
 
-    # Параметры индикаторов
-    ema_fast: int = 9
-    ema_slow: int = 21
-    ema_trend: int = 50
-    rsi_period: int = 14
-    rsi_overbought: float = 70.0
-    rsi_oversold: float = 30.0
-    rsi_bull_min: float = 50.0      # Минимальный RSI для BUY
-    rsi_bear_max: float = 50.0      # Максимальный RSI для SELL
-    macd_fast: int = 12
-    macd_slow: int = 26
-    macd_signal: int = 9
-    adx_period: int = 14
-    adx_min: float = 20.0           # Минимальный ADX (фильтр флэта)
-    atr_period: int = 14
-    atr_multiplier_sl: float = 1.5  # ATR × multiplier = SL
-    atr_multiplier_tp: float = 3.0  # ATR × multiplier = TP
-    supertrend_period: int = 10
-    supertrend_multiplier: float = 3.0
-    volume_factor: float = 1.2      # Объём должен быть выше SMA(volume) × factor
+    # Параметры индикаторов (читаются из .env, дефолты — в скобках)
+    ema_fast: int = int(os.getenv("EMA_FAST", "9"))
+    ema_slow: int = int(os.getenv("EMA_SLOW", "21"))
+    ema_trend: int = int(os.getenv("EMA_TREND", "50"))
+    rsi_period: int = int(os.getenv("RSI_PERIOD", "14"))
+    rsi_overbought: float = float(os.getenv("RSI_OVERBOUGHT", "70"))
+    rsi_oversold: float = float(os.getenv("RSI_OVERSOLD", "30"))
+    rsi_bull_min: float = float(os.getenv("RSI_BULL_MIN", "50"))
+    rsi_bear_max: float = float(os.getenv("RSI_BEAR_MAX", "50"))
+    macd_fast: int = int(os.getenv("MACD_FAST", "12"))
+    macd_slow: int = int(os.getenv("MACD_SLOW", "26"))
+    macd_signal: int = int(os.getenv("MACD_SIGNAL", "9"))
+    adx_period: int = int(os.getenv("ADX_PERIOD", "14"))
+    adx_min: float = float(os.getenv("ADX_MIN", "20"))
+    atr_period: int = int(os.getenv("ATR_PERIOD", "14"))
+    atr_multiplier_sl: float = float(os.getenv("ATR_MULTIPLIER_SL", "1.5"))
+    atr_multiplier_tp: float = float(os.getenv("ATR_MULTIPLIER_TP", "3.0"))
+    supertrend_period: int = int(os.getenv("SUPERTREND_PERIOD", "10"))
+    supertrend_multiplier: float = float(os.getenv("SUPERTREND_MULTIPLIER", "3.0"))
+    volume_factor: float = float(os.getenv("VOLUME_FACTOR", "1.2"))
 
     # Параметры расчёта свечей
-    candles_limit: int = 200        # Сколько свечей загружать
+    candles_limit: int = int(os.getenv("CANDLES_LIMIT", "200"))
 
 
 @dataclass

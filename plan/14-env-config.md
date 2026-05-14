@@ -26,3 +26,28 @@ CONTEXT_BLOCK_ON_BLOCKED=true
 CRYPTOPANIC_API_KEY=
 COINGECKO_SYMBOL_MAP=BTC/USDT:bitcoin,ETH/USDT:ethereum,SOL/USDT:solana,BNB/USDT:binance-coin,XRP/USDT:ripple
 ```
+
+## Indicator parameters
+
+| Переменная              | Дефолт | Тип   | Описание                              |
+|-------------------------|--------|-------|---------------------------------------|
+| EMA_FAST                | 9      | int   | Быстрая EMA                           |
+| EMA_SLOW                | 21     | int   | Медленная EMA                         |
+| EMA_TREND               | 50     | int   | Трендовая EMA                         |
+| RSI_PERIOD              | 14     | int   | Период RSI                            |
+| RSI_OVERBOUGHT          | 70     | float | Зона перекупленности RSI              |
+| RSI_OVERSOLD            | 30     | float | Зона перепроданности RSI              |
+| RSI_BULL_MIN            | 50     | float | Минимальный RSI для BUY               |
+| RSI_BEAR_MAX            | 50     | float | Максимальный RSI для SELL             |
+| MACD_FAST               | 12     | int   | Быстрая MACD                          |
+| MACD_SLOW               | 26     | int   | Медленная MACD                          |
+| MACD_SIGNAL             | 9      | int   | Signal line MACD                      |
+| ADX_PERIOD              | 14     | int   | Период ADX                            |
+| ADX_MIN                 | 20     | float | Минимальный ADX (фильтр флэта)        |
+| ATR_PERIOD              | 14     | int   | Период ATR                            |
+| ATR_MULTIPLIER_SL       | 1.5    | float | Множитель для Stop Loss               |
+| ATR_MULTIPLIER_TP       | 3.0    | float | Множитель для Take Profit             |
+| SUPERTREND_PERIOD       | 10     | int   | Период Supertrend                     |
+| SUPERTREND_MULTIPLIER   | 3.0    | float | Множитель Supertrend                  |
+| VOLUME_FACTOR           | 1.2    | float | Мультпликатор для фильтра объёма      |
+| CANDLES_LIMIT           | 200    | int   | Количество свечей для загрузки        |

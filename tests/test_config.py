@@ -1,3 +1,4 @@
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -6,7 +7,19 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import TelegramConfig, ExchangeConfig, TradingConfig, AppConfig
+
+@pytest.fixture(autouse=True)
+def _reload_settings():
+    """Reload config.settings before each test to reset to env defaults."""
+    import config.settings as settings
+    importlib.reload(settings)
+    # Re-bind class references after reload so tests use the fresh module
+    globals().update({
+        "TelegramConfig": settings.TelegramConfig,
+        "ExchangeConfig": settings.ExchangeConfig,
+        "TradingConfig": settings.TradingConfig,
+        "AppConfig": settings.AppConfig,
+    })
 
 
 class TestTelegramConfig:
@@ -63,6 +76,38 @@ class TestAppConfig:
         assert cfg.signal_cooldown_minutes == 60
 
 
+class TestIndicatorEnvVars:
+    def test_ema_fast_from_env(self, monkeypatch):
+        monkeypatch.setenv("EMA_FAST", "5")
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.ema_fast == 5
+
+    def test_atr_multiplier_from_env(self, monkeypatch):
+        monkeypatch.setenv("ATR_MULTIPLIER_SL", "2.5")
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.atr_multiplier_sl == 2.5
+
+    def test_defaults_when_env_missing(self, monkeypatch):
+        monkeypatch.delenv("EMA_FAST", raising=False)
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.ema_fast == 9
+
+    def test_volume_factor_from_env(self, monkeypatch):
+        monkeypatch.setenv("VOLUME_FACTOR", "1.5")
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.volume_factor == 1.5
+
+    def test_candles_limit_from_env(self, monkeypatch):
+        monkeypatch.setenv("CANDLES_LIMIT", "300")
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.candles_limit == 300
+
+
 class TestEnvFile:
     ENV_KEYS = [
         "TELEGRAM_BOT_TOKEN",
@@ -76,6 +121,26 @@ class TestEnvFile:
         "DATABASE_URL",
         "LOG_LEVEL",
         "LOG_FILE",
+        "EMA_FAST",
+        "EMA_SLOW",
+        "EMA_TREND",
+        "RSI_PERIOD",
+        "RSI_OVERBOUGHT",
+        "RSI_OVERSOLD",
+        "RSI_BULL_MIN",
+        "RSI_BEAR_MAX",
+        "MACD_FAST",
+        "MACD_SLOW",
+        "MACD_SIGNAL",
+        "ADX_PERIOD",
+        "ADX_MIN",
+        "ATR_PERIOD",
+        "ATR_MULTIPLIER_SL",
+        "ATR_MULTIPLIER_TP",
+        "SUPERTREND_PERIOD",
+        "SUPERTREND_MULTIPLIER",
+        "VOLUME_FACTOR",
+        "CANDLES_LIMIT",
     ]
 
     def test_env_example_exists(self):

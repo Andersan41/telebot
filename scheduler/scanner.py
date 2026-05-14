@@ -14,9 +14,6 @@ from storage.database import db
 from context.analyzer import context_engine, ContextSnapshot
 from context.scorer import context_scorer, ContextVerdict
 
-# Словарь для cooldown: {symbol_timeframe: last_signal_time}
-_last_signal_time: dict[str, datetime] = {}
-
 # Порядок вердиктов от худшего к лучшему — используется для CONTEXT_MIN_VERDICT.
 _VERDICT_RANK = {"BLOCKED": 0, "CONFLICTED": 1, "WEAK": 2, "CONFIRMED": 3}
 
@@ -32,18 +29,18 @@ def _verdict_passes_min(verdict: str) -> bool:
     return _VERDICT_RANK.get(verdict, 0) >= _VERDICT_RANK[min_v]
 
 
-def _is_cooldown_active(symbol: str, timeframe: str) -> bool:
-    key = f"{symbol}_{timeframe}"
-    last = _last_signal_time.get(key)
+async def _is_cooldown_active(symbol: str, timeframe: str) -> bool:
+    last = await db.get_cooldown(symbol, timeframe)
     if last is None:
         return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
     delta = datetime.now(timezone.utc) - last
     return delta < timedelta(minutes=config.signal_cooldown_minutes)
 
 
-def _set_cooldown(symbol: str, timeframe: str):
-    key = f"{symbol}_{timeframe}"
-    _last_signal_time[key] = datetime.now(timezone.utc)
+async def _set_cooldown(symbol: str, timeframe: str) -> None:
+    await db.set_cooldown(symbol, timeframe, datetime.now(timezone.utc))
 
 
 async def _get_indicators(symbol: str, timeframe: str) -> Optional[IndicatorValues]:
@@ -58,7 +55,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
     Сканируем один символ на одном таймфрейме.
     Если есть сигнал — подтверждаем на 15M.
     """
-    if _is_cooldown_active(symbol, timeframe):
+    if await _is_cooldown_active(symbol, timeframe):
         logger.debug(f"Cooldown active: {symbol} {timeframe}")
         return None
 
@@ -183,7 +180,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             logger.warning(f"Failed to save context snapshot with signal link: {e}")
 
     # Шаг 5: Cooldown
-    _set_cooldown(symbol, timeframe)
+    await _set_cooldown(symbol, timeframe)
 
     # Шаг 6: Уведомляем
     result.entry_price = entry_price

@@ -156,8 +156,9 @@ class ContextFetcher:
         """Binance Open Interest via direct HTTP.
 
         Возвращает текущее абсолютное значение и % изменение относительно
-        предыдущего вызова для того же символа. На первом вызове delta=0.0
-        (предыдущее значение неизвестно).
+        предыдущего вызова для того же символа. При первом вызове для символа
+        предыдущее значение подтягивается из исторического эндпоинта Binance,
+        чтобы delta уже на первом скане была осмысленной.
         """
         try:
             session = await self._get_session()
@@ -168,6 +169,22 @@ class ContextFetcher:
                     logger.warning(f"Open Interest API returned status {resp.status}")
                     return None
                 data = await resp.json()
+                # Warm-up: при первом запросе для символа подтянем предыдущее значение
+                # из исторического эндпоинта, чтобы delta уже на первом скане была осмысленной.
+                if symbol not in self._last_oi:
+                    try:
+                        hist_url = (
+                            f"https://fapi.binance.com/futures/data/openInterestHist"
+                            f"?symbol={binance_symbol}&period=5m&limit=2"
+                        )
+                        async with session.get(hist_url) as hist_resp:
+                            if hist_resp.status == 200:
+                                hist = await hist_resp.json()
+                                if isinstance(hist, list) and len(hist) >= 2:
+                                    self._last_oi[symbol] = float(hist[-2]["sumOpenInterest"])
+                                    logger.debug(f"OI warm-up {symbol}: prev={self._last_oi[symbol]}")
+                    except Exception as e:
+                        logger.warning(f"OI warm-up failed for {symbol}: {e}")
                 current = float(data.get("openInterest", 0))
                 previous = self._last_oi.get(symbol)
                 if previous and previous > 0:

@@ -403,6 +403,26 @@ class TestContextFetcher:
         await fetcher.fetch_fear_greed()
         await fetcher.close()
 
+    @pytest.mark.asyncio
+    async def test_oi_warmup_uses_historical(self, fetcher, aioresponses):
+        aioresponses.get(
+            "https://fapi.binance.com/futures/data/openInterestHist"
+            "?symbol=BTCUSDT&period=5m&limit=2",
+            payload=[
+                {"symbol": "BTCUSDT", "sumOpenInterest": "100.0", "timestamp": 1},
+                {"symbol": "BTCUSDT", "sumOpenInterest": "120.0", "timestamp": 2},
+            ],
+        )
+        aioresponses.get(
+            "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT",
+            payload={"openInterest": "110.0", "symbol": "BTCUSDT", "time": 3000},
+        )
+        result = await fetcher.fetch_open_interest("BTC/USDT")
+        await fetcher.close()
+        assert result is not None
+        assert result["open_interest"] == 110.0
+        assert abs(result["open_interest_delta"] - 10.0) < 1e-6
+
 
 # === Тесты ContextEngine ===
 

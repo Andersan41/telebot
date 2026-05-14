@@ -26,7 +26,6 @@
 | A1 | [A1-indicators-env.md](improvements/A1-indicators-env.md)        | Параметры индикаторов из `.env`, не из захардкоженных значений      |
 | A2 | [A2-oi-warmup.md](improvements/A2-oi-warmup.md)                  | OI delta переживает рестарт (warm-up из исторического эндпоинта)    |
 | A3 | [A3-oi-scoring-direction.md](improvements/A3-oi-scoring-direction.md) | OI-шкала в scorer'е перестаёт игнорировать `direction`         |
-| A4 | [A4-cooldown-db.md](improvements/A4-cooldown-db.md)              | Cooldown в БД (`bot_settings`), переживает рестарт                  |
 | A5 | [A5-confirm-in-menu.md](improvements/A5-confirm-in-menu.md)      | 15M-подтверждение в меню `_do_full_analysis`                        |
 | A6 | [A6-score-formula.md](improvements/A6-score-formula.md)          | Score: ADX/DMI как реальные критерии, max=8 (опционально)           |
 
@@ -53,7 +52,6 @@
 
 | Приоритет   | Задачи             | Почему                                  |
 |-------------|--------------------|-----------------------------------------|
-| 🔴 critical | A4                 | Без этого cooldown не работает в Docker |
-| 🟠 high     | A1, T1, T2         | Эксплуатационная гибкость + регрессии   |
-| 🟡 medium   | A2, A3, A5         | Качество сигналов и UX                  |
+| 🟠 high     | T1, T2         | Эксплуатационная гибкость + регрессии   |
+| 🟡 medium   | A3, A5         | Качество сигналов и UX                  |
 | 🟢 low      | A6, T3, F1–F4      | Новая функциональность, не баги         |
