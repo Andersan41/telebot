@@ -238,6 +238,22 @@ async def _do_full_analysis(symbol: str) -> str:
             return f"❌ Не удалось получить данные для <b>{html.escape(symbol)}</b>\n\nПроверьте тикер (пример: BTC/USDT)"
         result = signal_engine.evaluate(ind)
 
+        # --- 15M-подтверждение (зеркало логики scheduler.scanner.scan_symbol) ---
+        confirm_tf = cfg.confirm_timeframe
+        confirm_status = "—"
+        if result.is_actionable and confirm_tf and confirm_tf != primary_tf:
+            ind_confirm = await _get_indicators(symbol, confirm_tf)
+            if ind_confirm is None:
+                confirm_status = f"⚠️ нет данных {confirm_tf}"
+            else:
+                confirm_result = signal_engine.evaluate(ind_confirm)
+                if confirm_result.signal == result.signal:
+                    confirm_status = f"✅ {confirm_tf} подтверждает"
+                else:
+                    confirm_status = (
+                        f"❌ {confirm_tf}: {confirm_result.signal.value}"
+                    )
+
         lines = []
 
         emoji = "🟢" if result.signal == SignalType.BUY else ("🔴" if result.signal == SignalType.SELL else "⚪")
@@ -261,6 +277,8 @@ async def _do_full_analysis(symbol: str) -> str:
             lines.append(f"  ✅ Сильный тренд")
         else:
             lines.append(f"  ❌ Флэт (ADX &lt; {config.trading.adx_min})")
+
+        lines.append(f"\n🔁 <b>Подтверждение {confirm_tf}:</b> {confirm_status}")
 
         lines.append(f"\n🌡 ATR: <b>{_fmt_price(ind.atr)}</b>")
 

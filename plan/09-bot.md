@@ -33,6 +33,8 @@
 - **Анализ своего токена**: пользователь может ввести текстом тикер (BTC, BTCUSDT, ETH/USDT) → нормализуется в формат XXX/USDT → полный анализ
 - **Callback'и**: `m:analyze`, `m:pick_token`, `m:scan_all`, `m:settings`, `analyze:SYMBOL`, `token:SYMBOL`, `m:custom_token`, `m:back`
 - Полный анализ включает: EMA alignment, RSI, MACD, ADX, ATR, Supertrend, Volume, SL/TP, R/R, список причин, TradingView ссылка
+- `_do_full_analysis` дополнительно делает confirmation lookup на `confirm_timeframe` (по умолчанию 15M) и выводит
+  статус подтверждения, не блокируя показ аналитики (см. A5)
 - `_do_scan_all()`: для каждого символа — RSI + ADX + сигнал (BUY/SELL/NEUTRAL)
 
 **При каких условиях:**
