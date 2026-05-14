@@ -303,3 +303,154 @@ class TestEntryPrice:
             mock_db.set_cooldown = AsyncMock()
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
             assert result is None
+
+
+class TestMinVerdictGate:
+    @pytest.mark.asyncio
+    async def test_scan_blocks_on_below_min_verdict(self, mock_signal_result, mock_cooldown, monkeypatch):
+        from scheduler import scanner as sc
+        from context.scorer import ContextVerdict
+
+        fake_result = MagicMock(is_actionable=True, signal=MagicMock(value="BUY"),
+                                reasons=[], close=100.0)
+        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind: fake_result)
+        monkeypatch.setattr(sc, "_get_indicators",
+                            AsyncMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            sc.context_scorer, "score",
+            lambda direction, snap: ContextVerdict(
+                verdict="CONFLICTED", confidence=0.05, score=0.0,
+            ),
+        )
+        monkeypatch.setattr(
+            sc.context_engine, "get_snapshot",
+            AsyncMock(return_value=MagicMock()),
+        )
+        monkeypatch.setattr(sc.config, "context_min_verdict", "WEAK")
+        monkeypatch.setattr(sc.config, "context_enabled", True)
+
+        cb = AsyncMock()
+        result = await sc.scan_symbol("BTC/USDT", "1h", cb)
+        assert result is None
+        cb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_scan_passes_when_verdict_meets_min(self, mock_signal_result, mock_cooldown, monkeypatch):
+        from scheduler import scanner as sc
+        from context.scorer import ContextVerdict
+        from strategy.signal_engine import SignalResult, SignalType
+
+        real_result = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
+            score=6, reasons=["test"],
+        )
+        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind: real_result)
+        monkeypatch.setattr(sc, "_get_indicators",
+                            AsyncMock(return_value=MagicMock()))
+        monkeypatch.setattr(
+            sc.context_scorer, "score",
+            lambda direction, snap: ContextVerdict(
+                verdict="WEAK", confidence=0.15, score=0.15,
+            ),
+        )
+        monkeypatch.setattr(
+            sc.context_engine, "get_snapshot",
+            AsyncMock(return_value=MagicMock()),
+        )
+        monkeypatch.setattr(sc.config, "context_min_verdict", "WEAK")
+        monkeypatch.setattr(sc.config, "context_enabled", True)
+
+        cb = AsyncMock()
+        result = await sc.scan_symbol("BTC/USDT", "1h", cb)
+        assert result is not None
+        cb.assert_awaited()
+
+
+class TestConfirmedFlag:
+    @pytest.mark.asyncio
+    async def test_confirmed_false_when_primary_eq_confirm(self, mock_signal_result, mock_cooldown, monkeypatch):
+        from scheduler import scanner as sc
+        from strategy.signal_engine import SignalResult, SignalType
+
+        real_result = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
+            score=6, reasons=["test"],
+        )
+        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind: real_result)
+        monkeypatch.setattr(sc, "_get_indicators",
+                            AsyncMock(return_value=MagicMock()))
+        monkeypatch.setattr(sc.config.trading, "confirm_timeframe", "1h")
+        mock_save = AsyncMock(return_value=MagicMock(id=1))
+        monkeypatch.setattr(sc.db, "save_signal", mock_save)
+        monkeypatch.setattr(sc.config, "context_enabled", False)
+
+        await sc.scan_symbol("BTC/USDT", "1h", AsyncMock())
+        mock_save.assert_awaited_once()
+        call_kwargs = mock_save.call_args.kwargs
+        assert call_kwargs["confirmed"] is False
+
+    @pytest.mark.asyncio
+    async def test_confirmed_false_when_no_confirm_data(self, mock_signal_result, mock_cooldown, monkeypatch):
+        from scheduler import scanner as sc
+        from strategy.signal_engine import SignalResult, SignalType
+
+        real_result = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
+            score=6, reasons=["test"],
+        )
+        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind: real_result)
+
+        async def fake_get_indicators(symbol, timeframe):
+            if timeframe == "15m":
+                return None
+            return MagicMock()
+
+        monkeypatch.setattr(sc, "_get_indicators", fake_get_indicators)
+        monkeypatch.setattr(sc.config.trading, "confirm_timeframe", "15m")
+        mock_save = AsyncMock(return_value=MagicMock(id=1))
+        monkeypatch.setattr(sc.db, "save_signal", mock_save)
+        monkeypatch.setattr(sc.config, "context_enabled", False)
+
+        await sc.scan_symbol("BTC/USDT", "1h", AsyncMock())
+        mock_save.assert_awaited_once()
+        call_kwargs = mock_save.call_args.kwargs
+        assert call_kwargs["confirmed"] is False
+
+    @pytest.mark.asyncio
+    async def test_confirmed_true_when_15m_confirms(self, mock_signal_result, mock_cooldown, monkeypatch):
+        from scheduler import scanner as sc
+        from strategy.signal_engine import SignalResult, SignalType
+
+        main_result = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
+            score=6, reasons=["test"],
+        )
+        confirm_result = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="15m", close=50100.0, sl=49000.0, tp=53500.0,
+            score=6, reasons=["confirm"],
+        )
+        monkeypatch.setattr(sc.signal_engine, "evaluate",
+                            lambda ind: main_result if hasattr(ind, 'timeframe') and getattr(ind, 'timeframe', None) != "15m" else confirm_result)
+
+        call_count = [0]
+        async def fake_get_indicators(symbol, timeframe):
+            call_count[0] += 1
+            if timeframe == "15m":
+                return MagicMock(close=50100.0)
+            return MagicMock()
+
+        monkeypatch.setattr(sc, "_get_indicators", fake_get_indicators)
+        monkeypatch.setattr(sc.config.trading, "confirm_timeframe", "15m")
+        mock_save = AsyncMock(return_value=MagicMock(id=1))
+        monkeypatch.setattr(sc.db, "save_signal", mock_save)
+        monkeypatch.setattr(sc.config, "context_enabled", False)
+
+        await sc.scan_symbol("BTC/USDT", "1h", AsyncMock())
+        mock_save.assert_awaited_once()
+        call_kwargs = mock_save.call_args.kwargs
+        assert call_kwargs["confirmed"] is True

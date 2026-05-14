@@ -42,7 +42,7 @@
 | A5 | [improvements/A5-confirm-in-menu.md](improvements/A5-confirm-in-menu.md)           | 🟡 medium   |
 | A6 | [improvements/A6-score-formula.md](improvements/A6-score-formula.md)               | 🟢 low      |
 | T1 | [improvements/T1-github-actions.md](improvements/T1-github-actions.md)             | ✅ 🟠 high     |
-| T2 | [improvements/T2-tests.md](improvements/T2-tests.md)                               | 🟠 high     |
+| T2 | [improvements/T2-tests.md](improvements/T2-tests.md)                               | ✅ 🟠 high     |
 | T3 | [improvements/T3-ops-tickets.md](improvements/T3-ops-tickets.md)                   | 🟢 low      |
 | F1 | [improvements/F1-signal-outcome.md](improvements/F1-signal-outcome.md)             | 🟢 low      |
 | F2 | [improvements/F2-futures-ohlcv.md](improvements/F2-futures-ohlcv.md)               | 🟢 low      |

@@ -423,6 +423,44 @@ class TestContextFetcher:
         assert result["open_interest"] == 110.0
         assert abs(result["open_interest_delta"] - 10.0) < 1e-6
 
+    @pytest.mark.asyncio
+    async def test_oi_delta_between_calls(self, fetcher, aioresponses):
+        hist_url = (
+            "https://fapi.binance.com/futures/data/openInterestHist"
+            "?symbol=BTCUSDT&period=5m&limit=2"
+        )
+        oi_url = "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
+        aioresponses.get(hist_url, payload=[
+            {"sumOpenInterest": "100.0", "timestamp": 1},
+            {"sumOpenInterest": "100.0", "timestamp": 2},
+        ])
+        aioresponses.get(oi_url, payload={"openInterest": "100.0", "time": 1000})
+        aioresponses.get(oi_url, payload={"openInterest": "120.0", "time": 2000})
+
+        first = await fetcher.fetch_open_interest("BTC/USDT")
+        second = await fetcher.fetch_open_interest("BTC/USDT")
+        await fetcher.close()
+
+        assert first["open_interest"] == 100.0
+        assert second["open_interest"] == 120.0
+        assert abs(second["open_interest_delta"] - 20.0) < 1e-6
+
+    @pytest.mark.asyncio
+    async def test_funding_rate_parses_negative(self, fetcher, aioresponses):
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
+        aioresponses.get(url, payload={"lastFundingRate": "-0.0042"})
+        result = await fetcher.fetch_funding_rate("BTC/USDT")
+        await fetcher.close()
+        assert result == pytest.approx(-0.0042)
+
+    @pytest.mark.asyncio
+    async def test_funding_rate_parses_positive(self, fetcher, aioresponses):
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
+        aioresponses.get(url, payload={"lastFundingRate": "0.0001"})
+        result = await fetcher.fetch_funding_rate("BTC/USDT")
+        await fetcher.close()
+        assert result == pytest.approx(0.0001)
+
 
 # === Тесты ContextEngine ===
 
@@ -502,6 +540,37 @@ class TestContextEngine:
         assert snap is not None
         # price_change_24h should be None since no coingecko fetch was made
         assert snap.price_change_24h is None
+
+    @pytest.mark.asyncio
+    async def test_news_sentiment_aggregation(self, engine, monkeypatch):
+        async def _async_none(*args, **kwargs):
+            return None
+
+        async def fake_cp(symbol):
+            return {"score": -0.5, "count": 10, "positive": 2, "negative": 7}
+
+        async def fake_rss(symbol):
+            return {"score": 0.3, "count": 5, "positive": 4, "negative": 1}
+
+        monkeypatch.setattr(
+            "context.analyzer.context_fetcher.fetch_cryptopanic", fake_cp
+        )
+        monkeypatch.setattr(
+            "context.analyzer.context_fetcher.fetch_rss_news", fake_rss
+        )
+        for fn in ["fetch_fear_greed", "fetch_coingecko", "fetch_trending",
+                   "fetch_funding_rate", "fetch_open_interest",
+                   "fetch_long_short_ratio"]:
+            monkeypatch.setattr(
+                f"context.analyzer.context_fetcher.{fn}",
+                _async_none,
+            )
+        # Enable CryptoPanic by setting a non-empty API key
+        monkeypatch.setattr("context.analyzer.config.cryptopanic_api_key", "test_key")
+
+        snap = await engine.get_snapshot("BTC/USDT")
+        # weighted: (-0.5*10 + 0.3*5) / 15 = -0.2333...
+        assert abs(snap.news_sentiment_score - (-7 / 30)) < 1e-3
 
 
 # === Тесты format_context_block ===
