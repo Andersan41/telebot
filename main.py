@@ -74,12 +74,17 @@ async def main():
         logger.info("Shutting down...")
         scheduler.stop()
         await exchange_client.close()
-        if app.updater.running:
-            await app.updater.stop()
-        await app.stop()
+        if app.running:
+            await app.stop()
         await app.shutdown()
         logger.info("Bot stopped.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    except Exception as e:
+        logger.error(f"Fatal: {e}", exc_info=True)
+        sys.exit(1)
