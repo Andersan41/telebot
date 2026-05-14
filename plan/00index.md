@@ -37,7 +37,7 @@
 |----|------------------------------------------------------------------------------------|-------------|
 | A1 | [improvements/A1-indicators-env.md](improvements/A1-indicators-env.md)             | ✅ 🟠 high     |
 | A2 | [improvements/A2-oi-warmup.md](improvements/A2-oi-warmup.md)                       | ✅ 🟡 medium   |
-| A3 | [improvements/A3-oi-scoring-direction.md](improvements/A3-oi-scoring-direction.md) | 🟡 medium   |
+| A3 | [improvements/A3-oi-scoring-direction.md](improvements/A3-oi-scoring-direction.md) | ✅ 🟡 medium   |
 | A4 | [improvements/A4-cooldown-db.md](improvements/A4-cooldown-db.md)                   | ✅ 🔴 critical |
 | A5 | [improvements/A5-confirm-in-menu.md](improvements/A5-confirm-in-menu.md)           | 🟡 medium   |
 | A6 | [improvements/A6-score-formula.md](improvements/A6-score-formula.md)               | 🟢 low      |

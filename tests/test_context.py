@@ -213,6 +213,12 @@ class TestContextScorer:
         sell_verdict = scorer.score("SELL", snap_buy_favorable)
         assert buy_verdict.score > sell_verdict.score
 
+    def test_oi_delta_sell_direction(self, scorer):
+        snap = make_snapshot(open_interest_delta=5.0)
+        verdict = scorer.score("SELL", snap)
+        assert verdict.score > 0
+        assert any("OI" in s for s in verdict.supporting)
+
     def test_supporting_and_opposing_populated(self, scorer):
         snap = make_snapshot(
             fear_greed_value=20,

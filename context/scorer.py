@@ -211,14 +211,17 @@ class ContextScorer:
                 return 0.7
 
     def _score_oi(self, delta: float, direction: str) -> float:
-        if delta > 2:
+        # delta — % изменение OI с прошлого скана (см. context/fetcher.py).
+        # Рост OI = деньги входят в позицию: подтверждение тренда в любую сторону.
+        # direction параметр сохраняется в сигнатуре, чтобы все _score_* выглядели одинаково.
+        _ = direction  # явно подавляем варн «unused arg» для линтера
+        if delta > 2.0:
             return 0.5
-        elif delta > 0:
+        if delta > 0.0:
             return 0.2
-        elif delta > -2:
+        if delta > -2.0:
             return -0.1
-        else:
-            return -0.2
+        return -0.2
 
     def _score_news(self, score: float, direction: str) -> float:
         return score
