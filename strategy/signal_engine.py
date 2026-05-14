@@ -54,7 +54,7 @@ class SignalResult:
             lines.append(f"\n📋 <b>Причины:</b>")
             for r in self.reasons:
                 lines.append(f"  • {html.escape(r)}")
-        lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(self.score, 5)} ({self.score}/6)")
+        lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(self.score, 5)} ({self.score}/8)")
         return "\n".join(lines)
 
 
@@ -122,19 +122,27 @@ class SignalEngine:
             else:
                 sell_reasons.append(f"MACD гистограмма отрицательная ({ind.macd_hist:.4f})")
 
-        # --- ADX (общий для обоих) ---
-        adx_reason = f"ADX={ind.adx:.1f} (сильный тренд)"
-        dmi_reason = (
-            f"DMI+={ind.dmi_plus:.1f} > DMI-={ind.dmi_minus:.1f}"
-            if ind.dmi_plus > ind.dmi_minus
-            else f"DMI-={ind.dmi_minus:.1f} > DMI+={ind.dmi_plus:.1f}"
-        )
-
         # --- Объём ---
         if ind.volume_above_avg:
             vol_reason = f"Объём выше среднего ({ind.volume / ind.volume_sma:.1f}x)"
             buy_reasons.append(vol_reason)
             sell_reasons.append(vol_reason)
+
+        # --- ADX strong trend (≥ 25 — реальный «сильный» тренд, не просто > adx_min) ---
+        if ind.adx >= 25.0:
+            adx_strong_reason = f"ADX={ind.adx:.1f} (strong trend ≥ 25)"
+            buy_reasons.append(adx_strong_reason)
+            sell_reasons.append(adx_strong_reason)
+
+        # --- DMI direction match (ассиметричный — даёт +1 только подходящей стороне) ---
+        if ind.dmi_plus > ind.dmi_minus:
+            buy_reasons.append(
+                f"DMI+ > DMI- (+{ind.dmi_plus - ind.dmi_minus:.1f})"
+            )
+        else:
+            sell_reasons.append(
+                f"DMI- > DMI+ (+{ind.dmi_minus - ind.dmi_plus:.1f})"
+            )
 
         # === Принятие решения ===
         buy_score = len(buy_reasons)
@@ -152,7 +160,7 @@ class SignalEngine:
                 close=ind.close,
                 sl=sl,
                 tp=tp,
-                reasons=buy_reasons + [adx_reason, dmi_reason],
+                reasons=buy_reasons,
                 score=buy_score,
             )
 
@@ -165,7 +173,7 @@ class SignalEngine:
                 close=ind.close,
                 sl=sl,
                 tp=tp,
-                reasons=sell_reasons + [adx_reason, dmi_reason],
+                reasons=sell_reasons,
                 score=sell_score,
             )
 

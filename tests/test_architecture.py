@@ -372,7 +372,7 @@ class TestSignalResultFormatting:
         assert "BTC/USDT" in msg
         assert "49000" in msg
         assert "53000" in msg
-        assert "5/7" in msg
+        assert "5/8" in msg
 
     def test_sell_format_message(self):
         from strategy.signal_engine import SignalResult, SignalType

@@ -13,5 +13,5 @@
 - **`handle_menu_message`** (`bot/menu.py:181`) на втором падении отправляет
   ответ **без `parse_mode`** — HTML-теги при этом видны как сырой текст.
 - **Лимиты**: сообщения не должны превышать ~4096 символов (Telegram).
-- **`(score/6)`** — итоговый максимум `buy_score` / `sell_score`. См.
+- **`(score/8)`** — итоговый максимум `buy_score` / `sell_score`. См.
   [06-signal-engine.md](06-signal-engine.md).

@@ -304,7 +304,7 @@ async def _do_full_analysis(symbol: str) -> str:
                 lines.append(f"  • {html.escape(r)}")
 
         if result.score > 0:
-            lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(result.score, 5)} ({result.score}/6)")
+            lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(result.score, 5)} ({result.score}/8)")
 
         chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{ind.symbol.replace('/', '')}"
         lines.append(f"\n📈 <a href='{chart_url}'>Открыть график</a>")
@@ -369,7 +369,7 @@ def _format_indicator_view(ind: IndicatorValues, result: SignalResult) -> str:
             lines.append(f"  • {html.escape(r)}")
 
     if result.score > 0:
-        lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(result.score, 5)} ({result.score}/6)")
+        lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(result.score, 5)} ({result.score}/8)")
 
     return "\n".join(lines)
 
