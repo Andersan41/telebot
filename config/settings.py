@@ -3,7 +3,7 @@ config/settings.py — Централизованная конфигурация
 """
 import os
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,6 +24,7 @@ class ExchangeConfig:
     api_key: str = os.getenv("BINANCE_API_KEY", "")
     api_secret: str = os.getenv("BINANCE_API_SECRET", "")
     testnet: bool = os.getenv("USE_TESTNET", "false").lower() == "true"
+    market_type: str = os.getenv("MARKET_TYPE", "spot")  # spot | future
 
 
 @dataclass
@@ -95,3 +96,29 @@ class AppConfig:
 
 # Singleton
 config = AppConfig()
+
+# Runtime symbols cache — динамически обновляется через /addsymbol / /removesymbol
+_runtime_symbols_cache: Optional[list[str]] = None
+
+
+async def refresh_runtime_symbols() -> None:
+    """Перечитать список символов из БД. Зови при старте и после /addsymbol / /removesymbol.
+
+    dynamic_symbols из БД — это ДОБАВЛЕННЫЕ символы (через /addsymbol).
+    Итоговый список = env SYMBOLS + dynamic.
+    """
+    global _runtime_symbols_cache
+    from storage.database import db  # lazy чтобы избежать циклов импорта
+    dynamic = await db.get_dynamic_symbols()
+    if dynamic:
+        merged = list(config.trading.symbols)
+        for s in dynamic:
+            if s not in merged:
+                merged.append(s)
+        _runtime_symbols_cache = merged
+    else:
+        _runtime_symbols_cache = config.trading.symbols
+
+
+def get_active_symbols() -> list[str]:
+    return _runtime_symbols_cache if _runtime_symbols_cache is not None else config.trading.symbols

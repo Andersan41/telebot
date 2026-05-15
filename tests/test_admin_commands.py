@@ -359,3 +359,30 @@ class TestScannerDisabledFilter:
         for symbol, _ in scanned:
             assert symbol != "ETH/USDT", "ETH/USDT should have been filtered out"
         assert any(s == "BTC/USDT" for s, _ in scanned), "BTC/USDT should be scanned"
+
+    @pytest.mark.asyncio
+    async def test_scan_all_when_no_disabled(self, mock_db_obj, monkeypatch, sample_ohlcv):
+        """Когда disabled_symbols пустой — сканируются все символы."""
+        import config.settings as settings
+        monkeypatch.setenv("SYMBOLS", "BTC/USDT,ETH/USDT,SOL/USDT")
+        import importlib
+        importlib.reload(settings)
+
+        # disabled_symbols не установлен
+        disabled = await mock_db_obj.get_disabled_symbols()
+        assert disabled is None
+
+        from scheduler.scanner import run_scan_cycle
+
+        scanned = []
+        async def mock_scan(symbol, tf, cb):
+            scanned.append((symbol, tf))
+            return None
+
+        with patch("scheduler.scanner.scan_symbol", mock_scan):
+            await run_scan_cycle(lambda *a, **k: None)
+
+        symbols_scanned = set(s for s, _ in scanned)
+        assert "BTC/USDT" in symbols_scanned
+        assert "ETH/USDT" in symbols_scanned
+        assert "SOL/USDT" in symbols_scanned

@@ -37,10 +37,13 @@ async def addsymbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if symbol in current:
         await update.message.reply_text(f"\u0423\u0436\u0435 \u0432 \u0441\u043f\u0438\u0441\u043a\u0435: {symbol}")
         return
-    new_list = current + [symbol]
-    await db.set_dynamic_symbols(new_list)
+    dynamic = await db.get_dynamic_symbols() or []
+    if symbol not in dynamic:
+        dynamic.append(symbol)
+        await db.set_dynamic_symbols(dynamic)
     await refresh_runtime_symbols()
-    await update.message.reply_text(f"\u2705 \u0414\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e: {symbol}\n\u0412\u0441\u0435\u0433\u043e: {len(new_list)}")
+    active = get_active_symbols()
+    await update.message.reply_text(f"\u2705 \u0414\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e: {symbol}\n\u0412\u0441\u0435\u0433\u043e: {len(active)}")
 
 
 async def removesymbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -57,10 +60,13 @@ async def removesymbol_command(update: Update, context: ContextTypes.DEFAULT_TYP
     if symbol not in current:
         await update.message.reply_text(f"\u041d\u0435\u0442 \u0432 \u0441\u043f\u0438\u0441\u043a\u0435: {symbol}")
         return
-    new_list = [s for s in current if s != symbol]
-    await db.set_dynamic_symbols(new_list)
+    dynamic = await db.get_dynamic_symbols() or []
+    if symbol in dynamic:
+        dynamic = [s for s in dynamic if s != symbol]
+        await db.set_dynamic_symbols(dynamic)
     await refresh_runtime_symbols()
-    await update.message.reply_text(f"\u2705 \u0423\u0434\u0430\u043b\u0435\u043d\u043e: {symbol}\n\u041e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: {len(new_list)}")
+    active = get_active_symbols()
+    await update.message.reply_text(f"\u2705 \u0423\u0434\u0430\u043b\u0435\u043d\u043e: {symbol}\n\u041e\u0441\u0442\u0430\u043b\u043e\u0441\u044c: {len(active)}")
 
 
 async def listsymbols_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
