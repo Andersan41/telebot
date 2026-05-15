@@ -61,6 +61,10 @@ async def main():
     logger.info(f"  Confirmation TF: {config.trading.confirm_timeframe}")
     logger.info(f"  Channel: {config.telegram.channel_id}")
 
+    # F1: запустить фоновый трекинг outcome'ов
+    from scheduler.outcome_tracker import outcome_tracker_loop
+    asyncio.create_task(outcome_tracker_loop())
+
     try:
         # Запускаем бота в режиме polling
         logger.info("Starting Telegram bot (polling mode)...")

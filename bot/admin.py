@@ -149,6 +149,27 @@ async def enable_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(f"\u25b6\ufe0f {symbol} \u0432\u043a\u043b\u044e\u0447\u0451\u043d.")
 
 
+# ── F1: /stats ───────────────────────────────────────────────────────
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_admin(update, context):
+        return
+    stats = await db.get_outcome_stats()
+    total = stats["closed"] or 1
+    win_rate = stats["wins"] / total * 100
+    text = (
+        f"\U0001f4ca <b>\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430 \u0441\u0438\u0433\u043d\u0430\u043b\u043e\u0432</b>\n\n"
+        f"\u0412\u0441\u0435\u0433\u043e \u0437\u0430\u043a\u0440\u044b\u0442\u044b\u0445: <b>{stats['closed']}</b>\n"
+        f"\u041e\u0442\u043a\u0440\u044b\u0442\u044b\u0445: <b>{stats['open']}</b>\n"
+        f"Win rate: <b>{win_rate:.1f}%</b> ({stats['wins']}/{total})\n"
+        f"\u0421\u0440\u0435\u0434\u043d\u0438\u0439 PnL: <b>{stats['avg_pnl']:.2f}%</b>\n"
+        f"\u041b\u0443\u0447\u0448\u0438\u0439: <b>{stats['best_pnl']:.2f}%</b>\n"
+        f"\u0425\u0443\u0434\u0448\u0438\u0439: <b>{stats['worst_pnl']:.2f}%</b>"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 # ── F4.3: /exportdb ──────────────────────────────────────────────────
 
 

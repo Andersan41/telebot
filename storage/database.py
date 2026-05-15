@@ -56,6 +56,20 @@ class ContextSnapshotModel(Base):
     raw_json = Column(Text, nullable=True)
 
 
+class SignalOutcome(Base):
+    __tablename__ = "signal_outcomes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(
+        Integer, ForeignKey("signals.id"), nullable=False, index=True
+    )
+    status = Column(String(20), nullable=False, default="OPEN")
+    closed_at = Column(DateTime, nullable=True)
+    close_price = Column(Float, nullable=True)
+    pnl_pct = Column(Float, nullable=True)
+    checked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class Database:
     def __init__(self):
         os.makedirs("data", exist_ok=True)
@@ -213,6 +227,63 @@ class Database:
             await session.commit()
             await session.refresh(snap)
             return snap
+
+    async def get_signal(self, signal_id: int) -> Optional[Signal]:
+        """Получить сигнал по ID (нужен outcome_tracker)."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Signal).where(Signal.id == signal_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def create_outcome(self, signal_id: int) -> "SignalOutcome":
+        async with self._session_factory() as session:
+            outcome = SignalOutcome(signal_id=signal_id, status="OPEN")
+            session.add(outcome)
+            await session.commit()
+            await session.refresh(outcome)
+            return outcome
+
+    async def get_open_outcomes(self) -> list["SignalOutcome"]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(SignalOutcome).where(SignalOutcome.status == "OPEN")
+            )
+            return list(result.scalars().all())
+
+    async def close_outcome(
+        self, outcome_id: int, status: str, close_price: float, pnl_pct: float
+    ) -> None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(SignalOutcome).where(SignalOutcome.id == outcome_id)
+            )
+            row = result.scalar_one()
+            row.status = status
+            row.close_price = close_price
+            row.pnl_pct = pnl_pct
+            row.closed_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    async def get_outcome_stats(self) -> dict:
+        async with self._session_factory() as session:
+            closed = await session.execute(
+                select(SignalOutcome).where(SignalOutcome.status != "OPEN")
+            )
+            closed_rows = list(closed.scalars().all())
+            opened = await session.execute(
+                select(SignalOutcome).where(SignalOutcome.status == "OPEN")
+            )
+            opened_rows = list(opened.scalars().all())
+        pnls = [r.pnl_pct for r in closed_rows if r.pnl_pct is not None]
+        return {
+            "closed": len(closed_rows),
+            "open": len(opened_rows),
+            "wins": sum(1 for r in closed_rows if r.status == "HIT_TP"),
+            "avg_pnl": sum(pnls) / len(pnls) if pnls else 0.0,
+            "best_pnl": max(pnls) if pnls else 0.0,
+            "worst_pnl": min(pnls) if pnls else 0.0,
+        }
 
 
 db = Database()

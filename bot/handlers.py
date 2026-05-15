@@ -16,6 +16,7 @@ from bot.menu import (
 from bot.admin import (
     addsymbol_command, removesymbol_command, listsymbols_command,
     setparam_command, disable_command, enable_command, exportdb_command,
+    stats_command,
 )
 
 
@@ -156,6 +157,8 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("disable", disable_command))
     app.add_handler(CommandHandler("enable", enable_command))
     app.add_handler(CommandHandler("exportdb", exportdb_command))
+    # F1: /stats
+    app.add_handler(CommandHandler("stats", stats_command))
     # Menu navigation (callbacks + text input for custom token)
     app.add_handler(CallbackQueryHandler(handle_menu_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_message))

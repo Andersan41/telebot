@@ -96,6 +96,7 @@ class TestScanSymbol:
         ):
             mock_sig.evaluate.return_value = mock_signal_result
             mock_db.save_signal = AsyncMock()
+            mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
@@ -165,6 +166,7 @@ class TestScanSymbol:
         ):
             mock_sig.evaluate.return_value = mock_signal_result
             db.save_signal = AsyncMock()
+            db.create_outcome = AsyncMock()
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
             mock_ctx_scorer.score.return_value = ContextVerdict(
                 verdict="WEAK", confidence=0.15, score=0.15,
@@ -211,6 +213,7 @@ class TestEntryPrice:
         ):
             mock_sig.evaluate.return_value = mock_signal_result
             mock_db.save_signal = AsyncMock()
+            mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
@@ -244,6 +247,7 @@ class TestEntryPrice:
             mock_sig.evaluate.side_effect = [mock_signal_result, confirm_sig]
             mock_ind_engine.calculate.return_value = confirm_ind
             mock_db.save_signal = AsyncMock()
+            mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
@@ -273,6 +277,7 @@ class TestEntryPrice:
         ):
             mock_sig.evaluate.return_value = mock_signal_result
             mock_db.save_signal = AsyncMock()
+            mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
@@ -361,6 +366,8 @@ class TestMinVerdictGate:
         )
         monkeypatch.setattr(sc.config, "context_min_verdict", "WEAK")
         monkeypatch.setattr(sc.config, "context_enabled", True)
+        monkeypatch.setattr(sc.db, "save_signal", AsyncMock())
+        monkeypatch.setattr(sc.db, "create_outcome", AsyncMock())
 
         cb = AsyncMock()
         result = await sc.scan_symbol("BTC/USDT", "1h", cb)

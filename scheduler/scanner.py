@@ -162,6 +162,9 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             confirmed=confirmed_on_lower_tf,
         )
 
+        # F1: создаём outcome для трекинга SL/TP
+        await db.create_outcome(saved_signal.id)
+
         # Сохраняем связь сигнала с контекстом
         if context_verdict is not None:
             try:
