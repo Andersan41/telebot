@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from loguru import logger
-from config.settings import config
+from config.settings import config, get_active_symbols
 from data.exchange_client import exchange_client
 from indicators.engine import indicator_engine, IndicatorValues
 from strategy.signal_engine import signal_engine, SignalResult, SignalType
@@ -198,7 +198,9 @@ async def run_scan_cycle(notify_callback, timeframes: Optional[list[str]] = None
     Cron-джоб может передавать конкретный список, чтобы не дублировать
     сканирование других ТФ.
     """
-    symbols = config.trading.symbols
+    symbols = get_active_symbols()
+    disabled = await db.get_disabled_symbols() or []
+    symbols = [s for s in symbols if s not in disabled]
     tfs = timeframes if timeframes is not None else config.trading.primary_timeframes
 
     logger.info(f"Starting scan: {len(symbols)} symbols × {tfs}")

@@ -8,10 +8,14 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 from loguru import logger
-from config.settings import config
+from config.settings import config, get_active_symbols
 from storage.database import db
 from bot.menu import (
     send_main_menu, handle_menu_callback, handle_menu_message
+)
+from bot.admin import (
+    addsymbol_command, removesymbol_command, listsymbols_command,
+    setparam_command, disable_command, enable_command, exportdb_command,
 )
 
 
@@ -53,7 +57,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbols = config.trading.symbols
+    symbols = get_active_symbols()
     timeframes = config.trading.primary_timeframes
     confirm_tf = config.trading.confirm_timeframe
     text = (
@@ -90,7 +94,7 @@ async def cmd_lastsignal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbols = config.trading.symbols
+    symbols = get_active_symbols()
     lines = ["📊 <b>Отслеживаемые символы:</b>\n"]
     for s in symbols:
         lines.append(f"• {s}")
@@ -143,6 +147,15 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("symbols", cmd_symbols))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("settings", cmd_settings))
+    # Admin symbol management
+    app.add_handler(CommandHandler("addsymbol", addsymbol_command))
+    app.add_handler(CommandHandler("removesymbol", removesymbol_command))
+    app.add_handler(CommandHandler("listsymbols", listsymbols_command))
+    # F4 admin commands
+    app.add_handler(CommandHandler("setparam", setparam_command))
+    app.add_handler(CommandHandler("disable", disable_command))
+    app.add_handler(CommandHandler("enable", enable_command))
+    app.add_handler(CommandHandler("exportdb", exportdb_command))
     # Menu navigation (callbacks + text input for custom token)
     app.add_handler(CallbackQueryHandler(handle_menu_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_message))

@@ -190,6 +190,7 @@ class TestScanSymbol:
             mock_db.save_signal = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
+            mock_db.get_disabled_symbols = AsyncMock(return_value=[])
             await run_scan_cycle(AsyncMock())
 
 

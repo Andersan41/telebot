@@ -161,6 +161,26 @@ class Database:
         key = f"cooldown:{symbol}:{timeframe}"
         await self.set_setting(key, ts.isoformat())
 
+    async def get_dynamic_symbols(self) -> Optional[list[str]]:
+        """None — динамический список не задан, использовать env SYMBOLS."""
+        val = await self.get_setting("dynamic_symbols", "")
+        if not val:
+            return None
+        return [s.strip() for s in val.split(",") if s.strip()]
+
+    async def set_dynamic_symbols(self, symbols: list[str]) -> None:
+        await self.set_setting("dynamic_symbols", ",".join(symbols))
+
+    async def get_disabled_symbols(self) -> Optional[list[str]]:
+        """None — список отключённых символов не задан."""
+        val = await self.get_setting("disabled_symbols", "")
+        if not val:
+            return None
+        return [s.strip() for s in val.split(",") if s.strip()]
+
+    async def set_disabled_symbols(self, symbols: list[str]) -> None:
+        await self.set_setting("disabled_symbols", ",".join(symbols))
+
     async def save_context_snapshot(
         self,
         symbol: str,
