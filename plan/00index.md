@@ -50,7 +50,7 @@
 | T3 | [improvements/T3-ops-tickets.md](improvements/T3-ops-tickets.md)                   | 🟢 low      |
 | F1 | [improvements/F1-signal-outcome.md](improvements/F1-signal-outcome.md)             | 🟢 low      |
 | F2 | [improvements/F2-futures-ohlcv.md](improvements/F2-futures-ohlcv.md)               | ✅ 🟢 low      |
-| F3 | [improvements/F3-dynamic-symbols.md](improvements/F3-dynamic-symbols.md)           | 🟢 low      |
+| F3 | [improvements/F3-dynamic-symbols.md](improvements/F3-dynamic-symbols.md)           | ✅ 🟢 low      |
 | F4 | [improvements/F4-admin-commands.md](improvements/F4-admin-commands.md)             | ✅ 🟢 low      |
 
 ## Сопутствующие документы вне `plan/`
