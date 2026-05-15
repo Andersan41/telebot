@@ -42,10 +42,14 @@
 | A5 | [improvements/A5-confirm-in-menu.md](improvements/A5-confirm-in-menu.md)           | ✅ 🟡 medium   |
 | A6 | [improvements/A6-score-formula.md](improvements/A6-score-formula.md)               | ✅ 🟢 low      |
 | T1 | [improvements/T1-github-actions.md](improvements/T1-github-actions.md)             | ✅ 🟠 high     |
-| T2 | [improvements/T2-tests.md](improvements/T2-tests.md)                               | ✅ 🟠 high     |
+| T2.1 | [improvements/T2-oi-delta.md](improvements/T2-oi-delta.md)                       | ✅ 🟠 high     |
+| T2.2 | [improvements/T2-news-aggregation.md](improvements/T2-news-aggregation.md)       | ✅ 🟠 high     |
+| T2.3 | [improvements/T2-min-verdict-gate.md](improvements/T2-min-verdict-gate.md)       | ✅ 🟠 high     |
+| T2.4 | [improvements/T2-funding-rate.md](improvements/T2-funding-rate.md)               | ✅ 🟠 high     |
+| T2.5 | [improvements/T2-confirmed-flag.md](improvements/T2-confirmed-flag.md)           | ✅ 🟠 high     |
 | T3 | [improvements/T3-ops-tickets.md](improvements/T3-ops-tickets.md)                   | 🟢 low      |
 | F1 | [improvements/F1-signal-outcome.md](improvements/F1-signal-outcome.md)             | 🟢 low      |
-| F2 | [improvements/F2-futures-ohlcv.md](improvements/F2-futures-ohlcv.md)               | 🟢 low      |
+| F2 | [improvements/F2-futures-ohlcv.md](improvements/F2-futures-ohlcv.md)               | ✅ 🟢 low      |
 | F3 | [improvements/F3-dynamic-symbols.md](improvements/F3-dynamic-symbols.md)           | 🟢 low      |
 | F4 | [improvements/F4-admin-commands.md](improvements/F4-admin-commands.md)             | 🟢 low      |
 

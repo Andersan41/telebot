@@ -34,7 +34,11 @@
 | #  | Файл                                                             | Кратко                                                              |
 |----|------------------------------------------------------------------|---------------------------------------------------------------------|
 | T1 | [T1-github-actions.md](improvements/T1-github-actions.md)        | CI на GitHub Actions                                                |
-| T2 | [T2-tests.md](improvements/T2-tests.md)                          | Тесты на свежие правки (OI, news, MIN_VERDICT, funding, confirmed)  |
+| T2.1 | [T2-oi-delta.md](improvements/T2-oi-delta.md)                  | T2 подзадача: OI delta между вызовами                               |
+| T2.2 | [T2-news-aggregation.md](improvements/T2-news-aggregation.md)  | T2 подзадача: взвешенное усреднение CryptoPanic+RSS                 |
+| T2.3 | [T2-min-verdict-gate.md](improvements/T2-min-verdict-gate.md)  | T2 подзадача: MIN_VERDICT ранговый гейт                             |
+| T2.4 | [T2-funding-rate.md](improvements/T2-funding-rate.md)          | T2 подзадача: funding rate парсинг отрицательного значения           |
+| T2.5 | [T2-confirmed-flag.md](improvements/T2-confirmed-flag.md)      | T2 подзадача: Signal.confirmed флаг (3 сценария)                    |
 | T3 | [T3-ops-tickets.md](improvements/T3-ops-tickets.md)              | Mini-тикеты: CI/CD, error sink, rate limiting, Prometheus           |
 
 ### Функциональность
@@ -53,4 +57,4 @@
 | Приоритет   | Задачи             | Почему                                  |
 |-------------|--------------------|-----------------------------------------|
 | 🟠 high     | T1             | CI для регрессий   |
-| 🟢 low      | T3, F1–F4      | Новая функциональность, не баги         |
+| 🟢 low      | T3, F1, F3–F4  | Новая функциональность, не баги         |
