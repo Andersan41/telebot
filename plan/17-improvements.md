@@ -46,6 +46,9 @@
 | #  | Файл                                                             | Кратко                                                              |
 |----|------------------------------------------------------------------|---------------------------------------------------------------------|
 | F1 | [F1-signal-outcome.md](improvements/F1-signal-outcome.md)        | SL/PnL трекинг (`SignalOutcome`, `/stats`)                          |
+| F1.1 | [F1.1-db-model.md](improvements/F1.1-db-model.md)              | F1 подзадача: DB модель + CRUD                                    |
+| F1.2 | [F1.2-outcome-tracker.md](improvements/F1.2-outcome-tracker.md) | F1 подзадача: фоновый loop TP/SL                                  |
+| F1.3 | [F1.3-stats-command.md](improvements/F1.3-stats-command.md)     | F1 подзадача: /stats команда + signal→outcome связь               |
 | F2 | [F2-futures-ohlcv.md](improvements/F2-futures-ohlcv.md)          | Поддержка futures для OHLCV (`MARKET_TYPE`)                         |
 | F3 | [F3-dynamic-symbols.md](improvements/F3-dynamic-symbols.md)      | Динамическое управление символами (`/addsymbol`, `/removesymbol`)   |
 | F4 | [F4-admin-commands.md](improvements/F4-admin-commands.md)        | Admin-команды: `/setparam`, `/disable`/`/enable`, `/exportdb`       |

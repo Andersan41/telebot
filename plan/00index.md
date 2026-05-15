@@ -49,6 +49,9 @@
 | T2.5 | [improvements/T2-confirmed-flag.md](improvements/T2-confirmed-flag.md)           | ✅ 🟠 high     |
 | T3 | [improvements/T3-ops-tickets.md](improvements/T3-ops-tickets.md)                   | ✅ 🟢 low      |
 | F1 | [improvements/F1-signal-outcome.md](improvements/F1-signal-outcome.md)             | ✅ 🟢 low      |
+| F1.1 | [improvements/F1.1-db-model.md](improvements/F1.1-db-model.md)                   | ✅ 🟠 high     |
+| F1.2 | [improvements/F1.2-outcome-tracker.md](improvements/F1.2-outcome-tracker.md)     | ✅ 🟠 high     |
+| F1.3 | [improvements/F1.3-stats-command.md](improvements/F1.3-stats-command.md)         | ✅ 🟢 low      |
 | F2 | [improvements/F2-futures-ohlcv.md](improvements/F2-futures-ohlcv.md)               | ✅ 🟢 low      |
 | F3 | [improvements/F3-dynamic-symbols.md](improvements/F3-dynamic-symbols.md)           | ✅ 🟢 low      |
 | F4 | [improvements/F4-admin-commands.md](improvements/F4-admin-commands.md)             | ✅ 🟢 low      |
