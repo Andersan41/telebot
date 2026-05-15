@@ -33,4 +33,27 @@ def setup_logger():
     return logger
 
 
+def setup_error_sink(bot):
+    """Добавляет Telegram-sink для ERROR+ логов (T3.2).
+
+    Вызывается из main.py после создания Application.
+    """
+    from config.settings import config as app_config
+
+    if not app_config.telegram.error_channel_id:
+        return
+
+    async def telegram_sink(message):
+        try:
+            await bot.send_message(
+                app_config.telegram.error_channel_id,
+                text=f"\u26a0\ufe0f {str(message.record['message'])[:3500]}",
+            )
+        except Exception as e:
+            # Avoid infinite loop if this fails
+            logger.opt(depth=0).error(f"Telegram error sink failed: {e}")
+
+    logger.add(telegram_sink, level="ERROR", enqueue=True, format="{message}")
+
+
 setup_logger()

@@ -16,6 +16,7 @@ class TelegramConfig:
     admin_ids: List[int] = field(default_factory=lambda: [
         int(x.strip()) for x in os.getenv("TELEGRAM_ADMIN_IDS", "").split(",") if x.strip()
     ])
+    error_channel_id: str = os.getenv("TELEGRAM_ERROR_CHANNEL_ID", "")
 
 
 @dataclass

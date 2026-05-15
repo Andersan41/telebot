@@ -42,6 +42,14 @@ class TestExchangeConfig:
         assert len(cfg.api_key) > 0
         assert len(cfg.api_secret) > 0
         assert cfg.testnet is False
+        assert cfg.market_type == "spot"
+
+    def test_market_type_from_env(self, monkeypatch):
+        monkeypatch.setenv("MARKET_TYPE", "future")
+        import config.settings as settings
+        importlib.reload(settings)
+        cfg = settings.ExchangeConfig()
+        assert cfg.market_type == "future"
 
 
 class TestTradingConfig:
@@ -115,6 +123,7 @@ class TestEnvFile:
         "EXCHANGE",
         "BINANCE_API_KEY",
         "BINANCE_API_SECRET",
+        "MARKET_TYPE",
         "SYMBOLS",
         "PRIMARY_TIMEFRAMES",
         "CONFIRM_TIMEFRAME",

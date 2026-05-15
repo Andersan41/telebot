@@ -6,7 +6,7 @@ from typing import Optional
 import ccxt.async_support as ccxt
 import pandas as pd
 from loguru import logger
-from config.settings import config
+from config.settings import config, get_active_symbols
 
 
 class ExchangeClient:
@@ -20,7 +20,7 @@ class ExchangeClient:
             "apiKey": config.exchange.api_key,
             "secret": config.exchange.api_secret,
             "enableRateLimit": True,
-            "options": {"defaultType": "spot"},
+            "options": {"defaultType": config.exchange.market_type},
         })
         logger.info(f"Exchange client created: {config.exchange.name}")
 
@@ -73,7 +73,7 @@ class ExchangeClient:
         """Загружаем данные по всем символам параллельно"""
         tasks = {
             symbol: self.fetch_ohlcv(symbol, timeframe, limit)
-            for symbol in config.trading.symbols
+            for symbol in get_active_symbols()
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         data = {}

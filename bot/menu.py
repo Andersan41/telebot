@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from loguru import logger
 
-from config.settings import config
+from config.settings import config, get_active_symbols
 from indicators.engine import indicator_engine, IndicatorValues
 from strategy.signal_engine import signal_engine, SignalType, SignalResult
 from data.exchange_client import exchange_client
@@ -31,7 +31,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def token_list_keyboard(cb_prefix: str = "token") -> InlineKeyboardMarkup:
-    symbols = config.trading.symbols
+    symbols = get_active_symbols()
     rows = []
     for i in range(0, len(symbols), 3):
         row = [
@@ -57,7 +57,7 @@ def back_keyboard() -> InlineKeyboardMarkup:
 async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False) -> None:
     text = (
         "📡 <b>Trading Signal Bot</b>\n\n"
-        f"Отслеживаю <b>{len(config.trading.symbols)}</b> токенов\n"
+        f"Отслеживаю <b>{len(get_active_symbols())}</b> токенов\n"
         f"Таймфреймы: <b>{', '.join(config.trading.primary_timeframes)}</b>\n"
         f"Подтверждение: <b>{config.trading.confirm_timeframe}</b>\n"
         f"Cooldown: <b>{config.signal_cooldown_minutes} мин</b>"
@@ -75,79 +75,86 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = query.message.chat_id
     message_id = query.message.message_id
 
+    from bot.rate_limit import get_limiter
+    limiter = get_limiter(update.effective_user.id)
+    if not limiter.has_capacity():
+        await query.answer("⏳ Слишком часто, подожди 10 секунд", show_alert=True)
+        return
+
     await query.answer()
 
-    if data == "m:back":
-        await send_main_menu(update, context, edit=True)
-        return
+    async with limiter:
+        if data == "m:back":
+            await send_main_menu(update, context, edit=True)
+            return
 
-    if data == "m:analyze":
-        kb = token_list_keyboard("analyze")
-        await query.edit_message_text(
-            "✏️ Введите тикер токена (например: <b>BTC</b> или <b>BTCUSDT</b>):\n\n"
-            "Или выберите из списка ниже:",
-            reply_markup=kb, parse_mode=ParseMode.HTML
-        )
-        return
-
-    if data == "m:custom_token":
-        WAITING[chat_id] = "analyze"
-        await query.edit_message_text(
-            "✏️ <b>Анализ своего токена</b>\n\n"
-            "Введите тикер токена, например:\n"
-            "  • <code>BTC</code>\n"
-            "  • <code>BTCUSDT</code>\n"
-            "  • <code>ETH/USDT</code>\n\n"
-            "Если не указана пара — добавится /USDT.",
-            reply_markup=back_keyboard(), parse_mode=ParseMode.HTML
-        )
-        return
-
-    if data == "m:pick_token":
-        await query.edit_message_text(
-            "Выберите токен:", reply_markup=token_list_keyboard("token")
-        )
-        return
-
-    if data == "m:scan_all":
-        await query.edit_message_text(
-            f"⏳ Полный анализ {len(config.trading.symbols)} токенов…",
-            reply_markup=None
-        )
-        text = await _do_scan_all()
-        await query.edit_message_text(text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
-        return
-
-    if data == "m:settings":
-        text = _format_settings()
-        await query.edit_message_text(text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
-        return
-
-    if data.startswith("analyze:"):
-        symbol = data.split(":", 1)[1]
-        await query.edit_message_text(
-            f"⏳ Анализирую <b>{symbol}</b>…", parse_mode=ParseMode.HTML
-        )
-        result = await _do_full_analysis(symbol)
-        try:
-            await query.edit_message_text(result, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
-        except Exception as e:
-            logger.error(f"HTML edit error for {symbol}: {e}")
-            logger.error(f"Result text (first 500 chars): {result[:500]}")
+        if data == "m:analyze":
+            kb = token_list_keyboard("analyze")
             await query.edit_message_text(
-                result.replace("<", "&lt;").replace(">", "&gt;"),
+                "✏️ Введите тикер токена (например: <b>BTC</b> или <b>BTCUSDT</b>):\n\n"
+                "Или выберите из списка ниже:",
+                reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+            return
+
+        if data == "m:custom_token":
+            WAITING[chat_id] = "analyze"
+            await query.edit_message_text(
+                "✏️ <b>Анализ своего токена</b>\n\n"
+                "Введите тикер токена, например:\n"
+                "  • <code>BTC</code>\n"
+                "  • <code>BTCUSDT</code>\n"
+                "  • <code>ETH/USDT</code>\n\n"
+                "Если не указана пара — добавится /USDT.",
                 reply_markup=back_keyboard(), parse_mode=ParseMode.HTML
             )
-        return
+            return
 
-    if data.startswith("token:"):
-        symbol = data.split(":", 1)[1]
-        await query.edit_message_text(
-            f"⏳ Индикаторы для <b>{symbol}</b>…", parse_mode=ParseMode.HTML
-        )
-        text = await _indicator_view(symbol)
-        await query.edit_message_text(text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
-        return
+        if data == "m:pick_token":
+            await query.edit_message_text(
+                "Выберите токен:", reply_markup=token_list_keyboard("token")
+            )
+            return
+
+        if data == "m:scan_all":
+            await query.edit_message_text(
+                f"⏳ Полный анализ {len(get_active_symbols())} токенов…",
+                reply_markup=None
+            )
+            text = await _do_scan_all()
+            await query.edit_message_text(text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+            return
+
+        if data == "m:settings":
+            text = _format_settings()
+            await query.edit_message_text(text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+            return
+
+        if data.startswith("analyze:"):
+            symbol = data.split(":", 1)[1]
+            await query.edit_message_text(
+                f"⏳ Анализирую <b>{symbol}</b>…", parse_mode=ParseMode.HTML
+            )
+            result = await _do_full_analysis(symbol)
+            try:
+                await query.edit_message_text(result, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logger.error(f"HTML edit error for {symbol}: {e}")
+                logger.error(f"Result text (first 500 chars): {result[:500]}")
+                await query.edit_message_text(
+                    result.replace("<", "&lt;").replace(">", "&gt;"),
+                    reply_markup=back_keyboard(), parse_mode=ParseMode.HTML
+                )
+            return
+
+        if data.startswith("token:"):
+            symbol = data.split(":", 1)[1]
+            await query.edit_message_text(
+                f"⏳ Индикаторы для <b>{symbol}</b>…", parse_mode=ParseMode.HTML
+            )
+            text = await _indicator_view(symbol)
+            await query.edit_message_text(text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+            return
 
 
 async def handle_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,7 +213,7 @@ def _format_settings() -> str:
     cfg = config.trading
     lines = [
         "⚙️ <b>Настройки бота</b>\n",
-        f"📊 Символов: <b>{len(config.trading.symbols)}</b>",
+        f"📊 Символов: <b>{len(get_active_symbols())}</b>",
         f"⏱ Основные ТФ: <b>{', '.join(config.trading.primary_timeframes)}</b>",
         f"🔁 Подтверждение: <b>{config.trading.confirm_timeframe}</b>",
         f"⏰ Cooldown: <b>{config.signal_cooldown_minutes} мин</b>\n",
@@ -379,7 +386,7 @@ async def _do_scan_all() -> str:
     sell = []
     neutral = []
 
-    for symbol in config.trading.symbols:
+    for symbol in get_active_symbols():
         try:
             ind = await _get_indicators(symbol, config.trading.primary_timeframes[0])
             if ind is None:
@@ -398,7 +405,7 @@ async def _do_scan_all() -> str:
             neutral.append(f"⚠️ {symbol.replace('/USDT', '')}: ошибка")
             logger.warning(f"Scan error {symbol}: {e}")
 
-    lines = [f"📡 <b>Авто-скан {len(config.trading.symbols)} токенов</b>\n"]
+    lines = [f"📡 <b>Авто-скан {len(get_active_symbols())} токенов</b>\n"]
     if buy:
         lines.append("🟢 <b>Покупка:</b>")
         lines.extend(f"  {r}" for r in buy)

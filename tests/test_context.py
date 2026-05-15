@@ -572,7 +572,8 @@ class TestContextEngine:
                 _async_none,
             )
         # Enable CryptoPanic by setting a non-empty API key
-        monkeypatch.setattr("context.analyzer.config.cryptopanic_api_key", "test_key")
+        # context.fetcher.config is the module actually checked by fetch_cryptopanic
+        monkeypatch.setattr("context.fetcher.config.cryptopanic_api_key", "test_key")
 
         snap = await engine.get_snapshot("BTC/USDT")
         # weighted: (-0.5*10 + 0.3*5) / 15 = -0.2333...

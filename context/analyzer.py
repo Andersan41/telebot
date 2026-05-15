@@ -10,6 +10,7 @@ from loguru import logger
 
 from config.settings import config
 from context.fetcher import context_fetcher
+from monitoring.metrics import context_fetch_errors_total
 
 
 @dataclass
@@ -103,6 +104,7 @@ class ContextEngine:
             await coro_func(snapshot, *args)
         except Exception as e:
             snapshot.errors.append(f"{name}: {e}")
+            context_fetch_errors_total.labels(source=name.lower().replace(" ", "_")).inc()
             logger.debug(f"Context fetch error ({name}): {e}")
 
     async def _fetch_fear_greed(self, snapshot: ContextSnapshot):

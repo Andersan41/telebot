@@ -11,8 +11,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from loguru import logger
 import config.logger  # noqa — инициализирует логгер
 
+# T3.4 — Prometheus metrics HTTP-сервер (opt-in через METRICS_ENABLED=true)
+from monitoring.metrics import _start_metrics_server
+_start_metrics_server()
+
 from telegram.ext import Application
-from config.settings import config
+from config.settings import config, refresh_runtime_symbols
 from data.exchange_client import exchange_client
 from storage.database import db
 from bot.handlers import register_handlers
@@ -32,6 +36,7 @@ async def main():
 
     # Инициализируем БД
     await db.init()
+    await refresh_runtime_symbols()
 
     # Подключаемся к бирже
     await exchange_client.connect()
@@ -39,6 +44,10 @@ async def main():
     # Создаём Telegram Application
     app = Application.builder().token(config.telegram.token).build()
     register_handlers(app)
+
+    # T3.2 — Telegram error sink для ERROR+ логов
+    from config.logger import setup_error_sink
+    setup_error_sink(app.bot)
 
     # Настраиваем планировщик
     scheduler = TaskScheduler(notify_callback=send_signal)

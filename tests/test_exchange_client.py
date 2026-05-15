@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.exchange_client import ExchangeClient, exchange_client
+from config.settings import config
 
 
 @pytest.fixture
@@ -95,3 +96,18 @@ class TestExchangeClient:
     def test_singleton_exists(self):
         assert exchange_client is not None
         assert isinstance(exchange_client, ExchangeClient)
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_defaultType_from_config(self, client, mock_ccxt):
+        mock, _ = mock_ccxt
+        await client.connect()
+        call_kwargs = mock.binance.call_args[0][0]
+        assert call_kwargs["options"]["defaultType"] == "spot"
+
+    @pytest.mark.asyncio
+    async def test_connect_defaultType_future(self, client, mock_ccxt, monkeypatch):
+        monkeypatch.setattr(config.exchange, "market_type", "future")
+        mock, _ = mock_ccxt
+        await client.connect()
+        call_kwargs = mock.binance.call_args[0][0]
+        assert call_kwargs["options"]["defaultType"] == "future"

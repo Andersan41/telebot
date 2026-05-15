@@ -12,3 +12,9 @@ python-dotenv==1.0.0
 python-telegram-bot==20.7
 pytz==2023.3
 sqlalchemy==2.0.23
+
+# T3.3 — rate limiting
+aiolimiter>=1.1
+
+# T3.4 — Prometheus metrics
+prometheus_client>=0.20

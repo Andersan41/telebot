@@ -12,6 +12,7 @@ BINANCE_API_SECRET=
 # Опциональные
 EXCHANGE=binance
 USE_TESTNET=false
+MARKET_TYPE=spot
 TELEGRAM_ADMIN_IDS=123456789
 CONFIRM_TIMEFRAME=15m
 DATABASE_URL=sqlite+aiosqlite:///./data/signals.db
