@@ -4,7 +4,7 @@ strategy/signal_engine.py — Логика принятия решения BUY /
 import html
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Dict
 from loguru import logger
 from config.settings import config
 from indicators.engine import IndicatorValues
@@ -27,34 +27,98 @@ class SignalResult:
     tp: Optional[float] = None
     reasons: List[str] = field(default_factory=list)
     score: int = 0          # Количество совпавших условий
+    sr_levels: Optional[Dict[str, Dict[str, List[float]]]] = None
+    level_warnings: List[str] = field(default_factory=list)
+    _context_score: Optional[float] = None  # -1.0 to 1.0 from context scorer
+    _max_context_score: float = 1.0
+    _confirmed_tf: Optional[str] = None  # таймфрейм подтверждения
+    _context_items: List[str] = field(default_factory=list)  # элементы контекста
 
     @property
     def is_actionable(self) -> bool:
         return self.signal != SignalType.NO_SIGNAL
 
+    @property
+    def verdict(self) -> str:
+        confidence = self.confidence
+        if confidence >= 75:
+            return "STRONG"
+        elif confidence >= 55:
+            return "MODERATE"
+        elif confidence >= 35:
+            return "WEAK"
+        else:
+            return "VERY WEAK"
+
+    @property
+    def confidence(self) -> float:
+        tech_pct = self.score / 8.0
+        if self._context_score is not None:
+            market_pct = (self._context_score + 1.0) / 2.0
+            confidence = (tech_pct * 0.6) + (market_pct * 0.4)
+        else:
+            confidence = tech_pct
+        return round(confidence * 100, 1)
+
     def format_message(self) -> str:
+        from strategy.levels import format_levels_message
+
         emoji = "🟢" if self.signal == SignalType.BUY else "🔴"
         signal_word = "ПОКУПКА" if self.signal == SignalType.BUY else "ПРОДАЖА"
         lines = [
             f"{emoji} <b>{self.signal.value} — {signal_word}</b>",
             f"📊 <b>Инструмент:</b> {self.symbol}",
-            f"⏱ <b>Таймфрейм:</b> {self.timeframe}",
-            f"💰 <b>Цена:</b> {self.close:.4f}",
         ]
-        if self.entry_price:
-            lines.append(f"📍 <b>Вход:</b> {self.entry_price:.4f}")
+
+        # Таймфрейм с подтверждением
+        tf_line = f"⏱ <b>Таймфрейм:</b> {self.timeframe.upper()}"
+        if self._confirmed_tf:
+            tf_line += f" | Подтверждение: {self._confirmed_tf} ✅"
+        lines.append(tf_line)
+
+        # Цена входа
+        entry = self.entry_price or self.close
+        lines.append(f"💰 <b>Цена входа:</b> {entry:.4f}")
+
+        # SL/TP с процентами
         if self.sl:
-            lines.append(f"🛑 <b>Stop Loss:</b> {self.sl:.4f}")
+            sl_pct = (self.sl - entry) / entry * 100
+            lines.append(f"🛑 <b>Stop Loss:</b> {self.sl:.4f} ({sl_pct:+.2f}%)")
         if self.tp:
-            lines.append(f"🎯 <b>Take Profit:</b> {self.tp:.4f}")
+            tp_pct = (self.tp - entry) / entry * 100
+            lines.append(f"🎯 <b>Take Profit:</b> {self.tp:.4f} ({tp_pct:+.2f}%)")
         if self.sl and self.tp:
-            rr = abs(self.tp - self.close) / abs(self.close - self.sl)
+            rr = abs(self.tp - entry) / abs(entry - self.sl)
             lines.append(f"⚖️ <b>R/R:</b> 1:{rr:.1f}")
+
+        # Уровни S/R
+        if self.sr_levels:
+            lines.append(format_levels_message(self.sr_levels))
+
+        # Технические факторы
         if self.reasons:
-            lines.append(f"\n📋 <b>Причины:</b>")
+            lines.append(f"\n📋 <b>Технические факторы ({self.score}/8):</b>")
             for r in self.reasons:
-                lines.append(f"  • {html.escape(r)}")
-        lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(self.score, 5)} ({self.score}/8)")
+                lines.append(f"  ✅ {html.escape(r)}")
+
+        # Рыночный контекст
+        if self._context_items:
+            lines.append(f"\n📊 <b>Рыночный контекст:</b>")
+            for item in self._context_items:
+                lines.append(f"  {item}")
+
+        # Предупреждения
+        all_warnings = list(self.level_warnings)
+        if self._context_items:
+            ctx_warnings = [i for i in self._context_items if i.startswith("⚠️")]
+            all_warnings.extend([i.replace("⚠️ ", "") for i in ctx_warnings])
+        if all_warnings:
+            lines.append(f"\n⚠️ <b>Предупреждения:</b>")
+            for w in all_warnings:
+                lines.append(f"  • {html.escape(w)}")
+
+        # Итог
+        lines.append(f"\n💪 <b>Итог:</b> {self.verdict} | Уверенность: {self.confidence:.1f}%")
         return "\n".join(lines)
 
 
@@ -124,7 +188,19 @@ class SignalEngine:
 
         # --- Объём ---
         if ind.volume_above_avg:
-            vol_reason = f"Объём выше среднего ({ind.volume / ind.volume_sma:.1f}x)"
+            vol_ratio = ind.volume / ind.volume_sma
+            if ind.volume_delta_pct is not None:
+                delta = ind.volume_delta_pct
+                if delta > 0:
+                    direction = f"Delta: +{delta:.0f}% (покупки)"
+                    vol_emoji = "✅"
+                else:
+                    direction = f"Delta: {delta:.0f}% (продажи)"
+                    vol_emoji = "✅"
+            else:
+                direction = "Направление: н/д"
+                vol_emoji = "⚠️"
+            vol_reason = f"Объём: {vol_ratio:.1f}x | {direction} {vol_emoji}"
             buy_reasons.append(vol_reason)
             sell_reasons.append(vol_reason)
 

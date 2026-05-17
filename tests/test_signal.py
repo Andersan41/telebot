@@ -39,6 +39,7 @@ def make_ind(**kwargs):
         supertrend=48000.0,
         supertrend_direction=1,
         volume_sma=1000.0,
+        volume_delta_pct=None,
     )
     base.update(kwargs)
     return IndicatorValues(**base)
@@ -147,6 +148,8 @@ class TestSignalResult:
         assert "48500" in msg
         assert "53000" in msg
         assert "5" in msg
+        assert "MODERATE" in msg
+        assert "Уверенность" in msg
 
     def test_sl_tp_consistency(self):
         sig = SignalResult(
@@ -163,6 +166,7 @@ class TestSignalResult:
         assert "SELL" in msg or "ПРОДАЖА" in msg
         assert "3150" in msg
         assert "2700" in msg
+        assert "STRONG" in msg or "MODERATE" in msg
 
     def test_is_actionable_buy(self):
         sig = SignalResult(
@@ -191,7 +195,7 @@ class TestSignalResult:
             reasons=[],
         )
         msg = sig.format_message()
-        assert "Вход" in msg
+        assert "Цена входа" in msg
         assert "49950" in msg
 
     def test_format_message_without_entry_price(self):
@@ -207,7 +211,7 @@ class TestSignalResult:
         )
         msg = sig.format_message()
         assert "SELL" in msg or "ПРОДАЖА" in msg
-        assert "Вход" not in msg
+        assert "Цена входа" in msg
 
     def test_entry_price_before_sl(self):
         sig = SignalResult(
@@ -222,7 +226,7 @@ class TestSignalResult:
             reasons=[],
         )
         msg = sig.format_message()
-        entry_idx = msg.index("Вход")
+        entry_idx = msg.index("Цена входа")
         sl_idx = msg.index("Stop Loss")
         assert entry_idx < sl_idx
 
@@ -239,9 +243,9 @@ class TestSignalResult:
             reasons=[],
         )
         msg = sig.format_message()
-        assert "Вход" in msg
+        assert "Цена входа" in msg
         assert "50050" in msg
-        entry_idx = msg.index("Вход")
+        entry_idx = msg.index("Цена входа")
         sl_idx = msg.index("Stop Loss")
         assert entry_idx < sl_idx
 
@@ -369,3 +373,167 @@ class TestScoreFormulaA6:
         result = engine.evaluate(ind)
         assert result.signal == SignalType.BUY
         assert result.score == 8
+
+
+class TestVerdictAndConfidence:
+    def test_verdict_strong_high_confidence(self):
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT", timeframe="1h",
+            close=50000.0, score=7, reasons=[],
+        )
+        assert sig.verdict == "STRONG"
+        assert sig.confidence >= 75
+
+    def test_verdict_moderate_mid_confidence(self):
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT", timeframe="1h",
+            close=50000.0, score=5, reasons=[],
+        )
+        assert sig.verdict == "MODERATE"
+
+    def test_verdict_weak_low_confidence(self):
+        sig = SignalResult(
+            signal=SignalType.NO_SIGNAL, symbol="BTC/USDT", timeframe="1h",
+            close=50000.0, score=3, reasons=[],
+        )
+        assert sig.verdict == "WEAK"
+
+    def test_verdict_very_weak_very_low_confidence(self):
+        sig = SignalResult(
+            signal=SignalType.NO_SIGNAL, symbol="BTC/USDT", timeframe="1h",
+            close=50000.0, score=1, reasons=[],
+        )
+        assert sig.verdict == "VERY WEAK"
+
+    def test_confidence_with_context_score(self):
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT", timeframe="1h",
+            close=50000.0, score=7, reasons=[],
+            _context_score=0.5,
+        )
+        tech_pct = 7 / 8
+        market_pct = (0.5 + 1.0) / 2.0
+        expected = round((tech_pct * 0.6 + market_pct * 0.4) * 100, 1)
+        assert sig.confidence == expected
+
+    def test_confidence_without_context_score(self):
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT", timeframe="1h",
+            close=50000.0, score=6, reasons=[],
+        )
+        expected = round(6 / 8 * 100, 1)
+        assert sig.confidence == expected
+
+    def test_confidence_with_negative_context(self):
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT", timeframe="1h",
+            close=50000.0, score=7, reasons=[],
+            _context_score=-0.5,
+        )
+        tech_pct = 7 / 8
+        market_pct = (-0.5 + 1.0) / 2.0
+        expected = round((tech_pct * 0.6 + market_pct * 0.4) * 100, 1)
+        assert sig.confidence == expected
+
+    def test_format_message_shows_verdict_and_confidence(self):
+        sig = SignalResult(
+            signal=SignalType.BUY,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            close=50000.0,
+            score=7,
+            reasons=["reason1"],
+        )
+        msg = sig.format_message()
+        assert "STRONG" in msg or "MODERATE" in msg
+        assert "(7/8)" in msg
+        assert "Уверенность" in msg
+        assert "⭐" not in msg
+
+    def test_no_stars_in_format_message(self):
+        sig = SignalResult(
+            signal=SignalType.BUY,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            close=50000.0,
+            score=5,
+            reasons=[],
+        )
+        msg = sig.format_message()
+        assert "⭐" not in msg
+        assert "Сила сигнала" not in msg
+        assert "Итог:" in msg
+
+
+class TestVolumeDelta:
+    def test_volume_reason_shows_delta_when_available(self, engine):
+        ind = make_ind(
+            rsi=55.0,
+            adx=30.0,
+            close=49000.0,
+            ema_fast=48000.0,
+            ema_slow=47000.0,
+            ema_trend=46000.0,
+            ema_fast_prev=47000.0,
+            ema_slow_prev=47100.0,
+            supertrend_direction=1,
+            supertrend=45000.0,
+            macd_hist=50.0,
+            macd_hist_prev=-10.0,
+            volume_sma=900.0,
+            volume=1200.0,
+            volume_delta_pct=68.0,
+        )
+        result = engine.evaluate(ind)
+        assert result.signal == SignalType.BUY
+        vol_reasons = [r for r in result.reasons if "Объём:" in r]
+        assert len(vol_reasons) >= 1
+        assert "Delta: +68%" in vol_reasons[0]
+        assert "покупки" in vol_reasons[0]
+
+    def test_volume_reason_shows_negative_delta(self, engine):
+        ind = make_ind(
+            rsi=55.0,
+            adx=30.0,
+            close=49000.0,
+            ema_fast=48000.0,
+            ema_slow=47000.0,
+            ema_trend=46000.0,
+            ema_fast_prev=47000.0,
+            ema_slow_prev=47100.0,
+            supertrend_direction=1,
+            supertrend=45000.0,
+            macd_hist=50.0,
+            macd_hist_prev=-10.0,
+            volume_sma=900.0,
+            volume=1200.0,
+            volume_delta_pct=-45.0,
+        )
+        result = engine.evaluate(ind)
+        vol_reasons = [r for r in result.reasons if "Объём:" in r]
+        assert len(vol_reasons) >= 1
+        assert "Delta: -45%" in vol_reasons[0]
+        assert "продажи" in vol_reasons[0]
+
+    def test_volume_reason_shows_na_when_delta_missing(self, engine):
+        ind = make_ind(
+            rsi=55.0,
+            adx=30.0,
+            close=49000.0,
+            ema_fast=48000.0,
+            ema_slow=47000.0,
+            ema_trend=46000.0,
+            ema_fast_prev=47000.0,
+            ema_slow_prev=47100.0,
+            supertrend_direction=1,
+            supertrend=45000.0,
+            macd_hist=50.0,
+            macd_hist_prev=-10.0,
+            volume_sma=900.0,
+            volume=1200.0,
+            volume_delta_pct=None,
+        )
+        result = engine.evaluate(ind)
+        vol_reasons = [r for r in result.reasons if "Объём:" in r]
+        assert len(vol_reasons) >= 1
+        assert "Направление: н/д" in vol_reasons[0]

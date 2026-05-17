@@ -152,22 +152,22 @@ class ContextScorer:
 
     def _score_fear_greed(self, value: int, direction: str) -> float:
         if direction == "BUY":
-            if value < 25:
+            if value < 20:
                 return 0.8
-            elif value < 45:
-                return 0.3
-            elif value < 65:
+            elif value < 40:
+                return 0.1
+            elif value < 60:
                 return 0.0
             elif value < 80:
                 return -0.3
             else:
                 return -0.8
         else:  # SELL
-            if value < 25:
+            if value < 20:
                 return -0.8
-            elif value < 45:
-                return 0.3
-            elif value < 65:
+            elif value < 40:
+                return 0.1
+            elif value < 60:
                 return 0.0
             elif value < 80:
                 return 0.3

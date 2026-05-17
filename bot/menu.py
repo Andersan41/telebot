@@ -3,6 +3,7 @@ bot/menu.py — Inline keyboard navigation menu
 Adapted from test_bingx/menu.py for python-telegram-bot v20.x
 """
 import html
+import asyncio
 from typing import Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -12,7 +13,10 @@ from loguru import logger
 from config.settings import config, get_active_symbols
 from indicators.engine import indicator_engine, IndicatorValues
 from strategy.signal_engine import signal_engine, SignalType, SignalResult
+from strategy.levels import get_support_resistance, validate_levels_vs_trade
 from data.exchange_client import exchange_client
+from context.analyzer import context_engine
+from context.scorer import context_scorer
 
 WAITING: dict[int, str] = {}
 
@@ -243,80 +247,86 @@ async def _do_full_analysis(symbol: str) -> str:
         ind = await _get_indicators(symbol, primary_tf)
         if ind is None:
             return f"❌ Не удалось получить данные для <b>{html.escape(symbol)}</b>\n\nПроверьте тикер (пример: BTC/USDT)"
+
         result = signal_engine.evaluate(ind)
 
-        # --- 15M-подтверждение (зеркало логики scheduler.scanner.scan_symbol) ---
+        # --- Подтверждение на confirm_tf ---
         confirm_tf = cfg.confirm_timeframe
-        confirm_status = "—"
+        entry_price = result.close
         if result.is_actionable and confirm_tf and confirm_tf != primary_tf:
             ind_confirm = await _get_indicators(symbol, confirm_tf)
-            if ind_confirm is None:
-                confirm_status = f"⚠️ нет данных {confirm_tf}"
-            else:
+            if ind_confirm is not None:
                 confirm_result = signal_engine.evaluate(ind_confirm)
                 if confirm_result.signal == result.signal:
-                    confirm_status = f"✅ {confirm_tf} подтверждает"
+                    entry_price = ind_confirm.close
+                    result._confirmed_tf = confirm_tf
+                    result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
                 else:
-                    confirm_status = (
-                        f"❌ {confirm_tf}: {confirm_result.signal.value}"
-                    )
+                    result.reasons.append(f"❌ {confirm_tf}: {confirm_result.signal.value} — не подтверждено")
 
-        lines = []
+        result.entry_price = entry_price
 
-        emoji = "🟢" if result.signal == SignalType.BUY else ("🔴" if result.signal == SignalType.SELL else "⚪")
-        lines.append(f"{emoji} <b>{ind.symbol}</b> — {result.signal.value}")
+        # --- Уровни S/R ---
+        sr_levels = {}
+        for sr_tf in ['1h', '4h']:
+            try:
+                sr_df = await exchange_client.fetch_ohlcv(symbol, sr_tf, limit=100)
+                if sr_df is not None and len(sr_df) > 0:
+                    levels = get_support_resistance(sr_df, entry_price)
+                    if levels['resistance'] or levels['support']:
+                        sr_levels[sr_tf] = levels
+            except Exception as e:
+                logger.warning(f"S/R levels error {symbol} {sr_tf}: {e}")
 
-        lines.append(f"\n💰 Цена: <b>{_fmt_price(ind.close)}</b>   ⏱ {ind.timeframe}")
+        if sr_levels:
+            result.sr_levels = sr_levels
+            is_buy = result.signal == SignalType.BUY
+            result.level_warnings = validate_levels_vs_trade(
+                sr_levels, entry_price, result.sl, result.tp, is_buy
+            )
 
-        lines.append(f"\n📐 <b>EMA:</b>")
-        lines.append(f"  {cfg.ema_fast}: {_fmt_price(ind.ema_fast)}  {cfg.ema_slow}: {_fmt_price(ind.ema_slow)}  {cfg.ema_trend}: {_fmt_price(ind.ema_trend)}")
-        lines.append(f"  EMA alignment: {'бычье ↑' if ind.ema_bullish_alignment else 'медвежье ↓' if ind.ema_bearish_alignment else 'смешанное'}")
+        # --- Рыночный контекст ---
+        if config.context_enabled and result.is_actionable:
+            try:
+                snapshot = await asyncio.wait_for(
+                    context_engine.get_snapshot(symbol),
+                    timeout=10.0,
+                )
+                context_verdict = context_scorer.score(result.signal.value, snapshot)
+                result._context_score = context_verdict.score
 
-        lines.append(f"\n📊 RSI({config.trading.rsi_period}): <b>{ind.rsi:.1f}</b>")
+                snap = context_verdict.snapshot
+                if snap:
+                    ctx_items = []
+                    if snap.fear_greed_value is not None:
+                        fg_score = context_scorer._score_fear_greed(snap.fear_greed_value, result.signal.value)
+                        fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                        ctx_items.append(f"{fg_emoji} Fear & Greed: {snap.fear_greed_value} ({snap.fear_greed_label})")
+                    if snap.funding_rate is not None:
+                        fr_score = context_scorer._score_funding_rate(snap.funding_rate, result.signal.value)
+                        fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                        ctx_items.append(f"{fr_emoji} Funding: {snap.funding_rate * 100:.3f}%")
+                    if snap.long_short_ratio is not None:
+                        ls_score = context_scorer._score_long_short(snap.long_short_ratio, result.signal.value)
+                        ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                        ctx_items.append(f"{ls_emoji} Long/Short: {snap.long_short_ratio:.2f}")
+                    if snap.open_interest_delta is not None:
+                        oi_score = context_scorer._score_oi(snap.open_interest_delta, result.signal.value)
+                        oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                        ctx_items.append(f"{oi_emoji} OI: {snap.open_interest_delta:+.1f}%")
+                    result._context_items = ctx_items
+            except asyncio.TimeoutError:
+                logger.warning(f"Context timeout for {symbol}")
+            except Exception as e:
+                logger.warning(f"Context error for {symbol}: {e}")
 
-        lines.append(f"\n⚡ <b>MACD:</b>")
-        lines.append(f"  MACD: {ind.macd:.4f}  Signal: {ind.macd_signal:.4f}")
-        hist_arrow = "↑" if ind.macd_hist > 0 else "↓"
-        lines.append(f"  Hist: {ind.macd_hist:+.6f}  {hist_arrow}")
+        # --- Формируем сообщение через format_message() ---
+        text = result.format_message()
 
-        lines.append(f"\n📈 ADX: <b>{ind.adx:.1f}</b>  +DI: {ind.dmi_plus:.1f}  -DI: {ind.dmi_minus:.1f}")
-        if ind.trend_is_strong:
-            lines.append(f"  ✅ Сильный тренд")
-        else:
-            lines.append(f"  ❌ Флэт (ADX &lt; {config.trading.adx_min})")
-
-        lines.append(f"\n🔁 <b>Подтверждение {confirm_tf}:</b> {confirm_status}")
-
-        lines.append(f"\n🌡 ATR: <b>{_fmt_price(ind.atr)}</b>")
-
-        st_emoji = "🟢" if ind.supertrend_bullish else "🔴"
-        st_label = "бычий ↑" if ind.supertrend_bullish else "медвежий ↓"
-        lines.append(f"\n📉 SuperTrend: {st_emoji} {st_label}  ({_fmt_price(ind.supertrend)})")
-
-        lines.append(f"\n📦 <b>Объём:</b>")
-        lines.append(f"  Текущий: {ind.volume:,.0f}  SMA: {ind.volume_sma:,.0f}")
-        vol_ratio = ind.volume / ind.volume_sma if ind.volume_sma else 1
-        vol_ok = vol_ratio >= config.trading.volume_factor
-        lines.append(f"  {'✅' if vol_ok else '❌'} ×{vol_ratio:.1f} от SMA (нужно ×{config.trading.volume_factor})")
-
-        if result.is_actionable and result.sl and result.tp:
-            lines.append(f"\n🛑 <b>SL:</b> {_fmt_price(result.sl)}")
-            lines.append(f"🎯 <b>TP:</b> {_fmt_price(result.tp)}")
-            rr = abs(result.tp - ind.close) / abs(ind.close - result.sl)
-            lines.append(f"⚖️ <b>R/R:</b> 1:{rr:.2f}")
-
-        if result.reasons:
-            lines.append(f"\n📋 <b>Причины:</b>")
-            for r in result.reasons:
-                lines.append(f"  • {html.escape(r)}")
-
-        if result.score > 0:
-            lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(result.score, 5)} ({result.score}/8)")
-
+        # --- Добавляем ссылку на TradingView ---
         chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{ind.symbol.replace('/', '')}"
-        lines.append(f"\n📈 <a href='{chart_url}'>Открыть график</a>")
+        text += f"\n\n📈 <a href='{chart_url}'>Открыть график</a>"
 
-        text = "\n".join(lines)
         logger.debug(f"Do_full_analysis output for {symbol}:\n{text}")
         return text
     except Exception as e:
@@ -328,57 +338,65 @@ async def _indicator_view(symbol: str) -> str:
     try:
         ind = await _get_indicators(symbol, "1h")
         if ind is None:
-            return f"❌ Не удалось получить данные для <b>{symbol}</b>"
+            return f"❌ Не удалось получить данные для <b>{html.escape(symbol)}</b>"
+
         result = signal_engine.evaluate(ind)
-        return _format_indicator_view(ind, result)
+        result.entry_price = result.close
+
+        # Уровни S/R (только 1h для компактности)
+        try:
+            sr_df = await exchange_client.fetch_ohlcv(symbol, '1h', limit=100)
+            if sr_df is not None and len(sr_df) > 0:
+                levels = get_support_resistance(sr_df, result.close)
+                if levels['resistance'] or levels['support']:
+                    result.sr_levels = {'1h': levels}
+        except Exception as e:
+            logger.warning(f"S/R levels error {symbol}: {e}")
+
+        # Рыночный контекст
+        if config.context_enabled and result.is_actionable:
+            try:
+                snapshot = await asyncio.wait_for(
+                    context_engine.get_snapshot(symbol),
+                    timeout=10.0,
+                )
+                context_verdict = context_scorer.score(result.signal.value, snapshot)
+                result._context_score = context_verdict.score
+
+                snap = context_verdict.snapshot
+                if snap:
+                    ctx_items = []
+                    if snap.fear_greed_value is not None:
+                        fg_score = context_scorer._score_fear_greed(snap.fear_greed_value, result.signal.value)
+                        fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                        ctx_items.append(f"{fg_emoji} Fear & Greed: {snap.fear_greed_value} ({snap.fear_greed_label})")
+                    if snap.funding_rate is not None:
+                        fr_score = context_scorer._score_funding_rate(snap.funding_rate, result.signal.value)
+                        fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                        ctx_items.append(f"{fr_emoji} Funding: {snap.funding_rate * 100:.3f}%")
+                    if snap.long_short_ratio is not None:
+                        ls_score = context_scorer._score_long_short(snap.long_short_ratio, result.signal.value)
+                        ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                        ctx_items.append(f"{ls_emoji} Long/Short: {snap.long_short_ratio:.2f}")
+                    if snap.open_interest_delta is not None:
+                        oi_score = context_scorer._score_oi(snap.open_interest_delta, result.signal.value)
+                        oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                        ctx_items.append(f"{oi_emoji} OI: {snap.open_interest_delta:+.1f}%")
+                    result._context_items = ctx_items
+            except asyncio.TimeoutError:
+                logger.warning(f"Context timeout for {symbol}")
+            except Exception as e:
+                logger.warning(f"Context error for {symbol}: {e}")
+
+        text = result.format_message()
+
+        chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{ind.symbol.replace('/', '')}"
+        text += f"\n\n📈 <a href='{chart_url}'>Открыть график</a>"
+
+        return text
     except Exception as e:
         logger.error(f"Indicator view error {symbol}: {e}")
-        return f"❌ Ошибка для {symbol}: {e}"
-
-
-def _format_indicator_view(ind: IndicatorValues, result: SignalResult) -> str:
-    emoji = "🟢" if result.signal == SignalType.BUY else ("🔴" if result.signal == SignalType.SELL else "⚪")
-    signal_word = result.signal.value
-    cfg = config.trading
-
-    lines = [
-        f"{emoji} <b>{ind.symbol}</b> — {signal_word}",
-        f"💰 Цена: <b>{_fmt_price(ind.close)}</b>   ⏱ {ind.timeframe}",
-        "",
-        "📐 <b>EMA:</b>",
-        f"  Fast({cfg.ema_fast}): <b>{_fmt_price(ind.ema_fast)}</b>",
-        f"  Slow({cfg.ema_slow}): <b>{_fmt_price(ind.ema_slow)}</b>",
-        f"  Trend({cfg.ema_trend}): <b>{_fmt_price(ind.ema_trend)}</b>",
-        "",
-        f"📊 RSI({cfg.rsi_period}): <b>{ind.rsi:.1f}</b>",
-        "",
-        "⚡ <b>MACD:</b>",
-        f"  MACD: {ind.macd:.4f}",
-        f"  Signal: {ind.macd_signal:.4f}",
-        f"  Hist: {ind.macd_hist:+.4f}",
-        "",
-        f"📈 ADX: <b>{ind.adx:.1f}</b>   +DI: {ind.dmi_plus:.1f}  -DI: {ind.dmi_minus:.1f}",
-        f"🌡 ATR: <b>{_fmt_price(ind.atr)}</b>",
-        f"📉 SuperTrend: {'↑ бычий' if ind.supertrend_bullish else '↓ медвежий'}",
-        "",
-        f"📦 Объём: <b>{ind.volume:,.0f}</b>  SMA: {ind.volume_sma:,.0f}",
-    ]
-
-    if result.is_actionable:
-        if result.sl:
-            lines.append(f"\n🛑 <b>SL:</b> {_fmt_price(result.sl)}")
-        if result.tp:
-            lines.append(f"🎯 <b>TP:</b> {_fmt_price(result.tp)}")
-
-    if result.reasons:
-        lines.append(f"\n📋 <b>Причины:</b>")
-        for r in result.reasons:
-            lines.append(f"  • {html.escape(r)}")
-
-    if result.score > 0:
-        lines.append(f"\n💪 <b>Сила сигнала:</b> {'⭐' * min(result.score, 5)} ({result.score}/8)")
-
-    return "\n".join(lines)
+        return f"❌ Ошибка для <b>{html.escape(symbol)}</b>: {e}"
 
 
 async def _do_scan_all() -> str:

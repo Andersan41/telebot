@@ -10,6 +10,7 @@ from config.settings import config, get_active_symbols
 from data.exchange_client import exchange_client
 from indicators.engine import indicator_engine, IndicatorValues
 from strategy.signal_engine import signal_engine, SignalResult, SignalType
+from strategy.levels import get_support_resistance, validate_levels_vs_trade
 from storage.database import db
 from context.analyzer import context_engine, ContextSnapshot
 from context.scorer import context_scorer, ContextVerdict
@@ -91,11 +92,32 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                 confirmed_on_lower_tf = True
                 logger.info(f"Signal CONFIRMED on {confirm_tf}: {result.signal} {symbol}")
                 result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
+                result._confirmed_tf = confirm_tf
             else:
                 logger.warning(f"Could not get {confirm_tf} data for {symbol}, skipping confirmation")
                 entry_price = result.close
         else:
             entry_price = result.close
+
+        # Шаг 2.5: Уровни поддержки/сопротивления
+        sr_levels = {}
+        for sr_tf in ['1h', '4h']:
+            try:
+                sr_df = await exchange_client.fetch_ohlcv(symbol, sr_tf, limit=100)
+                if sr_df is not None and len(sr_df) > 0:
+                    current_price = entry_price or result.close
+                    levels = get_support_resistance(sr_df, current_price)
+                    if levels['resistance'] or levels['support']:
+                        sr_levels[sr_tf] = levels
+            except Exception as e:
+                logger.warning(f"Failed to calculate S/R levels for {symbol} {sr_tf}: {e}")
+
+        if sr_levels:
+            result.sr_levels = sr_levels
+            is_buy = result.signal == SignalType.BUY
+            result.level_warnings = validate_levels_vs_trade(
+                sr_levels, entry_price or result.close, result.sl, result.tp, is_buy
+            )
 
         # Шаг 3: Контекстное обогащение
         context_verdict: Optional[ContextVerdict] = None
@@ -106,6 +128,30 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     timeout=10.0,
                 )
                 context_verdict = context_scorer.score(result.signal.value, snapshot)
+
+                result._context_score = context_verdict.score
+
+                # Формируем элементы контекста для вывода
+                snap = context_verdict.snapshot
+                if snap:
+                    ctx_items = []
+                    if snap.fear_greed_value is not None:
+                        fg_score = context_scorer._score_fear_greed(snap.fear_greed_value, result.signal.value)
+                        fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                        ctx_items.append(f"{fg_emoji} Fear & Greed: {snap.fear_greed_value} ({snap.fear_greed_label})")
+                    if snap.funding_rate is not None:
+                        fr_score = context_scorer._score_funding_rate(snap.funding_rate, result.signal.value)
+                        fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                        ctx_items.append(f"{fr_emoji} Funding: {snap.funding_rate * 100:.3f}%")
+                    if snap.long_short_ratio is not None:
+                        ls_score = context_scorer._score_long_short(snap.long_short_ratio, result.signal.value)
+                        ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                        ctx_items.append(f"{ls_emoji} Long/Short: {snap.long_short_ratio:.2f}")
+                    if snap.open_interest_delta is not None:
+                        oi_score = context_scorer._score_oi(snap.open_interest_delta, result.signal.value)
+                        oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                        ctx_items.append(f"{oi_emoji} OI: {snap.open_interest_delta:+.1f}%")
+                    result._context_items = ctx_items
 
                 if config.context_block_on_blocked and context_verdict.verdict == "BLOCKED":
                     logger.info(

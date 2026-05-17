@@ -52,6 +52,7 @@ class IndicatorValues:
 
     # Volume
     volume_sma: float
+    volume_delta_pct: Optional[float] = None  # +68% = покупки доминируют, -68% = продажи
 
     # Вычисляемые свойства
     @property

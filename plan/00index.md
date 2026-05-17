@@ -35,6 +35,13 @@
 
 | #  | Файл                                                                               | Приоритет   |
 |----|------------------------------------------------------------------------------------|-------------|
+| U1.1 | [update/update.md](update/update.md) — 1.1 Конфликт сила/вердикт               | ✅ 🔴 critical |
+| U1.2 | [update/update.md](update/update.md) — 1.2 Трактовка F&G                        | ✅ 🔴 critical |
+| U1.3 | [update/update.md](update/update.md) — 1.3 ⚠️ в скоре                           | ✅ 🔴 critical |
+| U1.4 | [update/update.md](update/update.md) — 1.4 Направление объёма                   | ✅ 🔴 critical |
+| U2.1 | [update/update.md](update/update.md) — 2.1-2.3 Уровни S/R                       | ✅ 🟡 medium   |
+| U3.1 | [update/update.md](update/update.md) — 3.1-3.2 Формула уверенности              | ✅ 🟡 medium   |
+| U4.1 | [update/update.md](update/update.md) — 4.1 Шаблон вывода                        | ✅ 🟢 low      |
 | A1 | [improvements/A1-indicators-env.md](improvements/A1-indicators-env.md)             | ✅ 🟠 high     |
 | A2 | [improvements/A2-oi-warmup.md](improvements/A2-oi-warmup.md)                       | ✅ 🟡 medium   |
 | A3 | [improvements/A3-oi-scoring-direction.md](improvements/A3-oi-scoring-direction.md) | ✅ 🟡 medium   |

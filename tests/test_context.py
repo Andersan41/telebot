@@ -230,7 +230,7 @@ class TestContextScorer:
         assert len(verdict.opposing) >= 1
 
     def test_verdict_confirmed_threshold(self, scorer):
-        snap = make_snapshot(fear_greed_value=20)
+        snap = make_snapshot(fear_greed_value=10)
         verdict = scorer.score("BUY", snap)
         assert verdict.verdict == "CONFIRMED"
 

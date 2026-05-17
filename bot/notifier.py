@@ -35,7 +35,7 @@ def format_context_block(verdict: ContextVerdict) -> str:
     snap = verdict.snapshot
     if snap is not None:
         if snap.fear_greed_value is not None:
-            fg_emoji = "⚠️" if snap.fear_greed_value < 25 or snap.fear_greed_value > 75 else "😐"
+            fg_emoji = "⚠️" if snap.fear_greed_value < 20 or snap.fear_greed_value > 80 else "😐"
             lines.append(
                 f"├ Fear & Greed: {snap.fear_greed_value} ({html.escape(snap.fear_greed_label or '')}) {fg_emoji}"
             )
