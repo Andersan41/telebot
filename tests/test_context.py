@@ -214,10 +214,44 @@ class TestContextScorer:
         assert buy_verdict.score > sell_verdict.score
 
     def test_oi_delta_sell_direction(self, scorer):
-        snap = make_snapshot(open_interest_delta=5.0)
+        snap = make_snapshot(open_interest_delta=-5.0)
         verdict = scorer.score("SELL", snap)
         assert verdict.score > 0
         assert any("OI" in s for s in verdict.supporting)
+
+    def test_oi_delta_buy_positive_opposes(self, scorer):
+        snap = make_snapshot(open_interest_delta=5.0)
+        verdict = scorer.score("BUY", snap)
+        assert verdict.score > 0
+        assert any("OI" in s for s in verdict.supporting)
+
+    def test_oi_delta_sell_positive_opposes(self, scorer):
+        snap = make_snapshot(open_interest_delta=5.0)
+        verdict = scorer.score("SELL", snap)
+        assert verdict.score < 0
+        assert any("OI" in o for o in verdict.opposing)
+
+    def test_oi_delta_buy_negative_opposes(self, scorer):
+        snap = make_snapshot(open_interest_delta=-5.0)
+        verdict = scorer.score("BUY", snap)
+        assert verdict.score < 0
+        assert any("OI" in o for o in verdict.opposing)
+
+    def test_oi_delta_small_buy(self, scorer):
+        snap = make_snapshot(open_interest_delta=1.0)
+        score = scorer._score_oi(1.0, "BUY")
+        assert score == 0.2
+
+    def test_oi_delta_small_sell(self, scorer):
+        snap = make_snapshot(open_interest_delta=-1.0)
+        score = scorer._score_oi(-1.0, "SELL")
+        assert score == 0.2
+
+    def test_oi_delta_strong_buy(self, scorer):
+        assert scorer._score_oi(3.0, "BUY") == 0.5
+
+    def test_oi_delta_strong_sell(self, scorer):
+        assert scorer._score_oi(-3.0, "SELL") == 0.5
 
     def test_supporting_and_opposing_populated(self, scorer):
         snap = make_snapshot(
@@ -238,6 +272,34 @@ class TestContextScorer:
         snap = make_snapshot(fear_greed_value=90)
         verdict = scorer.score("BUY", snap)
         assert verdict.verdict == "BLOCKED"
+
+    def test_oi_warmup_skips_oi_scoring(self, scorer):
+        snap = make_snapshot(open_interest_delta=5.0, oi_is_warmup=True)
+        verdict = scorer.score("BUY", snap)
+        assert not any("OI" in s for s in verdict.supporting)
+        assert not any("OI" in o for o in verdict.opposing)
+
+    def test_oi_non_warmup_scores_normally(self, scorer):
+        snap = make_snapshot(open_interest_delta=5.0, oi_is_warmup=False)
+        verdict = scorer.score("BUY", snap)
+        assert any("OI" in s for s in verdict.supporting)
+
+    def test_news_weight_is_reduced(self, scorer):
+        """Verify news weight was reduced from 0.15 to 0.05 (issue #11)."""
+        from context.scorer import WEIGHT_NEWS
+        assert WEIGHT_NEWS == 0.05
+
+    def test_news_has_less_impact_on_verdict(self, scorer):
+        """With reduced weight, news contributes less when combined with other sources."""
+        from context.scorer import WEIGHT_NEWS, WEIGHT_FEAR_GREED
+        snap = make_snapshot(
+            fear_greed_value=50,
+            news_sentiment_score=1.0,
+        )
+        verdict = scorer.score("BUY", snap)
+        total_w = WEIGHT_FEAR_GREED + WEIGHT_NEWS
+        expected = (0.0 * WEIGHT_FEAR_GREED + 1.0 * WEIGHT_NEWS) / total_w
+        assert abs(verdict.score - expected) < 0.01
 
 
 # === Тесты ContextFetcher ===
@@ -458,6 +520,44 @@ class TestContextFetcher:
         result = await fetcher.fetch_funding_rate("BTC/USDT")
         await fetcher.close()
         assert result == pytest.approx(-0.0042)
+
+    @pytest.mark.asyncio
+    async def test_oi_warmup_flag_set_on_first_call_no_history(self, fetcher, aioresponses):
+        aioresponses.get(
+            "https://fapi.binance.com/futures/data/openInterestHist"
+            "?symbol=BTCUSDT&period=5m&limit=2",
+            status=500,
+        )
+        aioresponses.get(
+            "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT",
+            payload={"openInterest": "110.0", "symbol": "BTCUSDT", "time": 3000},
+        )
+        result = await fetcher.fetch_open_interest("BTC/USDT")
+        await fetcher.close()
+        assert result is not None
+        assert result["is_warmup"] is True
+        assert result["open_interest_delta"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_oi_warmup_flag_false_on_second_call(self, fetcher, aioresponses):
+        hist_url = (
+            "https://fapi.binance.com/futures/data/openInterestHist"
+            "?symbol=BTCUSDT&period=5m&limit=2"
+        )
+        oi_url = "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
+        aioresponses.get(hist_url, payload=[
+            {"sumOpenInterest": "100.0", "timestamp": 1},
+            {"sumOpenInterest": "100.0", "timestamp": 2},
+        ])
+        aioresponses.get(oi_url, payload={"openInterest": "100.0", "time": 1000})
+        aioresponses.get(oi_url, payload={"openInterest": "120.0", "time": 2000})
+
+        first = await fetcher.fetch_open_interest("BTC/USDT")
+        second = await fetcher.fetch_open_interest("BTC/USDT")
+        await fetcher.close()
+
+        assert first["is_warmup"] is False
+        assert second["is_warmup"] is False
 
     @pytest.mark.asyncio
     async def test_funding_rate_parses_positive(self, fetcher, aioresponses):

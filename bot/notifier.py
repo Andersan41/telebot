@@ -1,6 +1,7 @@
 """
 bot/notifier.py — Отправка сигналов в Telegram канал
 """
+import asyncio
 import html
 from telegram import Bot
 from telegram.constants import ParseMode
@@ -77,27 +78,36 @@ def format_context_block(verdict: ContextVerdict) -> str:
     return "\n".join(lines)
 
 
-async def send_signal(result: SignalResult, context_verdict: ContextVerdict = None):
-    """Отправляем сигнал в канал"""
+async def send_signal(result: SignalResult, context_verdict: ContextVerdict = None, retries: int = 3):
+    """Отправляем сигнал в канал с повторными попытками при ошибке."""
     if not config.telegram.channel_id:
         logger.warning("TELEGRAM_CHANNEL_ID not set, skipping notification")
         return
 
-    try:
-        bot = get_bot()
-        text = result.format_message()
-        if context_verdict is not None and config.context_enabled:
-            text += format_context_block(context_verdict)
-        await bot.send_message(
-            chat_id=config.telegram.channel_id,
-            text=text,
-            parse_mode=ParseMode.HTML,
-        )
-        logger.info(f"Signal sent to channel: {result.signal} {result.symbol} {result.timeframe}")
-    except TelegramError as e:
-        logger.error(f"Telegram send error: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error sending signal: {e}", exc_info=True)
+    bot = get_bot()
+    text = result.format_message()
+    if context_verdict is not None and config.context_enabled:
+        text += format_context_block(context_verdict)
+
+    for attempt in range(retries):
+        try:
+            await bot.send_message(
+                chat_id=config.telegram.channel_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+            )
+            logger.info(f"Signal sent to channel: {result.signal} {result.symbol} {result.timeframe}")
+            return
+        except TelegramError as e:
+            if attempt < retries - 1:
+                delay = 2 ** attempt
+                logger.warning(f"Telegram send failed (attempt {attempt + 1}/{retries}), retrying in {delay}s: {e}")
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"Failed to send signal after {retries} attempts: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error sending signal: {e}", exc_info=True)
+            return
 
 
 async def send_error_alert(message: str):

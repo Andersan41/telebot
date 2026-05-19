@@ -90,3 +90,69 @@ class TestNotifier:
             notifier_mod._bot = None
             get_bot()
             mock_bot_class.assert_called_once_with(token="test_token_here")
+
+
+class TestNotifierRetry:
+    @pytest.mark.asyncio
+    async def test_send_signal_retries_on_telegram_error(self):
+        from strategy.signal_engine import SignalResult, SignalType
+        from telegram.error import TelegramError
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
+            score=5, reasons=[],
+        )
+        with (
+            patch("bot.notifier.config.telegram.channel_id", "-1000000"),
+            patch("bot.notifier.Bot") as mock_bot_class,
+            patch("bot.notifier.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_bot = MagicMock()
+            mock_bot.send_message = AsyncMock(
+                side_effect=[TelegramError("rate limit"), TelegramError("rate limit"), None]
+            )
+            mock_bot_class.return_value = mock_bot
+            await send_signal(sig, retries=3)
+            assert mock_bot.send_message.call_count == 3
+            assert mock_sleep.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_send_signal_gives_up_after_max_retries(self):
+        from strategy.signal_engine import SignalResult, SignalType
+        from telegram.error import TelegramError
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
+            score=5, reasons=[],
+        )
+        with (
+            patch("bot.notifier.config.telegram.channel_id", "-1000000"),
+            patch("bot.notifier.Bot") as mock_bot_class,
+            patch("bot.notifier.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_bot = MagicMock()
+            mock_bot.send_message = AsyncMock(side_effect=TelegramError("persistent error"))
+            mock_bot_class.return_value = mock_bot
+            await send_signal(sig, retries=2)
+            assert mock_bot.send_message.call_count == 2
+            assert mock_sleep.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_send_signal_succeeds_on_first_try_no_sleep(self):
+        from strategy.signal_engine import SignalResult, SignalType
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT",
+            timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
+            score=5, reasons=[],
+        )
+        with (
+            patch("bot.notifier.config.telegram.channel_id", "-1000000"),
+            patch("bot.notifier.Bot") as mock_bot_class,
+            patch("bot.notifier.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_bot = MagicMock()
+            mock_bot.send_message = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            await send_signal(sig, retries=3)
+            mock_bot.send_message.assert_awaited_once()
+            mock_sleep.assert_not_awaited()

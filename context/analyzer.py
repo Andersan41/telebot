@@ -34,6 +34,7 @@ class ContextSnapshot:
     funding_rate: Optional[float] = None
     open_interest_delta: Optional[float] = None
     long_short_ratio: Optional[float] = None
+    oi_is_warmup: bool = False
 
     # Новости
     news_sentiment_score: Optional[float] = None
@@ -137,6 +138,7 @@ class ContextEngine:
         data = await context_fetcher.fetch_open_interest(symbol)
         if data:
             snapshot.open_interest_delta = data.get("open_interest_delta")
+            snapshot.oi_is_warmup = data.get("is_warmup", False)
 
     async def _fetch_long_short_ratio(self, snapshot: ContextSnapshot, symbol: str):
         ratio = await context_fetcher.fetch_long_short_ratio(symbol)

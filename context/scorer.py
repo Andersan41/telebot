@@ -13,7 +13,7 @@ WEIGHT_FEAR_GREED = 0.15
 WEIGHT_FUNDING_RATE = 0.25
 WEIGHT_LONG_SHORT = 0.20
 WEIGHT_OI = 0.15
-WEIGHT_NEWS = 0.15
+WEIGHT_NEWS = 0.05
 WEIGHT_PRICE_TREND = 0.10
 
 # === Пороги вердиктов ===
@@ -50,68 +50,98 @@ class ContextScorer:
         if snapshot.fear_greed_value is not None:
             w = WEIGHT_FEAR_GREED
             total_weight += w
-            score = self._score_fear_greed(snapshot.fear_greed_value, signal_direction)
-            weighted_sum += score * w
-            if score > 0:
-                supporting.append(f"F&G={snapshot.fear_greed_value} ({snapshot.fear_greed_label})")
-            elif score < 0:
-                opposing.append(f"F&G={snapshot.fear_greed_value} ({snapshot.fear_greed_label})")
+            try:
+                fg_value = int(snapshot.fear_greed_value)
+            except (ValueError, TypeError):
+                fg_value = None
+            if fg_value is not None:
+                score = self._score_fear_greed(fg_value, signal_direction)
+                weighted_sum += score * w
+                if score > 0:
+                    supporting.append(f"F&G={fg_value} ({snapshot.fear_greed_label})")
+                elif score < 0:
+                    opposing.append(f"F&G={fg_value} ({snapshot.fear_greed_label})")
 
         # --- Funding Rate (вес 0.25) ---
         if snapshot.funding_rate is not None:
             w = WEIGHT_FUNDING_RATE
             total_weight += w
-            score = self._score_funding_rate(snapshot.funding_rate, signal_direction)
-            weighted_sum += score * w
-            pct = snapshot.funding_rate * 100
-            if score > 0:
-                supporting.append(f"Funding={pct:.3f}%")
-            elif score < 0:
-                opposing.append(f"Funding={pct:.3f}%")
+            try:
+                rate = float(snapshot.funding_rate)
+            except (ValueError, TypeError):
+                rate = None
+            if rate is not None:
+                score = self._score_funding_rate(rate, signal_direction)
+                weighted_sum += score * w
+                pct = rate * 100
+                if score > 0:
+                    supporting.append(f"Funding={pct:.3f}%")
+                elif score < 0:
+                    opposing.append(f"Funding={pct:.3f}%")
 
         # --- Long/Short Ratio (вес 0.20) ---
         if snapshot.long_short_ratio is not None:
             w = WEIGHT_LONG_SHORT
             total_weight += w
-            score = self._score_long_short(snapshot.long_short_ratio, signal_direction)
-            weighted_sum += score * w
-            if score > 0:
-                supporting.append(f"L/S={snapshot.long_short_ratio:.2f}")
-            elif score < 0:
-                opposing.append(f"L/S={snapshot.long_short_ratio:.2f}")
+            try:
+                ratio = float(snapshot.long_short_ratio)
+            except (ValueError, TypeError):
+                ratio = None
+            if ratio is not None:
+                score = self._score_long_short(ratio, signal_direction)
+                weighted_sum += score * w
+                if score > 0:
+                    supporting.append(f"L/S={ratio:.2f}")
+                elif score < 0:
+                    opposing.append(f"L/S={ratio:.2f}")
 
         # --- Open Interest (вес 0.15) ---
-        if snapshot.open_interest_delta is not None:
+        if snapshot.open_interest_delta is not None and not getattr(snapshot, "oi_is_warmup", False):
             w = WEIGHT_OI
             total_weight += w
-            score = self._score_oi(snapshot.open_interest_delta, signal_direction)
-            weighted_sum += score * w
-            if score > 0:
-                supporting.append(f"OI+{snapshot.open_interest_delta:.1f}%")
-            elif score < 0:
-                opposing.append(f"OI+{snapshot.open_interest_delta:.1f}%")
+            try:
+                delta = float(snapshot.open_interest_delta)
+            except (ValueError, TypeError):
+                delta = None
+            if delta is not None:
+                score = self._score_oi(delta, signal_direction)
+                weighted_sum += score * w
+                if score > 0:
+                    supporting.append(f"OI+{delta:.1f}%")
+                elif score < 0:
+                    opposing.append(f"OI+{delta:.1f}%")
 
         # --- News Sentiment (вес 0.15) ---
         if snapshot.news_sentiment_score is not None:
             w = WEIGHT_NEWS
             total_weight += w
-            score = self._score_news(snapshot.news_sentiment_score, signal_direction)
-            weighted_sum += score * w
-            if score > 0:
-                supporting.append(f"Новости: позитивные ({snapshot.news_sentiment_score:.2f})")
-            elif score < 0:
-                opposing.append(f"Новости: негативные ({snapshot.news_sentiment_score:.2f})")
+            try:
+                news_score = float(snapshot.news_sentiment_score)
+            except (ValueError, TypeError):
+                news_score = None
+            if news_score is not None:
+                score = self._score_news(news_score, signal_direction)
+                weighted_sum += score * w
+                if score > 0:
+                    supporting.append(f"Новости: позитивные ({news_score:.2f})")
+                elif score < 0:
+                    opposing.append(f"Новости: негативные ({news_score:.2f})")
 
         # --- Price Trend (вес 0.10) ---
         if snapshot.price_change_7d is not None:
             w = WEIGHT_PRICE_TREND
             total_weight += w
-            score = self._score_price_trend(snapshot.price_change_7d, signal_direction)
-            weighted_sum += score * w
-            if score > 0:
-                supporting.append(f"7d+{snapshot.price_change_7d:.1f}%")
-            elif score < 0:
-                opposing.append(f"7d{snapshot.price_change_7d:.1f}%")
+            try:
+                change_7d = float(snapshot.price_change_7d)
+            except (ValueError, TypeError):
+                change_7d = None
+            if change_7d is not None:
+                score = self._score_price_trend(change_7d, signal_direction)
+                weighted_sum += score * w
+                if score > 0:
+                    supporting.append(f"7d+{change_7d:.1f}%")
+                elif score < 0:
+                    opposing.append(f"7d{change_7d:.1f}%")
 
         # Нормализация: перераспределение весов если некоторые источники недоступны
         if total_weight > 0:
@@ -211,17 +241,24 @@ class ContextScorer:
                 return 0.7
 
     def _score_oi(self, delta: float, direction: str) -> float:
-        # delta — % изменение OI с прошлого скана (см. context/fetcher.py).
-        # Рост OI = деньги входят в позицию: подтверждение тренда в любую сторону.
-        # direction параметр сохраняется в сигнатуре, чтобы все _score_* выглядели одинаково.
-        _ = direction  # явно подавляем варн «unused arg» для линтера
-        if delta > 2.0:
-            return 0.5
-        if delta > 0.0:
-            return 0.2
-        if delta > -2.0:
-            return -0.1
-        return -0.2
+        if direction == "BUY":
+            if delta > 2.0:
+                return 0.5
+            elif delta > 0.0:
+                return 0.2
+            elif delta > -2.0:
+                return -0.1
+            else:
+                return -0.3
+        else:  # SELL
+            if delta < -2.0:
+                return 0.5
+            elif delta < 0.0:
+                return 0.2
+            elif delta < 2.0:
+                return -0.1
+            else:
+                return -0.3
 
     def _score_news(self, score: float, direction: str) -> float:
         return score

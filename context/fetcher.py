@@ -195,6 +195,7 @@ class ContextFetcher:
                 result = {
                     "open_interest": current,
                     "open_interest_delta": delta_pct,
+                    "is_warmup": previous is None or previous == 0,
                     "timestamp": datetime.fromtimestamp(
                         data.get("time", 0) / 1000, tz=timezone.utc
                     ),
