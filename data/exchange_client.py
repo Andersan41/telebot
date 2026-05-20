@@ -1,9 +1,13 @@
 """
 data/exchange_client.py — Получение OHLCV данных через ccxt
+
+Workaround для Windows: aiohappyeyeballs (aiohttp 3.10+) ломает DNS resolution.
+Все сетевые запросы идут через sync ccxt в run_in_executor.
 """
 import asyncio
+import sys
 from typing import Optional
-import ccxt.async_support as ccxt
+import ccxt as ccxt_sync
 import pandas as pd
 from loguru import logger
 from config.settings import config, get_active_symbols
@@ -11,11 +15,12 @@ from config.settings import config, get_active_symbols
 
 class ExchangeClient:
     def __init__(self):
-        self._exchange: Optional[ccxt.Exchange] = None
+        self._exchange: Optional[ccxt_sync.Exchange] = None
+        self._markets_loaded = False
 
     async def connect(self):
-        """Создаём подключение к бирже"""
-        exchange_class = getattr(ccxt, config.exchange.name)
+        """Создаём подключение к бирже (sync exchange для Windows compatibility)"""
+        exchange_class = getattr(ccxt_sync, config.exchange.name)
         self._exchange = exchange_class({
             "apiKey": config.exchange.api_key,
             "secret": config.exchange.api_secret,
@@ -24,21 +29,69 @@ class ExchangeClient:
                 "defaultType": config.exchange.market_type,
             },
         })
-        # Отключаем fetchCurrencies — он стучится в sapi/v1/capital/config/getall,
-        # который часто недоступен. Без него load_markets всё равно работает через
-        # exchangeInfo.
         self._exchange.has["fetchCurrencies"] = False
-        try:
-            await self._exchange.load_markets()
-            logger.info(f"Markets loaded: {len(self._exchange.markets)} symbols")
-        except Exception as e:
-            logger.warning(f"Failed to load markets (will retry on first fetch): {e}")
+
+        max_retries = 5
+        retry_delay = 5
+        for attempt in range(1, max_retries + 1):
+            try:
+                markets = await asyncio.get_event_loop().run_in_executor(
+                    None, self._exchange.load_markets
+                )
+                logger.info(f"Markets loaded: {len(markets)} symbols")
+                self._markets_loaded = True
+                break
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.warning(
+                        f"Failed to load markets (attempt {attempt}/{max_retries}), "
+                        f"retrying in {retry_delay}s: {e}"
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error(f"Failed to load markets after {max_retries} attempts: {e}")
+                    raise
+
         logger.info(f"Exchange client created: {config.exchange.name}")
 
     async def close(self):
         if self._exchange:
-            await self._exchange.close()
+            # Sync ccxt exchange — просто обнуляем ссылку, requests session закроется сама
+            self._exchange = None
             logger.info("Exchange connection closed")
+
+    async def _ensure_markets_loaded(self):
+        if not self._markets_loaded and self._exchange:
+            logger.warning("Markets not loaded, attempting to reload...")
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._exchange.load_markets
+                )
+                self._markets_loaded = True
+                logger.info(f"Markets reloaded: {len(self._exchange.markets)} symbols")
+            except Exception as e:
+                logger.error(f"Failed to reload markets: {e}")
+                raise
+
+    def _fetch_ohlcv_raw(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 200,
+    ) -> Optional[list]:
+        """Sync fetch_ohlcv — вызывается через run_in_executor"""
+        try:
+            return self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        except ccxt_sync.NetworkError as e:
+            logger.error(f"Network error fetching {symbol} {timeframe}: {e}")
+            return None
+        except ccxt_sync.ExchangeError as e:
+            logger.error(f"Exchange error fetching {symbol} {timeframe}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error fetching {symbol} {timeframe}: {e}")
+            return None
 
     async def _fetch_taker_buy_volumes(
         self,
@@ -46,24 +99,18 @@ class ExchangeClient:
         timeframe: str,
         limit: int = 200,
     ) -> Optional[list]:
-        """Fetch taker buy base asset volume from Binance futures API.
-
-        Binance fapi/v1/klines returns taker_buy_base_asset_volume at index 9.
-        Returns None for spot market or on error.
-        """
+        """Fetch taker buy base asset volume from Binance futures API."""
         if config.exchange.market_type != "future":
             return None
 
         try:
             symbol_for_api = symbol.replace("/", "")
-            url = f"fapi/v1/klines?symbol={symbol_for_api}&interval={timeframe}&limit={limit}"
-            raw_klines = await self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            # ccxt doesn't expose taker buy volume, so we use the internal request
-            # for binance futures
             if hasattr(self._exchange, "fapiPublicGetKlines"):
                 params = {"symbol": symbol_for_api, "interval": timeframe, "limit": limit}
-                klines = await self._exchange.fapiPublicGetKlines(params)
-                return [float(k[9]) for k in klines]  # index 9 = taker_buy_base_asset_volume
+                klines = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self._exchange.fapiPublicGetKlines(params)
+                )
+                return [float(k[9]) for k in klines]
             return None
         except Exception as e:
             logger.warning(f"Failed to fetch taker buy volumes for {symbol}: {e}")
@@ -80,36 +127,31 @@ class ExchangeClient:
         Колонки: timestamp, open, high, low, close, volume
         Для futures: также добавляем taker_buy_volume (index 9 из Binance API).
         """
-        try:
-            raw = await self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            if not raw:
-                logger.warning(f"No data for {symbol} {timeframe}")
-                return None
+        await self._ensure_markets_loaded()
 
-            df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-            df = df.set_index("timestamp")
-            df = df.astype(float)
-            df = df.dropna()
+        raw = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self._fetch_ohlcv_raw(symbol, timeframe, limit)
+        )
+        if raw is None:
+            return None
+        if not raw:
+            logger.warning(f"No data for {symbol} {timeframe}")
+            return None
 
-            # Fetch taker buy volume for futures (for delta calculation)
-            taker_buy_volumes = await self._fetch_taker_buy_volumes(symbol, timeframe, limit)
-            if taker_buy_volumes and len(taker_buy_volumes) == len(raw):
-                df["taker_buy_volume"] = taker_buy_volumes[:len(raw)]
+        df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        df = df.set_index("timestamp")
+        df = df.astype(float)
+        df = df.dropna()
 
-            # Убираем последнюю незакрытую свечу
-            df = df.iloc[:-1]
+        taker_buy_volumes = await self._fetch_taker_buy_volumes(symbol, timeframe, limit)
+        if taker_buy_volumes and len(taker_buy_volumes) == len(raw):
+            df["taker_buy_volume"] = taker_buy_volumes[:len(raw)]
 
-            logger.debug(f"Fetched {len(df)} candles: {symbol} {timeframe}")
-            return df
+        df = df.iloc[:-1]
 
-        except ccxt.NetworkError as e:
-            logger.error(f"Network error fetching {symbol} {timeframe}: {e}")
-        except ccxt.ExchangeError as e:
-            logger.error(f"Exchange error fetching {symbol} {timeframe}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error fetching {symbol} {timeframe}: {e}")
-        return None
+        logger.debug(f"Fetched {len(df)} candles: {symbol} {timeframe}")
+        return df
 
     async def fetch_all_symbols(
         self,

@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -18,10 +18,13 @@ def client():
 
 @pytest.fixture
 def mock_ccxt():
-    with patch("data.exchange_client.ccxt") as mock:
+    with patch("data.exchange_client.ccxt_sync") as mock:
         mock_exchange = MagicMock()
-        mock_exchange.fetch_ohlcv = AsyncMock()
-        mock_exchange.close = AsyncMock()
+        mock_exchange.fetch_ohlcv = MagicMock()
+        mock_exchange.close = MagicMock()
+        mock_exchange.load_markets = MagicMock()
+        mock_exchange.load_markets.return_value = {"BTC/USDT": {"id": "BTCUSDT"}, "ETH/USDT": {"id": "ETHUSDT"}}
+        mock_exchange.markets = {"BTC/USDT": {}, "ETH/USDT": {}}
         mock_class = MagicMock(return_value=mock_exchange)
         setattr(mock, "binance", mock_class)
         mock.NetworkError = Exception
@@ -87,7 +90,7 @@ class TestExchangeClient:
         _, mock_ex = mock_ccxt
         await client.connect()
         await client.close()
-        mock_ex.close.assert_awaited_once()
+        assert client._exchange is None
 
     @pytest.mark.asyncio
     async def test_close_when_not_connected(self, client):
