@@ -17,6 +17,7 @@ class ExchangeClient:
     def __init__(self):
         self._exchange: Optional[ccxt_sync.Exchange] = None
         self._markets_loaded = False
+        self._semaphore: Optional[asyncio.Semaphore] = None
 
     async def connect(self):
         """Создаём подключение к бирже (sync exchange для Windows compatibility)"""
@@ -54,6 +55,9 @@ class ExchangeClient:
                     raise
 
         logger.info(f"Exchange client created: {config.exchange.name}")
+
+        # Семафор для сериализации запросов — ccxt rate limiter не thread-safe
+        self._semaphore = asyncio.Semaphore(1)
 
     async def close(self):
         if self._exchange:
@@ -129,26 +133,27 @@ class ExchangeClient:
         """
         await self._ensure_markets_loaded()
 
-        raw = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: self._fetch_ohlcv_raw(symbol, timeframe, limit)
-        )
-        if raw is None:
-            return None
-        if not raw:
-            logger.warning(f"No data for {symbol} {timeframe}")
-            return None
+        async with self._semaphore:
+            raw = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._fetch_ohlcv_raw(symbol, timeframe, limit)
+            )
+            if raw is None:
+                return None
+            if not raw:
+                logger.warning(f"No data for {symbol} {timeframe}")
+                return None
 
-        df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-        df = df.set_index("timestamp")
-        df = df.astype(float)
-        df = df.dropna()
+            df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            df = df.set_index("timestamp")
+            df = df.astype(float)
+            df = df.dropna()
 
-        taker_buy_volumes = await self._fetch_taker_buy_volumes(symbol, timeframe, limit)
-        if taker_buy_volumes and len(taker_buy_volumes) == len(raw):
-            df["taker_buy_volume"] = taker_buy_volumes[:len(raw)]
+            taker_buy_volumes = await self._fetch_taker_buy_volumes(symbol, timeframe, limit)
+            if taker_buy_volumes and len(taker_buy_volumes) == len(raw):
+                df["taker_buy_volume"] = taker_buy_volumes[:len(raw)]
 
-        df = df.iloc[:-1]
+            df = df.iloc[:-1]
 
         logger.debug(f"Fetched {len(df)} candles: {symbol} {timeframe}")
         return df
