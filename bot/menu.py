@@ -48,6 +48,8 @@ def token_list_keyboard(cb_prefix: str = "token") -> InlineKeyboardMarkup:
         rows.append(row)
     if cb_prefix == "analyze":
         rows.append([InlineKeyboardButton("✏️ Свой токен", callback_data="m:custom_token")])
+    if cb_prefix == "token":
+        rows.append([InlineKeyboardButton("✏️ Свой токен", callback_data="m:custom_token_indicators")])
     rows.append([InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")])
     return InlineKeyboardMarkup(rows)
 
@@ -114,9 +116,24 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
+        if data == "m:custom_token_indicators":
+            WAITING[chat_id] = "indicators"
+            await query.edit_message_text(
+                "✏️ <b>Индикаторы своего токена</b>\n\n"
+                "Введите тикер токена, например:\n"
+                "  • <code>BTC</code>\n"
+                "  • <code>BTCUSDT</code>\n"
+                "  • <code>ETH/USDT</code>\n\n"
+                "Если не указана пара — добавится /USDT.",
+                reply_markup=back_keyboard(), parse_mode=ParseMode.HTML
+            )
+            return
+
         if data == "m:pick_token":
             await query.edit_message_text(
-                "Выберите токен:", reply_markup=token_list_keyboard("token")
+                "✏️ Введите тикер токена (например: <b>BTC</b> или <b>BTCUSDT</b>):\n\n"
+                "Или выберите из списка ниже:",
+                reply_markup=token_list_keyboard("token"), parse_mode=ParseMode.HTML
             )
             return
 
@@ -145,8 +162,9 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception as e:
                 logger.error(f"HTML edit error for {symbol}: {e}")
                 logger.error(f"Result text (first 500 chars): {result[:500]}")
+                safe_text = result.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
                 await query.edit_message_text(
-                    result.replace("<", "&lt;").replace(">", "&gt;"),
+                    safe_text,
                     reply_markup=back_keyboard(), parse_mode=ParseMode.HTML
                 )
             return
@@ -189,7 +207,22 @@ async def handle_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"handle_menu_message HTML edit error for {symbol}: {e}")
             logger.error(f"Result text (first 500 chars): {result[:500]}")
-            await context.bot.send_message(chat_id, result, reply_markup=back_keyboard())
+            safe_text = result.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
+            await context.bot.send_message(chat_id, safe_text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+
+    if state == "indicators":
+        symbol = _normalize_symbol(text)
+        m = await context.bot.send_message(chat_id, f"⏳ Индикаторы для <b>{symbol}</b>…", parse_mode=ParseMode.HTML)
+        result = await _indicator_view(symbol)
+        try:
+            await context.bot.edit_message_text(
+                result, chat_id=chat_id, message_id=m.message_id,
+                reply_markup=back_keyboard(), parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"handle_menu_message indicators HTML edit error for {symbol}: {e}")
+            safe_text = result.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
+            await context.bot.send_message(chat_id, safe_text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
 
 
 def _normalize_symbol(text: str) -> str:
@@ -199,6 +232,11 @@ def _normalize_symbol(text: str) -> str:
     if s.endswith("USDT"):
         return s[:-4] + "/USDT"
     return s + "/USDT"
+
+
+def _calc_trend_strength(adx: float) -> float:
+    """Convert ADX value to 0-100 trend strength percentage."""
+    return min(max(adx * 2.0, 0.0), 100.0)
 
 
 def _fmt_price(p: float) -> str:
@@ -252,13 +290,17 @@ async def _do_full_analysis(symbol: str) -> str:
 
         # --- Подтверждение на confirm_tf ---
         confirm_tf = cfg.confirm_timeframe
-        entry_price = result.close
+        entry_price = result.close if result.close is not None else ind.close
+        if entry_price is None:
+            entry_price = 0.0
+        entry_price = float(entry_price)
+
         if result.is_actionable and confirm_tf and confirm_tf != primary_tf:
             ind_confirm = await _get_indicators(symbol, confirm_tf)
             if ind_confirm is not None:
                 confirm_result = signal_engine.evaluate(ind_confirm)
                 if confirm_result.signal == result.signal:
-                    entry_price = ind_confirm.close
+                    entry_price = float(confirm_result.close if confirm_result.close is not None else ind_confirm.close)
                     result._confirmed_tf = confirm_tf
                     result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
                 else:
@@ -281,8 +323,10 @@ async def _do_full_analysis(symbol: str) -> str:
         if sr_levels:
             result.sr_levels = sr_levels
             is_buy = result.signal == SignalType.BUY
+            sl_val = result.sl if result.sl is not None else 0.0
+            tp_val = result.tp if result.tp is not None else 0.0
             result.level_warnings = validate_levels_vs_trade(
-                sr_levels, entry_price, result.sl, result.tp, is_buy
+                sr_levels, entry_price, sl_val, tp_val, is_buy
             )
 
         # --- Рыночный контекст ---
@@ -299,21 +343,37 @@ async def _do_full_analysis(symbol: str) -> str:
                 if snap:
                     ctx_items = []
                     if snap.fear_greed_value is not None:
-                        fg_score = context_scorer._score_fear_greed(snap.fear_greed_value, result.signal.value)
-                        fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
-                        ctx_items.append(f"{fg_emoji} Fear & Greed: {snap.fear_greed_value} ({snap.fear_greed_label})")
+                        try:
+                            fg_val = int(snap.fear_greed_value)
+                            fg_score = context_scorer._score_fear_greed(fg_val, result.signal.value)
+                            fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                            ctx_items.append(f"{fg_emoji} Fear & Greed: {fg_val} ({snap.fear_greed_label})")
+                        except (ValueError, TypeError):
+                            ctx_items.append(f"⚠️ Fear & Greed: invalid value")
                     if snap.funding_rate is not None:
-                        fr_score = context_scorer._score_funding_rate(snap.funding_rate, result.signal.value)
-                        fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
-                        ctx_items.append(f"{fr_emoji} Funding: {snap.funding_rate * 100:.3f}%")
+                        try:
+                            fr_val = float(snap.funding_rate)
+                            fr_score = context_scorer._score_funding_rate(fr_val, result.signal.value)
+                            fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                            ctx_items.append(f"{fr_emoji} Funding: {fr_val * 100:.3f}%")
+                        except (ValueError, TypeError):
+                            ctx_items.append(f"⚠️ Funding: invalid value")
                     if snap.long_short_ratio is not None:
-                        ls_score = context_scorer._score_long_short(snap.long_short_ratio, result.signal.value)
-                        ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
-                        ctx_items.append(f"{ls_emoji} Long/Short: {snap.long_short_ratio:.2f}")
+                        try:
+                            ls_val = float(snap.long_short_ratio)
+                            ls_score = context_scorer._score_long_short(ls_val, result.signal.value)
+                            ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                            ctx_items.append(f"{ls_emoji} Long/Short: {ls_val:.2f}")
+                        except (ValueError, TypeError):
+                            ctx_items.append(f"⚠️ Long/Short: invalid value")
                     if snap.open_interest_delta is not None:
-                        oi_score = context_scorer._score_oi(snap.open_interest_delta, result.signal.value)
-                        oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
-                        ctx_items.append(f"{oi_emoji} OI: {snap.open_interest_delta:+.1f}%")
+                        try:
+                            oi_val = float(snap.open_interest_delta)
+                            oi_score = context_scorer._score_oi(oi_val, result.signal.value)
+                            oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                            ctx_items.append(f"{oi_emoji} OI: {oi_val:+.1f}%")
+                        except (ValueError, TypeError):
+                            ctx_items.append(f"⚠️ OI: invalid value")
                     result._context_items = ctx_items
             except asyncio.TimeoutError:
                 logger.warning(f"Context timeout for {symbol}")
@@ -331,29 +391,61 @@ async def _do_full_analysis(symbol: str) -> str:
         return text
     except Exception as e:
         logger.error(f"Analysis error {symbol}: {e}", exc_info=True)
-        return f"❌ Ошибка анализа <b>{html.escape(symbol)}</b>: {e}"
+        return f"❌ Ошибка анализа <b>{html.escape(symbol)}</b>: {html.escape(str(e))}"
 
 
 async def _indicator_view(symbol: str) -> str:
     try:
-        ind = await _get_indicators(symbol, "1h")
+        cfg = config.trading
+        primary_tf = cfg.primary_timeframes[0]
+        ind = await _get_indicators(symbol, primary_tf)
         if ind is None:
-            return f"❌ Не удалось получить данные для <b>{html.escape(symbol)}</b>"
+            return f"❌ Не удалось получить данные для <b>{html.escape(symbol)}</b>\n\nПроверьте тикер (пример: BTC/USDT)"
 
         result = signal_engine.evaluate(ind)
-        result.entry_price = result.close
 
-        # Уровни S/R (только 1h для компактности)
-        try:
-            sr_df = await exchange_client.fetch_ohlcv(symbol, '1h', limit=100)
-            if sr_df is not None and len(sr_df) > 0:
-                levels = get_support_resistance(sr_df, result.close)
-                if levels['resistance'] or levels['support']:
-                    result.sr_levels = {'1h': levels}
-        except Exception as e:
-            logger.warning(f"S/R levels error {symbol}: {e}")
+        # --- Подтверждение на confirm_tf ---
+        entry_price = result.close if result.close is not None else ind.close
+        if entry_price is None:
+            entry_price = 0.0
+        entry_price = float(entry_price)
 
-        # Рыночный контекст
+        confirm_tf = cfg.confirm_timeframe
+        if result.is_actionable and confirm_tf and confirm_tf != primary_tf:
+            ind_confirm = await _get_indicators(symbol, confirm_tf)
+            if ind_confirm is not None:
+                confirm_result = signal_engine.evaluate(ind_confirm)
+                if confirm_result.signal == result.signal:
+                    entry_price = float(confirm_result.close if confirm_result.close is not None else ind_confirm.close)
+                    result._confirmed_tf = confirm_tf
+                    result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
+                else:
+                    result.reasons.append(f"❌ {confirm_tf}: {confirm_result.signal.value} — не подтверждено")
+
+        result.entry_price = entry_price
+
+        # --- Уровни S/R (1h и 4h) ---
+        sr_levels = {}
+        for sr_tf in ['1h', '4h']:
+            try:
+                sr_df = await exchange_client.fetch_ohlcv(symbol, sr_tf, limit=100)
+                if sr_df is not None and len(sr_df) > 0:
+                    levels = get_support_resistance(sr_df, entry_price)
+                    if levels['resistance'] or levels['support']:
+                        sr_levels[sr_tf] = levels
+            except Exception as e:
+                logger.warning(f"S/R levels error {symbol} {sr_tf}: {e}")
+
+        if sr_levels:
+            result.sr_levels = sr_levels
+            is_buy = result.signal == SignalType.BUY
+            sl_val = result.sl if result.sl is not None else 0.0
+            tp_val = result.tp if result.tp is not None else 0.0
+            result.level_warnings = validate_levels_vs_trade(
+                sr_levels, entry_price, sl_val, tp_val, is_buy
+            )
+
+        # --- Рыночный контекст ---
         if config.context_enabled and result.is_actionable:
             try:
                 snapshot = await asyncio.wait_for(
@@ -367,21 +459,37 @@ async def _indicator_view(symbol: str) -> str:
                 if snap:
                     ctx_items = []
                     if snap.fear_greed_value is not None:
-                        fg_score = context_scorer._score_fear_greed(snap.fear_greed_value, result.signal.value)
-                        fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
-                        ctx_items.append(f"{fg_emoji} Fear & Greed: {snap.fear_greed_value} ({snap.fear_greed_label})")
+                        try:
+                            fg_val = int(snap.fear_greed_value)
+                            fg_score = context_scorer._score_fear_greed(fg_val, result.signal.value)
+                            fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                            ctx_items.append(f"{fg_emoji} Fear & Greed: {fg_val} ({snap.fear_greed_label})")
+                        except (ValueError, TypeError):
+                            ctx_items.append(f"⚠️ Fear & Greed: invalid value")
                     if snap.funding_rate is not None:
-                        fr_score = context_scorer._score_funding_rate(snap.funding_rate, result.signal.value)
-                        fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
-                        ctx_items.append(f"{fr_emoji} Funding: {snap.funding_rate * 100:.3f}%")
+                        try:
+                            fr_val = float(snap.funding_rate)
+                            fr_score = context_scorer._score_funding_rate(fr_val, result.signal.value)
+                            fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                            ctx_items.append(f"{fr_emoji} Funding: {fr_val * 100:.3f}%")
+                        except (ValueError, TypeError):
+                            ctx_items.append(f"⚠️ Funding: invalid value")
                     if snap.long_short_ratio is not None:
-                        ls_score = context_scorer._score_long_short(snap.long_short_ratio, result.signal.value)
-                        ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
-                        ctx_items.append(f"{ls_emoji} Long/Short: {snap.long_short_ratio:.2f}")
+                        try:
+                            ls_val = float(snap.long_short_ratio)
+                            ls_score = context_scorer._score_long_short(ls_val, result.signal.value)
+                            ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                            ctx_items.append(f"{ls_emoji} Long/Short: {ls_val:.2f}")
+                        except (ValueError, TypeError):
+                            ctx_items.append(f"⚠️ Long/Short: invalid value")
                     if snap.open_interest_delta is not None:
-                        oi_score = context_scorer._score_oi(snap.open_interest_delta, result.signal.value)
-                        oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
-                        ctx_items.append(f"{oi_emoji} OI: {snap.open_interest_delta:+.1f}%")
+                        try:
+                            oi_val = float(snap.open_interest_delta)
+                            oi_score = context_scorer._score_oi(oi_val, result.signal.value)
+                            oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                            ctx_items.append(f"{oi_emoji} OI: {oi_val:+.1f}%")
+                        except (ValueError, TypeError):
+                            ctx_items.append(f"⚠️ OI: invalid value")
                     result._context_items = ctx_items
             except asyncio.TimeoutError:
                 logger.warning(f"Context timeout for {symbol}")
@@ -396,7 +504,7 @@ async def _indicator_view(symbol: str) -> str:
         return text
     except Exception as e:
         logger.error(f"Indicator view error {symbol}: {e}")
-        return f"❌ Ошибка для <b>{html.escape(symbol)}</b>: {e}"
+        return f"❌ Ошибка для <b>{html.escape(symbol)}</b>: {html.escape(str(e))}"
 
 
 async def _do_scan_all() -> str:

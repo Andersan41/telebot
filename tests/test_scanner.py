@@ -9,6 +9,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scheduler.scanner import scan_symbol, run_scan_cycle, _is_cooldown_active, _set_cooldown
 
 
+def _make_ind_mock(atr=600.0, close=50000.0):
+    """Create an indicator mock with real numeric atr/close for volatility regime."""
+    m = MagicMock()
+    m.atr = atr
+    m.close = close
+    m.volume = 1200.0
+    m.volume_sma = 1000.0
+    m.volume_above_avg = True
+    m.rsi = 55.0
+    m.macd_hist = 30.0
+    m.adx = 30.0
+    m.dmi_plus = 25.0
+    m.dmi_minus = 15.0
+    return m
+
+
 @pytest.fixture
 def mock_cooldown(monkeypatch):
     """Подменяет db.get_cooldown / db.set_cooldown на in-memory dict."""
@@ -51,7 +67,18 @@ def mock_exchange():
 @pytest.fixture
 def mock_ind_engine():
     m = MagicMock()
-    m.calculate.return_value = MagicMock()
+    ind_mock = MagicMock()
+    ind_mock.atr = 600.0
+    ind_mock.close = 50000.0
+    ind_mock.volume = 1200.0
+    ind_mock.volume_sma = 1000.0
+    ind_mock.volume_above_avg = True
+    ind_mock.rsi = 55.0
+    ind_mock.macd_hist = 30.0
+    ind_mock.adx = 30.0
+    ind_mock.dmi_plus = 25.0
+    ind_mock.dmi_minus = 15.0
+    m.calculate.return_value = ind_mock
     return m
 
 
@@ -228,7 +255,17 @@ class TestEntryPrice:
     async def test_entry_price_from_confirm_candle(self, mock_signal_result, mock_exchange, mock_ind_engine):
         mock_signal_result.entry_price = None
         confirm_close = 50100.0
-        confirm_ind = MagicMock(close=confirm_close)
+        confirm_ind = MagicMock()
+        confirm_ind.close = confirm_close
+        confirm_ind.atr = 1000.0
+        confirm_ind.volume = 1200.0
+        confirm_ind.volume_sma = 1000.0
+        confirm_ind.volume_above_avg = True
+        confirm_ind.rsi = 55.0
+        confirm_ind.macd_hist = 30.0
+        confirm_ind.adx = 30.0
+        confirm_ind.dmi_plus = 25.0
+        confirm_ind.dmi_minus = 15.0
         from strategy.signal_engine import SignalResult, SignalType
         confirm_sig = SignalResult(
             signal=SignalType.BUY, symbol="BTC/USDT",
@@ -319,9 +356,9 @@ class TestMinVerdictGate:
 
         fake_result = MagicMock(is_actionable=True, signal=MagicMock(value="BUY"),
                                 reasons=[], close=100.0)
-        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind: fake_result)
+        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind, **kw: fake_result)
         monkeypatch.setattr(sc, "_get_indicators",
-                            AsyncMock(return_value=MagicMock()))
+                            AsyncMock(return_value=(_make_ind_mock(), MagicMock())))
         monkeypatch.setattr(
             sc.context_scorer, "score",
             lambda direction, snap: ContextVerdict(
@@ -351,9 +388,9 @@ class TestMinVerdictGate:
             timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
             score=6, reasons=["test"],
         )
-        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind: real_result)
+        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind, **kw: real_result)
         monkeypatch.setattr(sc, "_get_indicators",
-                            AsyncMock(return_value=MagicMock()))
+                            AsyncMock(return_value=(_make_ind_mock(), MagicMock())))
         monkeypatch.setattr(
             sc.context_scorer, "score",
             lambda direction, snap: ContextVerdict(
@@ -386,9 +423,9 @@ class TestConfirmedFlag:
             timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
             score=6, reasons=["test"],
         )
-        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind: real_result)
+        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind, **kw: real_result)
         monkeypatch.setattr(sc, "_get_indicators",
-                            AsyncMock(return_value=MagicMock()))
+                            AsyncMock(return_value=(_make_ind_mock(), MagicMock())))
         monkeypatch.setattr(sc.config.trading, "confirm_timeframe", "1h")
         mock_save = AsyncMock(return_value=MagicMock(id=1))
         monkeypatch.setattr(sc.db, "save_signal", mock_save)
@@ -409,12 +446,12 @@ class TestConfirmedFlag:
             timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
             score=6, reasons=["test"],
         )
-        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind: real_result)
+        monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind, **kw: real_result)
 
         async def fake_get_indicators(symbol, timeframe):
             if timeframe == "15m":
                 return None
-            return MagicMock()
+            return (_make_ind_mock(), MagicMock())
 
         monkeypatch.setattr(sc, "_get_indicators", fake_get_indicators)
         monkeypatch.setattr(sc.config.trading, "confirm_timeframe", "15m")
@@ -443,14 +480,25 @@ class TestConfirmedFlag:
             score=6, reasons=["confirm"],
         )
         monkeypatch.setattr(sc.signal_engine, "evaluate",
-                            lambda ind: main_result if hasattr(ind, 'timeframe') and getattr(ind, 'timeframe', None) != "15m" else confirm_result)
+                            lambda ind, **kw: main_result if hasattr(ind, 'timeframe') and getattr(ind, 'timeframe', None) != "15m" else confirm_result)
 
         call_count = [0]
         async def fake_get_indicators(symbol, timeframe):
             call_count[0] += 1
             if timeframe == "15m":
-                return MagicMock(close=50100.0)
-            return MagicMock()
+                ind = MagicMock()
+                ind.close = 50100.0
+                ind.atr = 500.0
+                ind.volume = 1200.0
+                ind.volume_sma = 1000.0
+                ind.volume_above_avg = True
+                ind.rsi = 55.0
+                ind.macd_hist = 30.0
+                ind.adx = 30.0
+                ind.dmi_plus = 25.0
+                ind.dmi_minus = 15.0
+                return (ind, MagicMock())
+            return (_make_ind_mock(), MagicMock())
 
         monkeypatch.setattr(sc, "_get_indicators", fake_get_indicators)
         monkeypatch.setattr(sc.config.trading, "confirm_timeframe", "15m")

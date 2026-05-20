@@ -20,14 +20,54 @@ class ExchangeClient:
             "apiKey": config.exchange.api_key,
             "secret": config.exchange.api_secret,
             "enableRateLimit": True,
-            "options": {"defaultType": config.exchange.market_type},
+            "options": {
+                "defaultType": config.exchange.market_type,
+            },
         })
+        # Отключаем fetchCurrencies — он стучится в sapi/v1/capital/config/getall,
+        # который часто недоступен. Без него load_markets всё равно работает через
+        # exchangeInfo.
+        self._exchange.has["fetchCurrencies"] = False
+        try:
+            await self._exchange.load_markets()
+            logger.info(f"Markets loaded: {len(self._exchange.markets)} symbols")
+        except Exception as e:
+            logger.warning(f"Failed to load markets (will retry on first fetch): {e}")
         logger.info(f"Exchange client created: {config.exchange.name}")
 
     async def close(self):
         if self._exchange:
             await self._exchange.close()
             logger.info("Exchange connection closed")
+
+    async def _fetch_taker_buy_volumes(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 200,
+    ) -> Optional[list]:
+        """Fetch taker buy base asset volume from Binance futures API.
+
+        Binance fapi/v1/klines returns taker_buy_base_asset_volume at index 9.
+        Returns None for spot market or on error.
+        """
+        if config.exchange.market_type != "future":
+            return None
+
+        try:
+            symbol_for_api = symbol.replace("/", "")
+            url = f"fapi/v1/klines?symbol={symbol_for_api}&interval={timeframe}&limit={limit}"
+            raw_klines = await self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            # ccxt doesn't expose taker buy volume, so we use the internal request
+            # for binance futures
+            if hasattr(self._exchange, "fapiPublicGetKlines"):
+                params = {"symbol": symbol_for_api, "interval": timeframe, "limit": limit}
+                klines = await self._exchange.fapiPublicGetKlines(params)
+                return [float(k[9]) for k in klines]  # index 9 = taker_buy_base_asset_volume
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to fetch taker buy volumes for {symbol}: {e}")
+            return None
 
     async def fetch_ohlcv(
         self,
@@ -38,6 +78,7 @@ class ExchangeClient:
         """
         Получаем OHLCV свечи и возвращаем как DataFrame.
         Колонки: timestamp, open, high, low, close, volume
+        Для futures: также добавляем taker_buy_volume (index 9 из Binance API).
         """
         try:
             raw = await self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -50,6 +91,11 @@ class ExchangeClient:
             df = df.set_index("timestamp")
             df = df.astype(float)
             df = df.dropna()
+
+            # Fetch taker buy volume for futures (for delta calculation)
+            taker_buy_volumes = await self._fetch_taker_buy_volumes(symbol, timeframe, limit)
+            if taker_buy_volumes and len(taker_buy_volumes) == len(raw):
+                df["taker_buy_volume"] = taker_buy_volumes[:len(raw)]
 
             # Убираем последнюю незакрытую свечу
             df = df.iloc[:-1]

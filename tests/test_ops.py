@@ -16,6 +16,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiters():
+    """Clear rate limiters between tests to avoid state leakage."""
+    import bot.rate_limit as rl
+    rl._limiters.clear()
+
+
 # ── T3.2: error_channel_id ──────────────────────────────────────────
 
 class TestErrorChannelId:

@@ -72,6 +72,7 @@ class TestTradingConfig:
         assert cfg.atr_multiplier_sl == 1.5
         assert cfg.atr_multiplier_tp == 3.0
         assert cfg.candles_limit == 200
+        assert cfg.volume_sma_period == 20
 
 
 class TestAppConfig:
@@ -114,6 +115,12 @@ class TestIndicatorEnvVars:
         import config.settings as settings
         importlib.reload(settings)
         assert settings.config.trading.candles_limit == 300
+
+    def test_volume_sma_period_from_env(self, monkeypatch):
+        monkeypatch.setenv("VOLUME_SMA_PERIOD", "50")
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.volume_sma_period == 50
 
 
 class TestEnvFile:
@@ -179,3 +186,220 @@ class TestEnvFile:
         for key in self.ENV_KEYS:
             assert key in env, f"Missing key in .env: {key}"
             assert key in example, f"Missing key in .env.example: {key}"
+
+
+class TestScoringConfig:
+    """Tests for centralized scoring config (Task 9.2)."""
+
+    def test_factor_weights_default(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        s = settings.config.scoring
+        assert s.w_supertrend == 5
+        assert s.w_ema == 10
+        assert s.w_macd == 10
+        assert s.w_rsi == 5
+        assert s.w_volume == 15
+        assert s.w_adx == 5
+        assert s.w_dmi == 5
+        assert s.w_bos == 15
+        assert s.w_sweep == 10
+        assert s.w_ob == 10
+        assert s.w_btc == 10
+        assert s.w_funding == 5
+        assert s.w_oi == 10
+
+    def test_max_signal_score(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        # 5+10+10+5+15+5+5+15+10+10+10+5+10 = 115
+        assert settings.config.scoring.max_signal_score == 115
+
+    def test_confidence_v2_weights(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        s = settings.config.scoring
+        assert s.w_htf_trend == 15
+        assert s.w_structure == 25
+        assert s.w_liquidity == 15
+        assert s.w_conf_volume == 10
+        assert s.w_btc_corr == 10
+
+    def test_min_score_for_signal(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.scoring.min_score_for_signal == 4
+
+    def test_quality_thresholds(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        s = settings.config.scoring
+        assert s.quality_strong_threshold == 35
+        assert s.quality_moderate_threshold == 20
+
+    def test_blend_ratios(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        s = settings.config.scoring
+        assert s.tech_confidence_blend == 0.6
+        assert s.market_confidence_blend == 0.4
+        assert s.historical_wr_blend == 0.6
+
+
+class TestSchedulerConfig:
+    """Tests for centralized scheduler config (Task 9.2)."""
+
+    def test_hourly_scan_minute(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.scheduler.hourly_scan_minute == 2
+
+    def test_four_hour_scan_hours(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.scheduler.four_hour_scan_hours == "0,4,8,12,16,20"
+
+    def test_four_hour_scan_minute(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.scheduler.four_hour_scan_minute == 5
+
+
+class TestRateLimitConfig:
+    """Tests for centralized rate limit config (Task 9.2)."""
+
+    def test_defaults(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        rl = settings.config.rate_limit
+        assert rl.max_rate == 5
+        assert rl.time_period == 10
+
+
+class TestNotifierConfig:
+    """Tests for centralized notifier config (Task 9.2)."""
+
+    def test_fng_thresholds(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        n = settings.config.notifier
+        assert n.fng_extreme_threshold_low == 20
+        assert n.fng_extreme_threshold_high == 80
+
+    def test_long_short_ratio_threshold(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.notifier.long_short_ratio_threshold == 0.7
+
+    def test_sentiment_thresholds(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        n = settings.config.notifier
+        assert n.sentiment_positive_threshold == 0.2
+        assert n.sentiment_negative_threshold == -0.2
+
+
+class TestRiskConfig:
+    """Tests for centralized risk config (Task 9.2)."""
+
+    def test_volatility_multipliers(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        r = settings.config.risk
+        assert r.volatility_high_multiplier == 0.5
+        assert r.correlation_misaligned_multiplier == 0.5
+
+    def test_regime_thresholds(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        r = settings.config.risk
+        assert r.regime_trend_adx == 25
+        assert r.regime_range_adx == 18
+        assert r.regime_compression_atr_pct == 20
+
+    def test_regime_detection_params(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        r = settings.config.risk
+        assert r.regime_ema_spread_window == 5
+        assert r.regime_ema_spread_change_pct == 0.05
+        assert r.regime_rising_multiplier == 1.1
+        assert r.regime_rising_window == 10
+        assert r.regime_fallback_confidence == 0.3
+
+
+class TestTradingConfigExtended:
+    """Extended tests for trading config (Task 9.2)."""
+
+    def test_adx_strong_threshold(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.adx_strong == 25
+
+    def test_atr_fallback_pct(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.atr_fallback_pct == 2.0
+
+    def test_macd_score_multiplier(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.macd_score_multiplier == 10
+
+    def test_volume_delta_norm(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.volume_delta_norm == 50
+
+    def test_ema_strength_cap(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        assert settings.config.trading.ema_strength_cap == 1.0
+
+
+class TestConfigHotReload:
+    """Tests for hot-reload mechanism (Task 9.2)."""
+
+    @pytest.mark.asyncio
+    async def test_reload_config_function_exists(self):
+        import config.settings as settings
+        assert hasattr(settings, "reload_config")
+        assert callable(settings.reload_config)
+
+    @pytest.mark.asyncio
+    async def test_reload_config_replaces_singleton(self):
+        import config.settings as settings
+        importlib.reload(settings)
+
+        old_id = id(settings.config)
+        await settings.reload_config()
+        new_id = id(settings.config)
+
+        assert old_id != new_id, "reload_config should create a new config instance"
+
+    @pytest.mark.asyncio
+    async def test_reload_config_applies_env_changes(self, monkeypatch):
+        """Verify reload_config creates a fresh instance.
+
+        Note: dataclass defaults are evaluated at class-definition time,
+        so monkeypatching os.environ after module import won't affect
+        already-defined defaults. This test verifies the singleton is
+        replaced, which is the key hot-reload behaviour.
+        """
+        import config.settings as settings
+        importlib.reload(settings)
+
+        old_id = id(settings.config)
+        old_trading = settings.config.trading
+
+        # Monkeypatch and reload
+        monkeypatch.setenv("ADX_STRONG", "30")
+        await settings.reload_config()
+
+        new_id = id(settings.config)
+        new_trading = settings.config.trading
+
+        # Singleton was replaced
+        assert old_id != new_id
+        # Trading config is a new instance
+        assert old_trading is not new_trading

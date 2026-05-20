@@ -1,6 +1,7 @@
 """
 indicators/engine.py — Расчёт технических индикаторов
 """
+import math
 from dataclasses import dataclass
 from typing import Optional
 import pandas as pd
@@ -8,6 +9,14 @@ import pandas_ta as ta
 import numpy as np
 from loguru import logger
 from config.settings import config
+
+
+def _safe_float(val, default=0.0) -> float:
+    """Convert to float, replacing None/NaN with default."""
+    if val is None:
+        return default
+    f = float(val)
+    return default if math.isnan(f) or math.isinf(f) else f
 
 
 @dataclass
@@ -126,9 +135,12 @@ class IndicatorEngine:
             # MACD
             macd_df = ta.macd(df["close"], fast=cfg.macd_fast, slow=cfg.macd_slow, signal=cfg.macd_signal)
             if macd_df is not None:
-                df["macd"] = macd_df.iloc[:, 0]
-                df["macd_signal"] = macd_df.iloc[:, 2]
-                df["macd_hist"] = macd_df.iloc[:, 1]
+                macd_col = [c for c in macd_df.columns if c.startswith("MACD_")][0]
+                hist_col = [c for c in macd_df.columns if c.startswith("MACDh_")][0]
+                signal_col = [c for c in macd_df.columns if c.startswith("MACDs_")][0]
+                df["macd"] = macd_df[macd_col]
+                df["macd_signal"] = macd_df[signal_col]
+                df["macd_hist"] = macd_df[hist_col]
             else:
                 df["macd"] = np.nan
                 df["macd_signal"] = np.nan
@@ -153,7 +165,15 @@ class IndicatorEngine:
             df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=cfg.atr_period)
 
             # Volume SMA
-            df["volume_sma"] = ta.sma(df["volume"], length=20)
+            df["volume_sma"] = ta.sma(df["volume"], length=cfg.volume_sma_period)
+
+            # Volume Delta (for futures with taker buy volume)
+            if "taker_buy_volume" in df.columns:
+                buy_vol = df["taker_buy_volume"]
+                sell_vol = df["volume"] - buy_vol
+                df["volume_delta_pct"] = ((buy_vol - sell_vol) / df["volume"]) * 100
+            else:
+                df["volume_delta_pct"] = None
 
             # Supertrend
             st_df = ta.supertrend(
@@ -188,27 +208,28 @@ class IndicatorEngine:
             return IndicatorValues(
                 symbol=symbol,
                 timeframe=timeframe,
-                close=float(last["close"]),
-                high=float(last["high"]),
-                low=float(last["low"]),
-                volume=float(last["volume"]),
-                ema_fast=float(last["ema_fast"]),
-                ema_slow=float(last["ema_slow"]),
-                ema_trend=float(last["ema_trend"]),
-                ema_fast_prev=float(prev["ema_fast"]),
-                ema_slow_prev=float(prev["ema_slow"]),
-                rsi=float(last["rsi"]),
-                macd=float(last.get("macd", 0) or 0),
-                macd_signal=float(last.get("macd_signal", 0) or 0),
-                macd_hist=float(last.get("macd_hist", 0) or 0),
-                macd_hist_prev=float(prev.get("macd_hist", 0) or 0),
-                adx=float(last["adx"]),
-                dmi_plus=float(last.get("dmi_plus", 0) or 0),
-                dmi_minus=float(last.get("dmi_minus", 0) or 0),
-                atr=float(last["atr"]),
-                supertrend=float(last.get("supertrend", last["close"]) or last["close"]),
-                supertrend_direction=int(last.get("supertrend_dir", 0) or 0),
-                volume_sma=float(last.get("volume_sma", last["volume"]) or last["volume"]),
+                close=_safe_float(last["close"]),
+                high=_safe_float(last["high"]),
+                low=_safe_float(last["low"]),
+                volume=_safe_float(last["volume"]),
+                ema_fast=_safe_float(last["ema_fast"]),
+                ema_slow=_safe_float(last["ema_slow"]),
+                ema_trend=_safe_float(last["ema_trend"]),
+                ema_fast_prev=_safe_float(prev["ema_fast"]),
+                ema_slow_prev=_safe_float(prev["ema_slow"]),
+                rsi=_safe_float(last["rsi"]),
+                macd=_safe_float(last.get("macd")),
+                macd_signal=_safe_float(last.get("macd_signal")),
+                macd_hist=_safe_float(last.get("macd_hist")),
+                macd_hist_prev=_safe_float(prev.get("macd_hist")),
+                adx=_safe_float(last["adx"]),
+                dmi_plus=_safe_float(last.get("dmi_plus")),
+                dmi_minus=_safe_float(last.get("dmi_minus")),
+                atr=_safe_float(last["atr"]),
+                supertrend=_safe_float(last.get("supertrend"), _safe_float(last["close"])),
+                supertrend_direction=int(_safe_float(last.get("supertrend_dir"), 0)),
+                volume_sma=_safe_float(last.get("volume_sma"), _safe_float(last["volume"])),
+                volume_delta_pct=_safe_float(last.get("volume_delta_pct"), None) if last.get("volume_delta_pct") is not None else None,
             )
 
         except Exception as e:

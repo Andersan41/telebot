@@ -4,7 +4,7 @@ storage/database.py — SQLAlchemy модели и методы работы с 
 import os
 from datetime import datetime, timezone
 from typing import Optional, List
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, select, desc, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, select, desc, ForeignKey, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
 from loguru import logger
@@ -26,6 +26,7 @@ class Signal(Base):
     score = Column(Integer, default=0)
     reasons = Column(Text, nullable=True)
     confirmed = Column(Boolean, default=False)  # Подтверждён на 15M
+    factor_fingerprint = Column(String(255), nullable=True, index=True)  # hash of factor combo (Task 6.1)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     sent_at = Column(DateTime, nullable=True)
 
@@ -82,10 +83,26 @@ class Database:
         )
 
     async def init(self):
-        """Создаём таблицы при первом запуске"""
+        """Создаём таблицы при первом запуске + миграции"""
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        await self._migrate()
         logger.info("Database initialized")
+
+    async def _migrate(self):
+        """Добавляем отсутствующие колонки в существующие таблицы."""
+        async with self._engine.connect() as conn:
+            # signals.factor_fingerprint (Task 6.1)
+            result = await conn.execute(
+                text("PRAGMA table_info(signals)")
+            )
+            columns = [row[1] for row in result.fetchall()]
+            if "factor_fingerprint" not in columns:
+                await conn.execute(
+                    text("ALTER TABLE signals ADD COLUMN factor_fingerprint VARCHAR(255)")
+                )
+                await conn.commit()
+                logger.info("Migration: added signals.factor_fingerprint")
 
     async def save_signal(
         self,
@@ -98,6 +115,7 @@ class Database:
         score: int,
         reasons: List[str],
         confirmed: bool = False,
+        factor_fingerprint: Optional[str] = None,
     ) -> Signal:
         async with self._session_factory() as session:
             sig = Signal(
@@ -110,6 +128,7 @@ class Database:
                 score=score,
                 reasons="\n".join(reasons),
                 confirmed=confirmed,
+                factor_fingerprint=factor_fingerprint,
                 sent_at=datetime.now(timezone.utc),
             )
             session.add(sig)
@@ -284,6 +303,40 @@ class Database:
             "best_pnl": max(pnls) if pnls else 0.0,
             "worst_pnl": min(pnls) if pnls else 0.0,
         }
+
+    async def get_historical_winrate(
+        self, factor_fingerprint: str, min_samples: int = 5
+    ) -> Optional[float]:
+        """Return historical winrate (0-100) for a given factor fingerprint.
+
+        Returns None if not enough samples (less than min_samples).
+        Winrate = HIT_TP / (HIT_TP + HIT_SL) * 100
+        """
+        async with self._session_factory() as session:
+            # Find all signals with this fingerprint that have closed outcomes
+            result = await session.execute(
+                select(Signal.id, Signal.signal_type)
+                .where(Signal.factor_fingerprint == factor_fingerprint)
+            )
+            signal_rows = result.all()
+            if not signal_rows:
+                return None
+
+            signal_ids = [row[0] for row in signal_rows]
+            outcomes = await session.execute(
+                select(SignalOutcome)
+                .where(
+                    SignalOutcome.signal_id.in_(signal_ids),
+                    SignalOutcome.status.in_(["HIT_TP", "HIT_SL"]),
+                )
+            )
+            closed = list(outcomes.scalars().all())
+
+            if len(closed) < min_samples:
+                return None
+
+            wins = sum(1 for o in closed if o.status == "HIT_TP")
+            return round(wins / len(closed) * 100, 1)
 
 
 db = Database()

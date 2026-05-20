@@ -111,3 +111,25 @@ class TestExchangeClient:
         await client.connect()
         call_kwargs = mock.binance.call_args[0][0]
         assert call_kwargs["options"]["defaultType"] == "future"
+
+    @pytest.mark.asyncio
+    async def test_fetch_taker_buy_volumes_spot_returns_none(self, client, mock_ccxt, monkeypatch):
+        """Spot market should return None for taker buy volumes."""
+        monkeypatch.setattr(config.exchange, "market_type", "spot")
+        _, mock_ex = mock_ccxt
+        await client.connect()
+        result = await client._fetch_taker_buy_volumes("BTC/USDT", "1h", 10)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_ohlcv_without_taker_buy(self, client, mock_ccxt, monkeypatch):
+        """Spot market fetch_ohlcv should not have taker_buy_volume column."""
+        monkeypatch.setattr(config.exchange, "market_type", "spot")
+        _, mock_ex = mock_ccxt
+        now_ms = 1715000000000
+        raw = [[now_ms + i * 3600000, 100.0, 101.0, 99.0, 100.5, 1000.0] for i in range(10)]
+        mock_ex.fetch_ohlcv.return_value = raw
+        await client.connect()
+        df = await client.fetch_ohlcv("BTC/USDT", "1h", limit=10)
+        assert df is not None
+        assert "taker_buy_volume" not in df.columns

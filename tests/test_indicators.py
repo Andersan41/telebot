@@ -79,6 +79,19 @@ class TestMACD:
         assert any("MACDh_" in c for c in cols)
         assert any("MACDs_" in c for c in cols)
 
+    def test_macd_columns_by_name_not_index(self, sample_ohlcv):
+        close = sample_ohlcv["close"]
+        macd_df = ta.macd(close, fast=12, slow=26, signal=9)
+        macd_col = [c for c in macd_df.columns if c.startswith("MACD_")][0]
+        hist_col = [c for c in macd_df.columns if c.startswith("MACDh_")][0]
+        signal_col = [c for c in macd_df.columns if c.startswith("MACDs_")][0]
+        assert macd_col != hist_col
+        assert macd_col != signal_col
+        assert hist_col != signal_col
+        assert not np.isnan(macd_df[macd_col].iloc[-1])
+        assert not np.isnan(macd_df[hist_col].iloc[-1])
+        assert not np.isnan(macd_df[signal_col].iloc[-1])
+
 
 class TestIndicatorEngine:
     def test_calculate_full_output(self, sample_ohlcv):
@@ -113,3 +126,42 @@ class TestIndicatorEngine:
         assert isinstance(result.ema_fast, float)
         assert isinstance(result.ema_slow, float)
         assert isinstance(result.ema_trend, float)
+
+    def test_volume_sma_uses_config_period(self, sample_ohlcv, monkeypatch):
+        monkeypatch.setenv("VOLUME_SMA_PERIOD", "10")
+        import importlib
+        import config.settings as settings
+        importlib.reload(settings)
+        engine = IndicatorEngine()
+        result = engine.calculate(sample_ohlcv, "BTC/USDT", "1h")
+        assert result is not None
+        assert result.volume_sma is not None
+
+    def test_volume_delta_none_without_taker_buy_column(self, sample_ohlcv):
+        """Without taker_buy_volume column, volume_delta_pct should be None."""
+        engine = IndicatorEngine()
+        result = engine.calculate(sample_ohlcv, "BTC/USDT", "1h")
+        assert result is not None
+        assert result.volume_delta_pct is None
+
+    def test_volume_delta_calculated_from_taker_buy(self, sample_ohlcv):
+        """With taker_buy_volume column, volume_delta_pct should be calculated."""
+        df = sample_ohlcv.copy()
+        # Simulate 70% buy volume → delta = (70-30)/100 * 100 = 40%
+        df["taker_buy_volume"] = df["volume"] * 0.7
+        engine = IndicatorEngine()
+        result = engine.calculate(df, "BTC/USDT", "1h")
+        assert result is not None
+        assert result.volume_delta_pct is not None
+        assert result.volume_delta_pct > 0
+
+    def test_volume_delta_negative_for_sell_dominance(self, sample_ohlcv):
+        """With low taker_buy_volume, delta should be negative."""
+        df = sample_ohlcv.copy()
+        # Simulate 20% buy volume → delta = (20-80)/100 * 100 = -60%
+        df["taker_buy_volume"] = df["volume"] * 0.2
+        engine = IndicatorEngine()
+        result = engine.calculate(df, "BTC/USDT", "1h")
+        assert result is not None
+        assert result.volume_delta_pct is not None
+        assert result.volume_delta_pct < 0

@@ -34,9 +34,10 @@ def format_context_block(verdict: ContextVerdict) -> str:
     lines = [f"\n📊 <b>Контекст рынка:</b>"]
 
     snap = verdict.snapshot
+    nc = config.notifier
     if snap is not None:
         if snap.fear_greed_value is not None:
-            fg_emoji = "⚠️" if snap.fear_greed_value < 20 or snap.fear_greed_value > 80 else "😐"
+            fg_emoji = "⚠️" if snap.fear_greed_value < nc.fng_extreme_threshold_low or snap.fear_greed_value > nc.fng_extreme_threshold_high else "😐"
             lines.append(
                 f"├ Fear & Greed: {snap.fear_greed_value} ({html.escape(snap.fear_greed_label or '')}) {fg_emoji}"
             )
@@ -45,16 +46,16 @@ def format_context_block(verdict: ContextVerdict) -> str:
             fr_emoji = "✅" if (fr < 0) else "⚠️"
             lines.append(f"├ Funding: {fr:.3f}% {fr_emoji}")
         if snap.long_short_ratio is not None:
-            ls_emoji = "✅" if snap.long_short_ratio < 0.7 else "⚠️"
+            ls_emoji = "✅" if snap.long_short_ratio < nc.long_short_ratio_threshold else "⚠️"
             lines.append(f"├ Long/Short: {snap.long_short_ratio:.2f} {ls_emoji}")
         if snap.open_interest_delta is not None:
             oi_emoji = "✅" if snap.open_interest_delta > 0 else "⚠️"
             lines.append(f"├ OI: +{snap.open_interest_delta:.1f}% {oi_emoji}")
         if snap.news_sentiment_score is not None:
-            if snap.news_sentiment_score > 0.2:
+            if snap.news_sentiment_score > nc.sentiment_positive_threshold:
                 news_emoji = "😊"
                 news_label = "позитивные"
-            elif snap.news_sentiment_score < -0.2:
+            elif snap.news_sentiment_score < nc.sentiment_negative_threshold:
                 news_emoji = "😟"
                 news_label = "негативные"
             else:
@@ -78,8 +79,10 @@ def format_context_block(verdict: ContextVerdict) -> str:
     return "\n".join(lines)
 
 
-async def send_signal(result: SignalResult, context_verdict: ContextVerdict = None, retries: int = 3):
+async def send_signal(result: SignalResult, context_verdict: ContextVerdict = None, retries: int = None):
     """Отправляем сигнал в канал с повторными попытками при ошибке."""
+    if retries is None:
+        retries = config.notifier.send_retries
     if not config.telegram.channel_id:
         logger.warning("TELEGRAM_CHANNEL_ID not set, skipping notification")
         return

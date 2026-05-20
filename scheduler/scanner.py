@@ -29,6 +29,7 @@ from derivatives.open_interest import classify_oi
 from risk.volatility_regime import classify_volatility
 from risk.dynamic_risk import calculate_risk
 from risk.no_trade_zones import check_no_trade_zones
+from risk.market_regime import RegimeDetector, MarketRegime
 from scoring.confidence_v2 import (
     confidence_engine_v2,
     score_htf_trend,
@@ -47,6 +48,96 @@ from scoring.confidence_v2 import (
 _VERDICT_RANK = {"BLOCKED": 0, "CONFLICTED": 1, "WEAK": 2, "CONFIRMED": 3}
 
 
+def _build_factor_fingerprint(
+    ind,
+    result: SignalResult,
+    mtf_aligned: bool,
+    liq_bullish_sweeps: int,
+    liq_bearish_sweeps: int,
+    liq_has_bullish_ob: bool,
+    liq_has_bearish_ob: bool,
+    liq_has_bullish_fvg: bool,
+    liq_has_bearish_fvg: bool,
+) -> str:
+    """Build a deterministic fingerprint string for the factor combination (Task 6.1).
+
+    Format: sorted key=value pairs joined by '|', e.g.:
+    'adx_strong|ema_bullish|macd_pos|mtf_aligned|st_bullish|vol_above'
+    """
+    flags: list[str] = []
+
+    # Trend factors
+    if result._structure_trend == "bullish":
+        flags.append("trend_bullish")
+    elif result._structure_trend == "bearish":
+        flags.append("trend_bearish")
+
+    if result._structure_bos == "bullish":
+        flags.append("bos_bullish")
+    elif result._structure_bos == "bearish":
+        flags.append("bos_bearish")
+
+    # EMA alignment (from reasons or factor_strengths)
+    ema_strength = result._factor_strengths.get("EMA", 0)
+    if ema_strength > 0:
+        flags.append("ema_bullish")
+    elif ema_strength < 0:
+        flags.append("ema_bearish")
+
+    # Supertrend
+    st_strength = result._factor_strengths.get("Supertrend", 0)
+    if st_strength > 0:
+        flags.append("st_bullish")
+    elif st_strength < 0:
+        flags.append("st_bearish")
+
+    # MACD
+    macd_strength = result._factor_strengths.get("MACD", 0)
+    if macd_strength > 0:
+        flags.append("macd_pos")
+    elif macd_strength < 0:
+        flags.append("macd_neg")
+
+    # RSI
+    rsi_val = float(ind.rsi) if ind.rsi is not None else 50
+    if rsi_val < config.trading.rsi_oversold:
+        flags.append("rsi_oversold")
+    elif rsi_val >= config.trading.rsi_overbought:
+        flags.append("rsi_overbought")
+
+    # Volume
+    vol_strength = result._factor_strengths.get("Volume", 0)
+    if vol_strength > 0:
+        flags.append("vol_above")
+    elif vol_strength < 0:
+        flags.append("vol_below")
+
+    # ADX
+    adx_val = float(ind.adx) if ind.adx is not None else 0
+    if adx_val >= 25:
+        flags.append("adx_strong")
+
+    # MTF
+    if mtf_aligned:
+        flags.append("mtf_aligned")
+
+    # Liquidity
+    if liq_bullish_sweeps > 0:
+        flags.append("liq_bull_sweep")
+    if liq_bearish_sweeps > 0:
+        flags.append("liq_bear_sweep")
+    if liq_has_bullish_ob:
+        flags.append("liq_bull_ob")
+    if liq_has_bearish_ob:
+        flags.append("liq_bear_ob")
+    if liq_has_bullish_fvg:
+        flags.append("liq_bull_fvg")
+    if liq_has_bearish_fvg:
+        flags.append("liq_bear_fvg")
+
+    return "|".join(sorted(flags))
+
+
 def _verdict_passes_min(verdict: str) -> bool:
     """True, если фактический verdict ≥ настроенного CONTEXT_MIN_VERDICT.
 
@@ -56,6 +147,48 @@ def _verdict_passes_min(verdict: str) -> bool:
     if min_v not in _VERDICT_RANK:
         return True
     return _VERDICT_RANK.get(verdict, 0) >= _VERDICT_RANK[min_v]
+
+
+def _detect_regime(ind: IndicatorValues, df) -> Optional[MarketRegime]:
+    """Detect market regime from indicator values and OHLCV data."""
+    try:
+        adx = float(ind.adx) if ind.adx is not None else 20.0
+        current_atr = float(ind.atr) if ind.atr is not None else 0.0
+        current_volume = float(ind.volume) if ind.volume is not None else 0.0
+
+        # Build ATR history from dataframe (approximate using high-low range)
+        if len(df) >= 10:
+            atr_history = []
+            for _, row in df.tail(config.risk.regime_atr_lookback).iterrows():
+                high_low = row['high'] - row['low']
+                atr_history.append(float(high_low))
+        else:
+            atr_history = [current_atr] * 10
+
+        # Build EMA spread history (approximate from recent values)
+        ema_fast = float(ind.ema_fast) if ind.ema_fast is not None else 0.0
+        ema_slow = float(ind.ema_slow) if ind.ema_slow is not None else 0.0
+        current_spread = abs(ema_fast - ema_slow) if ema_slow > 0 else 0.0
+        ema_spread_history = [current_spread] * 5
+
+        # Volume history from dataframe
+        if len(df) >= 10:
+            volume_history = [float(row['volume']) for _, row in df.tail(20).iterrows()]
+        else:
+            volume_history = [current_volume] * 10
+
+        detector = RegimeDetector(
+            adx=adx,
+            atr_history=atr_history,
+            ema_spread_history=ema_spread_history,
+            volume_history=volume_history,
+            current_atr=current_atr,
+            current_volume=current_volume,
+        )
+        return detector.detect()
+    except Exception as e:
+        logger.warning(f"Regime detection failed: {e}")
+        return None
 
 
 async def _is_cooldown_active(symbol: str, timeframe: str) -> bool:
@@ -95,7 +228,30 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             return None
         ind, df = ind_result
 
-        result = signal_engine.evaluate(ind)
+        # Detect Market regime (Task 4.2)
+        regime = _detect_regime(ind, df)
+
+        # Early liquidity/structure analysis for structural SL/TP (Task 5.1)
+        _sweeps: list = []
+        _order_blocks: list = []
+        _structure = None
+        _df_clean = None
+        try:
+            _df_clean = df.dropna(subset=["open", "high", "low", "close", "volume"])
+            if len(_df_clean) >= 10:
+                _sweeps = detect_sweeps(_df_clean, lookback=50)
+                _order_blocks = detect_order_blocks(_df_clean, lookback=100)
+                _structure = analyze_structure(_df_clean, lookback=50)
+        except Exception as e:
+            logger.warning(f"Early structure/liquidity analysis failed for {symbol} {timeframe}: {e}")
+
+        result = signal_engine.evaluate(
+            ind,
+            regime=regime,
+            sweeps=_sweeps,
+            order_blocks=_order_blocks,
+            structure=_structure,
+        )
         if not result.is_actionable:
             logger.debug(f"No signal: {symbol} {timeframe}")
             return None
@@ -110,7 +266,8 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             ind_confirm_result = await _get_indicators(symbol, confirm_tf)
             if ind_confirm_result is not None:
                 ind_confirm, _df_confirm = ind_confirm_result
-                confirm_result = signal_engine.evaluate(ind_confirm)
+                confirm_regime = _detect_regime(ind_confirm, _df_confirm)
+                confirm_result = signal_engine.evaluate(ind_confirm, regime=confirm_regime)
                 if confirm_result.signal != result.signal:
                     logger.info(
                         f"Signal NOT confirmed on {confirm_tf}: "
@@ -197,56 +354,50 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             for obs in tp_eval.obstacles:
                 result.level_warnings.append(f"⚠️ TP path: {obs.description}")
 
-            # Шаг 2.8: Market Structure Analysis
+            # Шаг 2.8: Market Structure Analysis (reuses early-computed data from Task 5.1)
             try:
-                df_clean = df.dropna(subset=["open", "high", "low", "close", "volume"])
-                if len(df_clean) < 10:
-                    logger.warning(f"Not enough clean candles for structure analysis: {symbol} {timeframe}")
-                else:
-                    structure = analyze_structure(df_clean, lookback=50)
-                    result._structure_trend = structure.trend
-                    if structure.last_bos:
-                        result._structure_bos = structure.last_bos.type
+                if _structure is not None:
+                    result._structure_trend = _structure.trend
+                    if _structure.last_bos:
+                        result._structure_bos = _structure.last_bos.type
                     logger.debug(
-                        f"Structure {symbol} {timeframe}: trend={structure.trend}, "
-                        f"bos={structure.last_bos.type if structure.last_bos else 'none'}, "
-                        f"breaks={structure.structure_breaks}"
+                        f"Structure {symbol} {timeframe}: trend={_structure.trend}, "
+                        f"bos={_structure.last_bos.type if _structure.last_bos else 'none'}, "
+                        f"breaks={_structure.structure_breaks}"
                     )
+                else:
+                    logger.warning(f"Structure data not available: {symbol} {timeframe}")
             except Exception as e:
                 logger.warning(f"Structure analysis failed for {symbol} {timeframe}: {e}")
 
-            # Шаг 2.8b: Liquidity Analysis (Sweeps, Order Blocks, FVG, Candle Quality)
+            # Шаг 2.8b: Liquidity Analysis (reuses early-computed data from Task 5.1)
             try:
-                df_clean = df.dropna(subset=["open", "high", "low", "close", "volume"])
-                if len(df_clean) < 10:
-                    logger.warning(f"Not enough clean candles for liquidity analysis: {symbol} {timeframe}")
-                else:
-                    sweeps = detect_sweeps(df_clean, lookback=50)
-                    order_blocks = detect_order_blocks(df_clean, lookback=100)
-                    fvgs = detect_fvg(df_clean, lookback=getattr(config, "liquidity_fvg_lookback", 100))
-
-                    valid_bullish_sweeps = [s for s in sweeps if s.type == "bullish" and s.is_valid]
-                    valid_bearish_sweeps = [s for s in sweeps if s.type == "bearish" and s.is_valid]
+                if _sweeps and _order_blocks:
+                    valid_bullish_sweeps = [s for s in _sweeps if s.type == "bullish" and s.is_valid]
+                    valid_bearish_sweeps = [s for s in _sweeps if s.type == "bearish" and s.is_valid]
                     _liq_bullish_sweeps = len(valid_bullish_sweeps)
                     _liq_bearish_sweeps = len(valid_bearish_sweeps)
 
                     if valid_bullish_sweeps:
                         result.reasons.append(
-                            f"Liquidity: bullish sweep detected (reclaim in {valid_bullish_sweeps[-1].reclaim_candle} candles)"
-                        )
-                    if valid_bearish_sweeps:
-                        result.reasons.append(
-                            f"Liquidity: bearish sweep detected (reclaim in {valid_bearish_sweeps[-1].reclaim_candle} candles)"
+                            f"Liquidity: bullish sweep detected (reclaim in {valid_bullish_sweeps[-1].reclaim_candles} candles)"
                         )
 
-                    if order_blocks:
-                        recent_ob = order_blocks[-1]
+                    if valid_bearish_sweeps:
+                        result.reasons.append(
+                            f"Liquidity: bearish sweep detected (reclaim in {valid_bearish_sweeps[-1].reclaim_candles} candles)"
+                        )
+
+                    if _order_blocks:
+                        recent_ob = _order_blocks[-1]
                         _liq_has_bullish_ob = recent_ob.type == "bullish"
                         _liq_has_bearish_ob = recent_ob.type == "bearish"
                         result.reasons.append(
                             f"Order Block: {recent_ob.type} at {recent_ob.midpoint:.4f}"
                         )
 
+                    # FVG detection still needs to run separately
+                    fvgs = detect_fvg(_df_clean, lookback=getattr(config, "liquidity_fvg_lookback", 100))
                     if fvgs:
                         active_fvgs = [f for f in fvgs if f.is_active]
                         recent_fvg = active_fvgs[-1] if active_fvgs else None
@@ -260,7 +411,37 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                             filled_count = len(fvgs) - len(active_fvgs)
                             logger.debug(f"All {len(fvgs)} FVGs filled ({filled_count}) for {symbol} {timeframe}")
 
-                    candle_quality = analyze_last_candle(df_clean, atr_value=ind.atr)
+                    # Recalculate TP with FVGs (Task 5.2 — Dynamic TP)
+                    if fvgs and result.tp is not None:
+                        try:
+                            from risk.dynamic_risk import calculate_structural_tp as recalc_tp
+                            atr_val = float(ind.atr) if ind.atr is not None else 0.0
+                            if atr_val <= 0:
+                                atr_val = float(ind.close) * 0.02 if ind.close else 0.02
+                            new_targets = recalc_tp(
+                                direction=result.signal.value,
+                                entry=entry_price or result.close,
+                                sl=result.sl or (entry_price or result.close),
+                                sweeps=_sweeps,
+                                order_blocks=_order_blocks,
+                                structure=_structure,
+                                fvgs=fvgs,
+                                atr=atr_val,
+                                close=float(ind.close) if ind.close else 0.0,
+                            )
+                            if new_targets:
+                                old_tp = result.tp
+                                result.tp = new_targets[0].price
+                                if result.tp != old_tp:
+                                    logger.info(
+                                        f"TP recalculated with FVG for {symbol} {timeframe}: "
+                                        f"{old_tp:.4f} → {result.tp:.4f} (RR={new_targets[0].rr:.1f})"
+                                    )
+                                    result.reasons.append(f"TP adjusted by FVG: {result.tp:.4f}")
+                        except Exception as e:
+                            logger.warning(f"TP recalculation with FVG failed for {symbol} {timeframe}: {e}")
+
+                    candle_quality = analyze_last_candle(_df_clean, atr_value=ind.atr)
                     if candle_quality:
                         if candle_quality.is_displacement:
                             direction_label = "bullish" if candle_quality.is_bullish else "bearish"
@@ -277,7 +458,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                         entry_price=entry_price or result.close,
                         tp_price=result.tp or 0,
                         sr_levels=sr_levels,
-                        order_blocks=order_blocks,
+                        order_blocks=_order_blocks,
                         fvgs=fvgs,
                     )
                     if tp_eval_with_liquidity.blocked and not tp_eval.blocked:
@@ -289,29 +470,32 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     for obs in tp_eval_with_liquidity.obstacles:
                         if obs not in tp_eval.obstacles:
                             result.level_warnings.append(f"TP path: {obs.description}")
+                else:
+                    logger.warning(f"Liquidity data not available: {symbol} {timeframe}")
             except Exception as e:
                 logger.warning(f"Liquidity analysis failed for {symbol} {timeframe}: {e}")
 
             # Шаг 2.9: Multi-Timeframe Alignment
             if config.market_structure.mtf_enabled and result.tp:
                 try:
-                    mtf_aligned, mtf_states = await check_mtf_alignment(
+                    mtf_result = await check_mtf_alignment(
                         symbol=symbol,
                         direction="bullish" if is_buy else "bearish",
                         primary_tf=timeframe,
                         exchange_client=exchange_client,
                     )
-                    if not mtf_aligned:
+                    if not mtf_result.aligned:
                         logger.info(
                             f"Signal BLOCKED by MTF alignment: {result.signal} {symbol} {timeframe} — "
-                            f"not enough higher timeframes aligned"
+                            f"state={mtf_result.alignment_state}, not enough HTFs aligned"
                         )
                         return None
                     _mtf_aligned = True
-                    _mtf_count = len(mtf_states)
+                    _mtf_count = len(mtf_result.states)
+                    _mtf_state = mtf_result.alignment_state
                     logger.debug(
                         f"MTF alignment OK for {symbol} {timeframe}: "
-                        f"{len(mtf_states)} HTFs checked"
+                        f"state={mtf_result.alignment_state}, {len(mtf_result.states)} HTFs checked"
                     )
                 except Exception as e:
                     logger.warning(f"MTF alignment check failed for {symbol} {timeframe}: {e}")
@@ -568,6 +752,24 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         vol_ratio = (ind.volume / ind.volume_sma) if ind.volume_sma > 0 else 1.0
         mtf_required = config.market_structure.mtf_required_alignment
 
+        # Task 6.1: Build factor fingerprint and query historical winrate
+        factor_fingerprint = _build_factor_fingerprint(
+            ind, result, _mtf_aligned,
+            _liq_bullish_sweeps, _liq_bearish_sweeps,
+            _liq_has_bullish_ob, _liq_has_bearish_ob,
+            _liq_has_bullish_fvg, _liq_has_bearish_fvg,
+        )
+        try:
+            historical_wr = await db.get_historical_winrate(factor_fingerprint)
+            if historical_wr is not None:
+                logger.info(
+                    f"Historical WR for fingerprint '{factor_fingerprint}': "
+                    f"{historical_wr}% (blended with score)"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to get historical winrate: {e}")
+            historical_wr = None
+
         conf_v2 = confidence_engine_v2.compute(
             direction=direction_v2,  # type: ignore[arg-type]
             htf_trend_score=score_htf_trend(_mtf_aligned, _mtf_count, mtf_required),
@@ -595,6 +797,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             ),
             macd_score=score_macd(ind.macd_hist, ind.close, direction_v2),
             adx_score=score_adx(ind.adx, ind.dmi_plus, ind.dmi_minus, direction_v2, config.trading.adx_min),
+            historical_winrate=historical_wr,
         )
         result._confidence_v2 = conf_v2
         logger.info(
@@ -613,6 +816,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             score=result.score,
             reasons=result.reasons,
             confirmed=confirmed_on_lower_tf,
+            factor_fingerprint=factor_fingerprint,
         )
 
         # F1: создаём outcome для трекинга SL/TP

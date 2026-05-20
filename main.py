@@ -87,6 +87,8 @@ async def main():
         logger.info("Shutting down...")
         scheduler.stop()
         await exchange_client.close()
+        if app.updater and app.updater.running:
+            await app.updater.stop()
         if app.running:
             await app.stop()
         await app.shutdown()

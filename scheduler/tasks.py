@@ -1,9 +1,12 @@
 """
 scheduler/tasks.py — APScheduler задачи
+
+Параметры расписания берутся из config.scheduler (hot-reload safe).
 """
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
+from config.settings import config
 from scheduler.scanner import run_scan_cycle
 
 
@@ -21,9 +24,10 @@ class TaskScheduler:
         Каждый джоб запускает `run_scan_cycle` только для своего таймфрейма,
         чтобы не дублировать работу.
         """
+        sc = config.scheduler
         self._scheduler.add_job(
             self._scan_job,
-            CronTrigger(minute=2),
+            CronTrigger(minute=sc.hourly_scan_minute),
             id="hourly_scan",
             name="Hourly market scan (1H)",
             max_instances=1,
@@ -32,7 +36,7 @@ class TaskScheduler:
         )
         self._scheduler.add_job(
             self._scan_job,
-            CronTrigger(hour="0,4,8,12,16,20", minute=5),
+            CronTrigger(hour=sc.four_hour_scan_hours, minute=sc.four_hour_scan_minute),
             id="4h_scan",
             name="4H market scan",
             max_instances=1,

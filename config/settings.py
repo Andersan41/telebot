@@ -1,5 +1,8 @@
 """
 config/settings.py — Централизованная конфигурация бота
+
+Все пороги, веса и параметры — в одном месте. Горячая перезагрузка через
+`reload_config()` (перечитывает .env и пересоздаёт singleton без рестарта).
 """
 import os
 from dataclasses import dataclass, field
@@ -11,65 +14,461 @@ load_dotenv()
 
 @dataclass
 class TelegramConfig:
+    """Параметры Telegram-бота."""
+
+    # Токен бота для авторизации API-запросов
     token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    # ID канала для публикации сигналов
     channel_id: str = os.getenv("TELEGRAM_CHANNEL_ID", "")
+    # Список ID администраторов (через запятую)
     admin_ids: List[int] = field(default_factory=lambda: [
         int(x.strip()) for x in os.getenv("TELEGRAM_ADMIN_IDS", "").split(",") if x.strip()
     ])
+    # ID канала для логов ошибок
     error_channel_id: str = os.getenv("TELEGRAM_ERROR_CHANNEL_ID", "")
 
 
 @dataclass
 class ExchangeConfig:
+    """Параметры подключения к бирже."""
+
+    # Название биржи (по умолчанию binance)
     name: str = os.getenv("EXCHANGE", "binance")
+    # API-ключ биржи
     api_key: str = os.getenv("BINANCE_API_KEY", "")
+    # API-секрет биржи
     api_secret: str = os.getenv("BINANCE_API_SECRET", "")
+    # Использовать ли тестнет
     testnet: bool = os.getenv("USE_TESTNET", "false").lower() == "true"
-    market_type: str = os.getenv("MARKET_TYPE", "spot")  # spot | future
+    # Тип рынка: spot или future
+    market_type: str = os.getenv("MARKET_TYPE", "spot")
 
 
 @dataclass
 class TradingConfig:
+    """Параметры торговли и индикаторов."""
+
+    # Список инструментов для сканирования (через запятую)
     symbols: List[str] = field(default_factory=lambda: [
         s.strip() for s in os.getenv("SYMBOLS", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")
     ])
+    # Основные таймфреймы для сканирования
     primary_timeframes: List[str] = field(default_factory=lambda: [
         tf.strip() for tf in os.getenv("PRIMARY_TIMEFRAMES", "1h,4h").split(",")
     ])
+    # Таймфрейм подтверждения сигнала
     confirm_timeframe: str = os.getenv("CONFIRM_TIMEFRAME", "15m")
 
-    # Параметры индикаторов (читаются из .env, дефолты — в скобках)
+    # ─── EMA ─────────────────────────────────────────────────────────────
+    # Период быстрой EMA
     ema_fast: int = int(os.getenv("EMA_FAST", "9"))
+    # Период медленной EMA
     ema_slow: int = int(os.getenv("EMA_SLOW", "21"))
+    # Период трендовой EMA
     ema_trend: int = int(os.getenv("EMA_TREND", "50"))
-    rsi_period: int = int(os.getenv("RSI_PERIOD", "14"))
-    rsi_overbought: float = float(os.getenv("RSI_OVERBOUGHT", "70"))
-    rsi_oversold: float = float(os.getenv("RSI_OVERSOLD", "30"))
-    rsi_bull_min: float = float(os.getenv("RSI_BULL_MIN", "50"))
-    rsi_bear_max: float = float(os.getenv("RSI_BEAR_MAX", "50"))
-    macd_fast: int = int(os.getenv("MACD_FAST", "12"))
-    macd_slow: int = int(os.getenv("MACD_SLOW", "26"))
-    macd_signal: int = int(os.getenv("MACD_SIGNAL", "9"))
-    adx_period: int = int(os.getenv("ADX_PERIOD", "14"))
-    adx_min: float = float(os.getenv("ADX_MIN", "20"))
-    atr_period: int = int(os.getenv("ATR_PERIOD", "14"))
-    atr_multiplier_sl: float = float(os.getenv("ATR_MULTIPLIER_SL", "1.5"))
-    atr_multiplier_tp: float = float(os.getenv("ATR_MULTIPLIER_TP", "3.0"))
-    supertrend_period: int = int(os.getenv("SUPERTREND_PERIOD", "10"))
-    supertrend_multiplier: float = float(os.getenv("SUPERTREND_MULTIPLIER", "3.0"))
-    volume_factor: float = float(os.getenv("VOLUME_FACTOR", "1.2"))
+    # Минимальный % разницы между EMA fast/slow (фильтр)
+    min_ema_spread_pct: float = float(os.getenv("MIN_EMA_SPREAD_PCT", "0.15"))
+    # Включить проверку наклона EMA fast
+    ema_slope_check: bool = os.getenv("EMA_SLOPE_CHECK", "true").lower() == "true"
+    # Коэффициент нормализации EMA spread strength (1.0 = max strength при spread >= 1%)
+    ema_strength_cap: float = float(os.getenv("EMA_STRENGTH_CAP", "1.0"))
 
-    # Параметры расчёта свечей
+    # ─── RSI ─────────────────────────────────────────────────────────────
+    # Период RSI
+    rsi_period: int = int(os.getenv("RSI_PERIOD", "14"))
+    # Уровень перекупленности RSI
+    rsi_overbought: float = float(os.getenv("RSI_OVERBOUGHT", "70"))
+    # Уровень перепроданности RSI
+    rsi_oversold: float = float(os.getenv("RSI_OVERSOLD", "30"))
+    # Минимальный RSI для бычьей зоны
+    rsi_bull_min: float = float(os.getenv("RSI_BULL_MIN", "50"))
+    # Максимальный RSI для медвежьей зоны
+    rsi_bear_max: float = float(os.getenv("RSI_BEAR_MAX", "50"))
+    # Минимальный RSI для нейтрально-медвежьей зоны
+    rsi_neutral_bear_min: float = float(os.getenv("RSI_NEUTRAL_BEAR_MIN", "65"))
+
+    # ─── MACD ────────────────────────────────────────────────────────────
+    # Период быстрой линии MACD
+    macd_fast: int = int(os.getenv("MACD_FAST", "12"))
+    # Период медленной линии MACD
+    macd_slow: int = int(os.getenv("MACD_SLOW", "26"))
+    # Период сигнальной линии MACD
+    macd_signal: int = int(os.getenv("MACD_SIGNAL", "9"))
+    # Минимальный % MACD гистограммы от цены (фильтр шума)
+    min_macd_pct: float = float(os.getenv("MIN_MACD_PCT", "0.03"))
+    # Множитель MACD raw score
+    macd_score_multiplier: float = float(os.getenv("MACD_SCORE_MULTIPLIER", "10"))
+
+    # ─── ADX / DMI ───────────────────────────────────────────────────────
+    # Период ADX
+    adx_period: int = int(os.getenv("ADX_PERIOD", "14"))
+    # Минимальный ADX для тренда (фильтр флэта)
+    adx_min: float = float(os.getenv("ADX_MIN", "20"))
+    # Порог ADX для strong trend
+    adx_strong: float = float(os.getenv("ADX_STRONG", "25"))
+    # Диапазон нормализации ADX strength (ADX_MIN → 0, ADX_MIN+30 → 1)
+    adx_strength_range: float = float(os.getenv("ADX_STRENGTH_RANGE", "30"))
+    # Делитель нормализации DMI diff
+    dmi_norm_divisor: float = float(os.getenv("DMI_NORM_DIVISOR", "50"))
+    # Множитель DMI strength
+    dmi_strength_multiplier: float = float(os.getenv("DMI_STRENGTH_MULTIPLIER", "2"))
+
+    # ─── ATR ─────────────────────────────────────────────────────────────
+    # Период ATR
+    atr_period: int = int(os.getenv("ATR_PERIOD", "14"))
+    # Множитель ATR для Stop Loss
+    atr_multiplier_sl: float = float(os.getenv("ATR_MULTIPLIER_SL", "1.5"))
+    # Множитель ATR для Take Profit
+    atr_multiplier_tp: float = float(os.getenv("ATR_MULTIPLIER_TP", "3.0"))
+    # Fallback ATR = close * atr_fallback_pct (если ATR = 0)
+    atr_fallback_pct: float = float(os.getenv("ATR_FALLBACK_PCT", "2.0"))
+
+    # ─── Supertrend ──────────────────────────────────────────────────────
+    # Период Supertrend
+    supertrend_period: int = int(os.getenv("SUPERTREND_PERIOD", "10"))
+    # Множитель Supertrend
+    supertrend_multiplier: float = float(os.getenv("SUPERTREND_MULTIPLIER", "3.0"))
+
+    # ─── Volume ──────────────────────────────────────────────────────────
+    # Множитель объёма выше SMA для фильтра
+    volume_factor: float = float(os.getenv("VOLUME_FACTOR", "1.2"))
+    # Период SMA объёма
+    volume_sma_period: int = int(os.getenv("VOLUME_SMA_PERIOD", "20"))
+    # Порог бычьей дельты объёма (%)
+    delta_bullish: float = float(os.getenv("DELTA_BULLISH", "15"))
+    # Порог медвежьей дельты объёма (%)
+    delta_bearish: float = float(os.getenv("DELTA_BEARISH", "-15"))
+    # Делитель нормализации volume delta strength
+    volume_delta_norm: float = float(os.getenv("VOLUME_DELTA_NORM", "50"))
+
+    # ─── Candles ─────────────────────────────────────────────────────────
+    # Лимит свечей при запросе OHLCV
     candles_limit: int = int(os.getenv("CANDLES_LIMIT", "200"))
 
 
 @dataclass
+class LiquidityConfig:
+    """Параметры ликвидности: sweeps, order blocks, FVG, качество свечей."""
+
+    # ─── Sweeps ──────────────────────────────────────────────────────────
+    # Максимальное число свечей для reclaim после sweep
+    sweep_max_reclaim_candles: int = int(os.getenv("SWEEP_MAX_RECLAIM_CANDLES", "3"))
+    # Минимальное соотношение объёма sweep к среднему
+    sweep_min_volume_ratio: float = float(os.getenv("SWEEP_MIN_VOLUME_RATIO", "1.5"))
+    # Число свечей для «быстрого» reclaim (strength scoring)
+    sweep_fast_reclaim_candles: int = int(os.getenv("SWEEP_FAST_RECLAIM_CANDLES", "3"))
+    # Минимальное соотношение фитиля к телу для sweep
+    sweep_min_wick_body_ratio: float = float(os.getenv("SWEEP_MIN_WICK_BODY_RATIO", "2.0"))
+    # Lookback для поиска swing points при sweep detection
+    sweep_lookback: int = int(os.getenv("SWEEP_LOOKBACK", "50"))
+    # Окно для определения swing points
+    sweep_swing_window: int = int(os.getenv("SWEEP_SWING_WINDOW", "5"))
+    # Максимальное число свечей для проверки reclaim
+    sweep_max_check_reclaim: int = int(os.getenv("SWEEP_MAX_CHECK_RECLAIM", "10"))
+    # Максимальное число свечей для проверки displacement после sweep
+    sweep_max_check_displacement: int = int(os.getenv("SWEEP_MAX_CHECK_DISPLACEMENT", "5"))
+    # Порог delta для подтверждения направления sweep
+    sweep_delta_aligned_threshold: float = float(os.getenv("SWEEP_DELTA_ALIGNED_THRESHOLD", "0.5"))
+
+    # Sweep strength scoring increments
+    sweep_strength_fast_reclaim: float = float(os.getenv("SWEEP_STRENGTH_FAST_RECLAIM", "0.3"))
+    sweep_strength_high_volume: float = float(os.getenv("SWEEP_STRENGTH_HIGH_VOLUME", "0.3"))
+    sweep_strength_delta_aligned: float = float(os.getenv("SWEEP_STRENGTH_DELTA_ALIGNED", "0.2"))
+    sweep_strength_displacement: float = float(os.getenv("SWEEP_STRENGTH_DISPLACEMENT", "0.2"))
+
+    # ─── Order Blocks ────────────────────────────────────────────────────
+    # Минимальный % displacement для OB
+    ob_min_displacement_pct: float = float(os.getenv("OB_MIN_DISPLACEMENT_PCT", "2.0"))
+    # Минимальный ATR-нормализованный displacement для OB
+    ob_min_displacement_atr: float = float(os.getenv("OB_MIN_DISPLACEMENT_ATR", "1.5"))
+    # Минимальное соотношение объёма для OB
+    ob_min_volume_ratio: float = float(os.getenv("OB_MIN_VOLUME_RATIO", "1.5"))
+    # Максимальный возраст OB в свечах
+    ob_max_age_candles: int = int(os.getenv("OB_MAX_AGE_CANDLES", "50"))
+    # Требуется ли ретест для валидации OB
+    ob_retest_required: bool = os.getenv("OB_RETEST_REQUIRED", "false").lower() == "true"
+    # Lookback для поиска OB
+    ob_lookback: int = int(os.getenv("OB_LOOKBACK", "100"))
+    # Окно для swing detection в OB
+    ob_swing_window: int = int(os.getenv("OB_SWING_WINDOW", "5"))
+    # Look-ahead для проверки BOS после OB
+    ob_bos_lookahead: int = int(os.getenv("OB_BOS_LOOKAHEAD", "20"))
+    # Максимальный look-ahead для проверки ретеста OB
+    ob_retest_max_lookahead: int = int(os.getenv("OB_RETEST_MAX_LOOKAHEAD", "30"))
+
+    # ─── FVG ─────────────────────────────────────────────────────────────
+    # Минимальный % размер FVG
+    fvg_min_size_pct: float = float(os.getenv("FVG_MIN_SIZE_PCT", "0.3"))
+    # Lookback для поиска FVG
+    fvg_lookback: int = int(os.getenv("FVG_LOOKBACK", "100"))
+
+    # ─── Candle Quality ──────────────────────────────────────────────────
+    # Множитель ATR для displacement при оценке качества свечи
+    candle_displacement_atr_mult: float = float(os.getenv("CANDLE_DISPLACEMENT_ATR_MULT", "1.2"))
+    # Минимальный % тела свечи для качества
+    candle_min_body_pct: float = float(os.getenv("CANDLE_MIN_BODY_PCT", "0.5"))
+    # Максимальное соотношение фитиля для качества
+    candle_max_wick_ratio: float = float(os.getenv("CANDLE_MAX_WICK_RATIO", "0.3"))
+
+
+@dataclass
+class MarketStructureConfig:
+    """Параметры рыночной структуры: swing points, BOS/CHoCH, MTF."""
+
+    # Минимальный % distance filter для уровней структуры
+    distance_filter_min_pct: float = float(os.getenv("DISTANCE_FILTER_MIN_PCT", "1.5"))
+    # Требуемое число совпадающих таймфреймов для MTF alignment
+    mtf_required_alignment: int = int(os.getenv("MTF_REQUIRED_ALIGNMENT", "2"))
+    # Таймфреймы для MTF анализа (через запятую)
+    mtf_timeframes: str = os.getenv("MTF_TIMEFRAMES", "1d,4h,1h")
+    # Включить ли MTF анализ
+    mtf_enabled: bool = os.getenv("MTF_ENABLED", "true").lower() == "true"
+    # Lookback для swing point detection
+    structure_lookback: int = int(os.getenv("STRUCTURE_LOOKBACK", "50"))
+    # Окно для swing point detection
+    structure_swing_window: int = int(os.getenv("STRUCTURE_SWING_WINDOW", "5"))
+    # Число недавних high/low для анализа
+    structure_recent_count: int = int(os.getenv("STRUCTURE_RECENT_COUNT", "5"))
+    # Лимит свечей для MTF OHLCV запроса
+    mtf_ohlcv_limit: int = int(os.getenv("MTF_OHLCV_LIMIT", "100"))
+    # Минимальное число свечей для MTF анализа
+    mtf_min_candles: int = int(os.getenv("MTF_MIN_CANDLES", "20"))
+
+
+@dataclass
+class RiskConfig:
+    """Параметры управления рисками."""
+
+    # ─── Volatility ──────────────────────────────────────────────────────
+    # Порог низкой волатильности (% ATR от цены)
+    volatility_low_threshold: float = float(os.getenv("VOLATILITY_LOW_THRESHOLD", "1.0"))
+    # Порог высокой волатильности (% ATR от цены)
+    volatility_high_threshold: float = float(os.getenv("VOLATILITY_HIGH_THRESHOLD", "4.0"))
+    # Период ATR для расчёта волатильности
+    volatility_atr_period: int = int(os.getenv("VOLATILITY_ATR_PERIOD", "14"))
+    # Множитель риска для высокой волатильности
+    volatility_high_multiplier: float = float(os.getenv("VOLATILITY_HIGH_MULTIPLIER", "0.5"))
+
+    # ─── Position Sizing ─────────────────────────────────────────────────
+    # Риск на сделку для strong сигнала (%)
+    risk_strong_pct: float = float(os.getenv("RISK_STRONG_PCT", "1.0"))
+    # Риск на сделку для moderate сигнала (%)
+    risk_moderate_pct: float = float(os.getenv("RISK_MODERATE_PCT", "0.5"))
+    # Разрешить торговлю weak сигналов
+    risk_weak_trade: bool = os.getenv("RISK_WEAK_TRADE", "false").lower() == "true"
+    # Минимальный ATR % для торговли (иначе no-trade zone)
+    no_trade_min_atr_pct: float = float(os.getenv("NO_TRADE_MIN_ATR_PCT", "0.5"))
+
+    # ─── Correlation ─────────────────────────────────────────────────────
+    # Множитель риска при misaligned корреляции BTC/ETH
+    correlation_misaligned_multiplier: float = float(os.getenv("CORRELATION_MISALIGNED_MULTIPLIER", "0.5"))
+
+    # ─── Market Regime ───────────────────────────────────────────────────
+    # Порог ADX для трендового режима
+    regime_trend_adx: float = float(os.getenv("REGIME_TREND_ADX", "25"))
+    # Порог ADX для range режима
+    regime_range_adx: float = float(os.getenv("REGIME_RANGE_ADX", "18"))
+    # Порог ATR percentile для compression режима
+    regime_compression_atr_pct: float = float(os.getenv("REGIME_COMPRESSION_ATR_PCT", "20"))
+    # Lookback для расчёта ATR percentile
+    regime_atr_lookback: int = int(os.getenv("REGIME_ATR_LOOKBACK", "100"))
+    # Окно EMA spread trend analysis
+    regime_ema_spread_window: int = int(os.getenv("REGIME_EMA_SPREAD_WINDOW", "5"))
+    # Порог % изменения EMA spread для rising/falling
+    regime_ema_spread_change_pct: float = float(os.getenv("REGIME_EMA_SPREAD_CHANGE_PCT", "0.05"))
+    # Множитель для проверки rising ATR/volume
+    regime_rising_multiplier: float = float(os.getenv("REGIME_RISING_MULTIPLIER", "1.1"))
+    # Окно для проверки rising ATR/volume
+    regime_rising_window: int = int(os.getenv("REGIME_RISING_WINDOW", "10"))
+    # Fallback confidence для неизвестного режима
+    regime_fallback_confidence: float = float(os.getenv("REGIME_FALLBACK_CONFIDENCE", "0.3"))
+
+    # ─── TP Path ─────────────────────────────────────────────────────────
+    # Порог blocked для TP path analysis
+    tp_path_blocked_threshold: int = int(os.getenv("TP_PATH_BLOCKED_THRESHOLD", "-20"))
+    # Базовый score для clear TP path
+    tp_path_clear_score: int = int(os.getenv("TP_PATH_CLEAR_SCORE", "15"))
+    # Штраф за obstacle в TP path
+    tp_path_obstacle_penalty: int = int(os.getenv("TP_PATH_OBSTACLE_PENALTY", "-10"))
+
+
+@dataclass
+class DerivativesConfig:
+    """Параметры деривативов: funding, OI, BTC/ETH корреляция."""
+
+    # Порог strong funding rate
+    funding_strong_threshold: float = float(os.getenv("FUNDING_STRONG_THRESHOLD", "0.0003"))
+    # Зона нейтрального funding
+    funding_neutral_zone: float = float(os.getenv("FUNDING_NEUTRAL_ZONE", "0.0001"))
+    # Порог moderate OI change (%)
+    oi_moderate_threshold: float = float(os.getenv("OI_MODERATE_THRESHOLD", "0.5"))
+    # Порог strong OI change (%)
+    oi_strong_threshold: float = float(os.getenv("OI_STRONG_THRESHOLD", "2.0"))
+    # Lookback для OI (часы)
+    oi_lookback_hours: int = int(os.getenv("OI_LOOKBACK_HOURS", "24"))
+    # Символ BTC для корреляции
+    btc_symbol: str = os.getenv("BTC_SYMBOL", "BTC/USDT")
+    # Таймфрейм для EMA200 BTC
+    btc_ema200_timeframe: str = os.getenv("BTC_EMA200_TIMEFRAME", "4h")
+    # Включить корреляцию с BTC
+    btc_correlation_enabled: bool = os.getenv("BTC_CORRELATION_ENABLED", "true").lower() == "true"
+    # Символ ETH для корреляции
+    eth_symbol: str = os.getenv("ETH_SYMBOL", "ETH/USDT")
+    # Символы для корреляции ETH (через запятую)
+    eth_correlation_symbols_str: str = os.getenv("ETH_CORRELATION_SYMBOLS", "OP/USDT,ARB/USDT")
+    # Включить корреляцию с ETH
+    eth_correlation_enabled: bool = os.getenv("ETH_CORRELATION_ENABLED", "true").lower() == "true"
+
+    @property
+    def eth_correlation_symbols(self) -> list[str]:
+        return [s.strip() for s in self.eth_correlation_symbols_str.split(",") if s.strip()]
+
+
+@dataclass
+class ScoringConfig:
+    """Параметры скоринга и verdict."""
+
+    # Порог confidence для STRONG verdict
+    confidence_strong_threshold: float = float(os.getenv("CONFIDENCE_STRONG_THRESHOLD", "60"))
+    # Порог confidence для MODERATE verdict
+    confidence_moderate_threshold: float = float(os.getenv("CONFIDENCE_MODERATE_THRESHOLD", "30"))
+    # Минимальное число условий для сигнала
+    min_score_for_signal: int = int(os.getenv("MIN_SCORE_FOR_SIGNAL", "4"))
+
+    # ─── Weighted Factor Model (signal_engine) ───────────────────────────
+    # TREND weights
+    w_supertrend: int = int(os.getenv("W_SUPERTREND", "5"))
+    w_ema: int = int(os.getenv("W_EMA", "10"))
+    # MOMENTUM weights
+    w_macd: int = int(os.getenv("W_MACD", "10"))
+    w_rsi: int = int(os.getenv("W_RSI", "5"))
+    w_volume: int = int(os.getenv("W_VOLUME", "15"))
+    w_adx: int = int(os.getenv("W_ADX", "5"))
+    w_dmi: int = int(os.getenv("W_DMI", "5"))
+    # STRUCTURE weights
+    w_bos: int = int(os.getenv("W_BOS", "15"))
+    w_sweep: int = int(os.getenv("W_SWEEP", "10"))
+    w_ob: int = int(os.getenv("W_OB", "10"))
+    # CONTEXT weights
+    w_btc: int = int(os.getenv("W_BTC", "10"))
+    w_funding: int = int(os.getenv("W_FUNDING", "5"))
+    w_oi: int = int(os.getenv("W_OI", "10"))
+
+    # ─── Confidence V2 weights ───────────────────────────────────────────
+    w_htf_trend: int = int(os.getenv("W_HTF_TREND", "15"))
+    w_structure: int = int(os.getenv("W_STRUCTURE", "25"))
+    w_liquidity: int = int(os.getenv("W_LIQUIDITY", "15"))
+    w_conf_volume: int = int(os.getenv("W_CONF_VOLUME", "10"))
+    w_btc_corr: int = int(os.getenv("W_BTC_CORR", "10"))
+    w_conf_funding: int = int(os.getenv("W_CONF_FUNDING", "5"))
+    w_conf_oi: int = int(os.getenv("W_CONF_OI", "5"))
+    w_conf_rsi: int = int(os.getenv("W_CONF_RSI", "5"))
+    w_conf_macd: int = int(os.getenv("W_CONF_MACD", "5"))
+    w_conf_adx: int = int(os.getenv("W_CONF_ADX", "5"))
+
+    # ─── Blending ────────────────────────────────────────────────────────
+    # Доля technical score в итоговой confidence
+    tech_confidence_blend: float = float(os.getenv("TECH_CONFIDENCE_BLEND", "0.6"))
+    # Доля market confidence в итоговой confidence
+    market_confidence_blend: float = float(os.getenv("MARKET_CONFIDENCE_BLEND", "0.4"))
+    # Доля исторического WR в blended confidence
+    historical_wr_blend: float = float(os.getenv("HISTORICAL_WR_BLEND", "0.6"))
+
+    # ─── Quality thresholds ──────────────────────────────────────────────
+    # Порог weighted confidence для strong quality
+    quality_strong_threshold: float = float(os.getenv("QUALITY_STRONG_THRESHOLD", "35"))
+    # Порог weighted confidence для moderate quality
+    quality_moderate_threshold: float = float(os.getenv("QUALITY_MODERATE_THRESHOLD", "20"))
+
+    @property
+    def max_signal_score(self) -> int:
+        """Сумма всех весов weighted factor model."""
+        return (
+            self.w_supertrend + self.w_ema +
+            self.w_macd + self.w_rsi + self.w_volume + self.w_adx + self.w_dmi +
+            self.w_bos + self.w_sweep + self.w_ob +
+            self.w_btc + self.w_funding + self.w_oi
+        )
+
+
+@dataclass
+class SchedulerConfig:
+    """Параметры расписания сканирования."""
+
+    # Минута для hourly scan (cron)
+    hourly_scan_minute: int = int(os.getenv("HOURLY_SCAN_MINUTE", "2"))
+    # Часы для 4h scan (cron, через запятую)
+    four_hour_scan_hours: str = os.getenv("FOUR_HOUR_SCAN_HOURS", "0,4,8,12,16,20")
+    # Минута для 4h scan (cron)
+    four_hour_scan_minute: int = int(os.getenv("FOUR_HOUR_SCAN_MINUTE", "5"))
+
+
+@dataclass
+class RateLimitConfig:
+    """Параметры rate limiting для Telegram-команд."""
+
+    # Максимальное число запросов за период
+    max_rate: int = int(os.getenv("RATE_LIMIT_MAX_RATE", "5"))
+    # Период rate limiting (секунды)
+    time_period: int = int(os.getenv("RATE_LIMIT_TIME_PERIOD", "10"))
+
+
+@dataclass
+class NotifierConfig:
+    """Параметры форматирования уведомлений."""
+
+    # Порог extreme Fear & Greed Index
+    fng_extreme_threshold_low: int = int(os.getenv("FNG_EXTREME_LOW", "20"))
+    # Порог extreme Fear & Greed Index
+    fng_extreme_threshold_high: int = int(os.getenv("FNG_EXTREME_HIGH", "80"))
+    # Порог long/short ratio
+    long_short_ratio_threshold: float = float(os.getenv("LONG_SHORT_RATIO_THRESHOLD", "0.7"))
+    # Порог позитивного sentiment
+    sentiment_positive_threshold: float = float(os.getenv("SENTIMENT_POSITIVE_THRESHOLD", "0.2"))
+    # Порог негативного sentiment
+    sentiment_negative_threshold: float = float(os.getenv("SENTIMENT_NEGATIVE_THRESHOLD", "-0.2"))
+    # Число попыток отправки сообщения
+    send_retries: int = int(os.getenv("SEND_RETRIES", "3"))
+
+
+@dataclass
+class SupportResistanceConfig:
+    """Параметры уровней поддержки/сопротивления."""
+
+    # Окно для swing level detection
+    sr_window: int = int(os.getenv("SR_WINDOW", "10"))
+    # Максимальное число уровней поддержки/сопротивления
+    sr_max_levels: int = int(os.getenv("SR_MAX_LEVELS", "5"))
+    # Порог кластеризации (0.5%)
+    sr_cluster_threshold: float = float(os.getenv("SR_CLUSTER_THRESHOLD", "0.005"))
+    # Минимальный % distance от entry для close support/resistance
+    sr_min_distance_pct: float = float(os.getenv("SR_MIN_DISTANCE_PCT", "1.0"))
+    # Лимит запроса для S/R уровней
+    sr_ohlcv_limit: int = int(os.getenv("SR_OHLCV_LIMIT", "100"))
+
+
+@dataclass
 class AppConfig:
+    """Главная конфигурация приложения."""
+
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
+    market_structure: MarketStructureConfig = field(default_factory=MarketStructureConfig)
+    liquidity: LiquidityConfig = field(default_factory=LiquidityConfig)
+    derivatives: DerivativesConfig = field(default_factory=DerivativesConfig)
+    risk: RiskConfig = field(default_factory=RiskConfig)
+    scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    notifier: NotifierConfig = field(default_factory=NotifierConfig)
+    support_resistance: SupportResistanceConfig = field(default_factory=SupportResistanceConfig)
+
+    # URL базы данных
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/signals.db")
+    # Уровень логирования
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    # Файл логирования
     log_file: str = os.getenv("LOG_FILE", "logs/bot.log")
 
     # Cooldown между сигналами по одному инструменту (минуты)
@@ -81,6 +480,9 @@ class AppConfig:
     context_block_on_blocked: bool = os.getenv("CONTEXT_BLOCK_ON_BLOCKED", "true").lower() == "true"
     cryptopanic_api_key: str = os.getenv("CRYPTOPANIC_API_KEY", "")
     coingecko_symbol_map_str: str = os.getenv("COINGECKO_SYMBOL_MAP", "BTC/USDT:bitcoin,ETH/USDT:ethereum")
+
+    # Timeout для context fetcher (секунды)
+    context_fetch_timeout: float = float(os.getenv("CONTEXT_FETCH_TIMEOUT", "10"))
 
     def _parse_coingecko_map(self, map_str: str) -> dict[str, str]:
         result = {}
@@ -94,12 +496,79 @@ class AppConfig:
     def coingecko_symbol_map(self) -> dict[str, str]:
         return self._parse_coingecko_map(self.coingecko_symbol_map_str)
 
+    # ─── Convenience properties для liquidity ────────────────────────────
 
-# Singleton
+    @property
+    def liquidity_sweep_max_reclaim_candles(self) -> int:
+        return self.liquidity.sweep_max_reclaim_candles
+
+    @property
+    def liquidity_sweep_min_volume_ratio(self) -> float:
+        return self.liquidity.sweep_min_volume_ratio
+
+    @property
+    def liquidity_ob_min_displacement_pct(self) -> float:
+        return self.liquidity.ob_min_displacement_pct
+
+    @property
+    def liquidity_ob_max_age_candles(self) -> int:
+        return self.liquidity.ob_max_age_candles
+
+    @property
+    def liquidity_fvg_min_size_pct(self) -> float:
+        return self.liquidity.fvg_min_size_pct
+
+    @property
+    def liquidity_fvg_lookback(self) -> int:
+        return self.liquidity.fvg_lookback
+
+    @property
+    def liquidity_candle_displacement_atr_mult(self) -> float:
+        return self.liquidity.candle_displacement_atr_mult
+
+    @property
+    def liquidity_candle_min_body_pct(self) -> float:
+        return self.liquidity.candle_min_body_pct
+
+    @property
+    def liquidity_candle_max_wick_ratio(self) -> float:
+        return self.liquidity.candle_max_wick_ratio
+
+    @property
+    def liquidity_sweep_fast_reclaim_candles(self) -> int:
+        return self.liquidity.sweep_fast_reclaim_candles
+
+    @property
+    def liquidity_sweep_min_wick_body_ratio(self) -> float:
+        return self.liquidity.sweep_min_wick_body_ratio
+
+    @property
+    def liquidity_ob_min_displacement_atr(self) -> float:
+        return self.liquidity.ob_min_displacement_atr
+
+    @property
+    def liquidity_ob_min_volume_ratio(self) -> float:
+        return self.liquidity.ob_min_volume_ratio
+
+    @property
+    def liquidity_ob_retest_required(self) -> bool:
+        return self.liquidity.ob_retest_required
+
+
+# ─── Singleton ────────────────────────────────────────────────────────────
 config = AppConfig()
 
-# Runtime symbols cache — динамически обновляется через /addsymbol / /removesymbol
-_runtime_symbols_cache: Optional[list[str]] = None
+
+async def reload_config() -> None:
+    """Горячая перезагрузка конфигурации.
+
+    Перечитывает .env и пересоздаёт глобальный singleton `config`.
+    Все модули, импортирующие `config.settings.config`, получат новые значения
+    при следующем обращении (синглтон заменяется in-place).
+    """
+    global config
+    load_dotenv()
+    config = AppConfig()
 
 
 async def refresh_runtime_symbols() -> None:
@@ -119,6 +588,10 @@ async def refresh_runtime_symbols() -> None:
         _runtime_symbols_cache = merged
     else:
         _runtime_symbols_cache = config.trading.symbols
+
+
+# Runtime symbols cache — динамически обновляется через /addsymbol / /removesymbol
+_runtime_symbols_cache: Optional[list[str]] = None
 
 
 def get_active_symbols() -> list[str]:

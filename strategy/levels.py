@@ -81,6 +81,10 @@ def get_support_resistance(
     Returns:
         {'resistance': [...], 'support': [...]}
     """
+    # Defensive: handle None or invalid price
+    if current_price is None or current_price <= 0:
+        return {'resistance': [], 'support': []}
+
     raw_highs, raw_lows = find_swing_levels(df, window=window)
 
     resistances = cluster_levels(
@@ -118,6 +122,14 @@ def validate_levels_vs_trade(
     Returns:
         список предупреждений
     """
+    # Defensive: handle None values gracefully
+    if entry is None or entry <= 0:
+        return []
+    if sl is None:
+        sl = 0.0
+    if tp is None:
+        tp = 0.0
+
     warnings = []
 
     for timeframe, levels in sr_levels.items():
