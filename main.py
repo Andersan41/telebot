@@ -46,12 +46,23 @@ async def main():
     from telegram.request import HTTPXRequest
     request = HTTPXRequest(
         connection_pool_size=8,
-        connect_timeout=15.0,
-        read_timeout=15.0,
-        write_timeout=15.0,
-        pool_timeout=15.0,
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
     )
     app = Application.builder().token(config.telegram.token).request(request).build()
+
+    # T3.3 — мониторинг ошибок хендлеров
+    from telegram.error import NetworkError, TimedOut
+
+    async def _handle_app_error(_, context):
+        if isinstance(context.error, (NetworkError, TimedOut)):
+            logger.warning(f"Telegram network issue: {context.error}")
+            return
+        logger.error(f"Unhandled app error: {context.error}")
+
+    app.add_error_handler(_handle_app_error)
     register_handlers(app)
 
     # T3.2 — Telegram error sink для ERROR+ логов
