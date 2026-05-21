@@ -289,12 +289,14 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             ind_confirm_result = await _get_indicators(symbol, confirm_tf)
             if ind_confirm_result is not None:
                 ind_confirm, _df_confirm = ind_confirm_result
-                confirm_regime = _detect_regime(ind_confirm, _df_confirm)
-                confirm_result = signal_engine.evaluate(ind_confirm, regime=confirm_regime)
-                if confirm_result.signal != result.signal:
+                confirm_ok = signal_engine.evaluate_confirm(
+                    ind_confirm,
+                    direction='buy' if result.signal == SignalType.BUY else 'sell'
+                )
+                if not confirm_ok:
                     logger.info(
                         f"Signal NOT confirmed on {confirm_tf}: "
-                        f"main={result.signal}, confirm={confirm_result.signal} — {symbol}"
+                        f"direction mismatch — {symbol}"
                     )
                     return None
                 entry_price = ind_confirm.close
@@ -704,6 +706,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         funding_state_val = None
         funding_strength_val = None
         oi_sig_val = None
+        oi_pattern_val = None
         if context_verdict is not None and context_verdict.snapshot:
             snap = context_verdict.snapshot
             if snap.funding_rate is not None:
@@ -713,6 +716,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             if snap.open_interest_delta is not None:
                 oi_st = classify_oi(snap.open_interest_delta, snap.price_change_24h or 0.0)
                 oi_sig_val = oi_st.significance
+                oi_pattern_val = oi_st.pattern
 
         structure_trend = getattr(result, "_structure_trend", None)
         tp_blocked = getattr(result, "_tp_path_blocked", False)
@@ -725,6 +729,8 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             btc_aligned=btc_ok,
             tp_blocked=tp_blocked,
             oi_significance=oi_sig_val,
+            oi_pattern=oi_pattern_val,
+            market_type=config.exchange.market_type,
         )
 
         if no_trade.blocked:
@@ -870,7 +876,13 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
 
         # Шаг 6: Уведомляем
         result.entry_price = entry_price
-        await notify_callback(result, context_verdict)
+        try:
+            await notify_callback(result, context_verdict)
+        except Exception as e:
+            logger.error(
+                f"Failed to send notification for {result.signal} "
+                f"{symbol} {timeframe}: {e}"
+            )
 
         signals_total.labels(
             signal_type=result.signal.value,
@@ -910,5 +922,10 @@ async def run_scan_cycle(notify_callback, timeframes: Optional[list[str]] = None
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    signals_found = sum(1 for r in results if isinstance(r, SignalResult) and r is not None)
+    signals_found = 0
+    for result in results:
+        if isinstance(result, SignalResult) and result is not None:
+            signals_found += 1
+        elif isinstance(result, Exception):
+            logger.error(f"Scan task failed: {result}")
     logger.info(f"Scan complete. Signals found: {signals_found}/{len(tasks)}")

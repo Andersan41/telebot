@@ -226,13 +226,14 @@ class TestNoTradeZones:
         assert check.blocked is True
         assert len(check.reasons) == 2
 
-    def test_funding_neutral_blocks(self):
+    def test_funding_neutral_does_not_block(self):
+        """FIX M5: neutral funding no longer blocks trades."""
         result = check_no_trade_zones(
             funding_state="neutral",
             funding_strength="weak",
+            atr_pct=2.0,
         )
-        assert result.blocked is True
-        assert any("Funding neutral" in r for r in result.reasons)
+        assert result.blocked is False
 
     def test_funding_non_neutral_passes(self):
         result = check_no_trade_zones(
@@ -269,14 +270,31 @@ class TestNoTradeZones:
         assert result.blocked is True
         assert any("TP blocked" in r for r in result.reasons)
 
-    def test_oi_weak_blocks(self):
-        result = check_no_trade_zones(oi_significance="ignore")
+    def test_oi_ignore_does_not_block(self):
+        """FIX P3: OI ignore/None не блокирует — нет данных != опасность."""
+        result = check_no_trade_zones(oi_significance="ignore", atr_pct=2.0)
+        assert result.blocked is False
+
+    def test_oi_none_does_not_block(self):
+        """FIX P3: OI=None не блокирует."""
+        result = check_no_trade_zones(oi_significance=None, atr_pct=2.0)
+        assert result.blocked is False
+
+    def test_oi_extreme_long_blocks(self):
+        """FIX P3: extreme_long OI pattern блокирует."""
+        result = check_no_trade_zones(oi_significance="strong", oi_pattern="extreme_long", atr_pct=2.0)
         assert result.blocked is True
-        assert any("OI weak" in r for r in result.reasons)
+        assert any("extreme_long" in r for r in result.reasons)
+
+    def test_oi_extreme_short_blocks(self):
+        """FIX P3: extreme_short OI pattern блокирует."""
+        result = check_no_trade_zones(oi_significance="strong", oi_pattern="extreme_short", atr_pct=2.0)
+        assert result.blocked is True
+        assert any("extreme_short" in r for r in result.reasons)
 
     def test_oi_moderate_passes(self):
-        result = check_no_trade_zones(oi_significance="moderate")
-        assert not any("OI weak" in r for r in result.reasons)
+        result = check_no_trade_zones(oi_significance="moderate", atr_pct=2.0)
+        assert result.blocked is False
 
     def test_all_clear_passes(self):
         result = check_no_trade_zones(
@@ -292,6 +310,7 @@ class TestNoTradeZones:
         assert len(result.reasons) == 0
 
     def test_multiple_blocks_accumulate(self):
+        """Multiple no-trade conditions accumulate reasons."""
         result = check_no_trade_zones(
             funding_state="neutral",
             funding_strength="weak",
@@ -299,7 +318,8 @@ class TestNoTradeZones:
             market_structure="ranging",
         )
         assert result.blocked is True
-        assert len(result.reasons) >= 3
+        # FIX M5: funding neutral no longer blocks, so only 2 reasons (ATR + ranging)
+        assert len(result.reasons) >= 2
 
 
 # === Config Tests ===

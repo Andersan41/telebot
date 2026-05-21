@@ -73,8 +73,19 @@ class TestScanSymbolMetrics:
             score=6, reasons=["test"],
         )
 
+        ind_mock = MagicMock()
+        ind_mock.atr = 600.0
+        ind_mock.close = 50000.0
+        ind_mock.volume = 1200.0
+        ind_mock.volume_sma = 1000.0
+        ind_mock.rsi = 55.0
+        ind_mock.adx = 30.0
+        ind_mock.dmi_plus = 25.0
+        ind_mock.dmi_minus = 15.0
+        ind_mock.macd_hist = 30.0
+        df_mock = MagicMock()
         monkeypatch.setattr("scheduler.scanner._is_cooldown_active", AsyncMock(return_value=False))
-        monkeypatch.setattr("scheduler.scanner._get_indicators", AsyncMock(return_value=MagicMock()))
+        monkeypatch.setattr("scheduler.scanner._get_indicators", AsyncMock(return_value=(ind_mock, df_mock)))
         monkeypatch.setattr("scheduler.scanner.signal_engine", MagicMock(evaluate=MagicMock(return_value=result)))
         monkeypatch.setattr("scheduler.scanner.db", MagicMock(save_signal=AsyncMock(), set_cooldown=AsyncMock()))
         monkeypatch.setattr("scheduler.scanner.config.trading", MagicMock(
@@ -105,7 +116,7 @@ class TestScanSymbolMetrics:
         )
 
         monkeypatch.setattr("scheduler.scanner._is_cooldown_active", AsyncMock(return_value=False))
-        monkeypatch.setattr("scheduler.scanner._get_indicators", AsyncMock(return_value=MagicMock()))
+        monkeypatch.setattr("scheduler.scanner._get_indicators", AsyncMock(return_value=(MagicMock(), MagicMock())))
         monkeypatch.setattr("scheduler.scanner.signal_engine", MagicMock(evaluate=MagicMock(return_value=result)))
 
         from scheduler.scanner import scan_symbol

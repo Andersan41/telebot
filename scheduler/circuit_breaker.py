@@ -54,7 +54,7 @@ async def check_recent_losses() -> None:
         # Count consecutive losses (HIT_SL)
         consecutive_losses = 0
         for outcome in reversed(recent_outcomes):
-            if outcome.result == "HIT_SL":
+            if outcome.status == "HIT_SL":
                 consecutive_losses += 1
             else:
                 break  # Reset on any non-loss outcome

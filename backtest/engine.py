@@ -80,7 +80,12 @@ class BacktestResult:
     max_drawdown: float = 0.0
     total_pnl_pct: float = 0.0
     signals_generated: int = 0
+    exposure_time_pct: float = 0.0       # time in market %
+    avg_trade_duration: float = 0.0      # average trade duration in candles
     regime_stats: dict[str, RegimeStats] = field(default_factory=dict)
+    long_stats: Optional[RegimeStats] = None   # BUY trades breakdown
+    short_stats: Optional[RegimeStats] = None  # SELL trades breakdown
+    volatility_stats: dict[str, RegimeStats] = field(default_factory=dict)  # low/medium/high vol
     trades: list[BacktestTrade] = field(default_factory=list)
     signal_decay: list[float] = field(default_factory=list)  # avg PnL by trade index bucket
 
@@ -256,7 +261,7 @@ class BacktestEngine:
             current_trade.rr = self._calc_rr(current_trade)
             trades.append(current_trade)
 
-        return self._build_result(trades, signals_count)
+        return self._build_result(trades, signals_count, total_candles=len(df))
 
     def _check_exit(
         self,
@@ -316,6 +321,7 @@ class BacktestEngine:
         self,
         trades: list[BacktestTrade],
         signals_count: int,
+        total_candles: int = 0,
     ) -> BacktestResult:
         """Calculate aggregate metrics from trades."""
         total = len(trades)
@@ -365,6 +371,21 @@ class BacktestEngine:
         # Regime stats
         regime_stats = self._calc_regime_stats(trades)
 
+        # Exposure time & avg trade duration
+        durations = [t.exit_index - t.entry_index for t in trades if t.exit_index is not None]
+        total_candles_in_trades = sum(durations) if durations else 0
+        exposure_time_pct = (total_candles_in_trades / total_candles * 100) if total_candles > 0 else 0.0
+        avg_trade_duration = float(np.mean(durations)) if durations else 0.0
+
+        # Long vs Short breakdown
+        long_trades = [t for t in trades if t.direction == "BUY"]
+        short_trades = [t for t in trades if t.direction == "SELL"]
+        long_stats = self._calc_direction_stats(long_trades, "LONG") if long_trades else None
+        short_stats = self._calc_direction_stats(short_trades, "SHORT") if short_trades else None
+
+        # Volatility regime breakdown (low / medium / high)
+        volatility_stats = self._calc_volatility_stats(trades)
+
         return BacktestResult(
             symbol=self.symbol,
             timeframe=self.timeframe,
@@ -380,7 +401,12 @@ class BacktestEngine:
             max_drawdown=round(max_dd, 4),
             total_pnl_pct=round(total_pnl, 4),
             signals_generated=signals_count,
+            exposure_time_pct=round(exposure_time_pct, 2),
+            avg_trade_duration=round(avg_trade_duration, 1),
             regime_stats=regime_stats,
+            long_stats=long_stats,
+            short_stats=short_stats,
+            volatility_stats=volatility_stats,
             trades=trades,
             signal_decay=signal_decay,
         )
@@ -409,6 +435,52 @@ class BacktestEngine:
             trades[q3_start:],
         ]
         return [round(np.mean([t.pnl_pct for t in b]), 4) for b in buckets if b]
+
+    def _calc_direction_stats(self, trades: list[BacktestTrade], label: str) -> RegimeStats:
+        """Calculate performance stats for a direction (LONG/SHORT)."""
+        total = len(trades)
+        if total == 0:
+            return RegimeStats(regime=label)
+        wins = [t for t in trades if t.pnl_pct > 0]
+        losses = [t for t in trades if t.pnl_pct <= 0]
+        pnl_values = [t.pnl_pct for t in trades]
+        gross_profit = sum(t.pnl_pct for t in wins) if wins else 0.0
+        gross_loss = abs(sum(t.pnl_pct for t in losses)) if losses else 1.0
+        pf = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+        winrate = len(wins) / total
+        avg_win = gross_profit / len(wins) if wins else 0.0
+        avg_loss = gross_loss / len(losses) if losses else 0.0
+        exp_val = winrate * avg_win - (1 - winrate) * avg_loss
+        return RegimeStats(
+            regime=label,
+            total_trades=total,
+            wins=len(wins),
+            losses=len(losses),
+            winrate=round(winrate * 100, 1),
+            avg_pnl=round(np.mean(pnl_values), 4) if pnl_values else 0.0,
+            avg_rr=round(np.mean([t.rr for t in trades]), 2),
+            profit_factor=round(pf, 2),
+            expectancy=round(exp_val, 4),
+            max_drawdown=round(self._calc_max_drawdown(pnl_values), 4),
+        )
+
+    def _calc_volatility_stats(self, trades: list[BacktestTrade]) -> dict[str, RegimeStats]:
+        """Group trades by volatility regime (low/medium/high) and compute stats."""
+        vol_regimes: dict[str, list[BacktestTrade]] = {"low": [], "medium": [], "high": []}
+        for t in trades:
+            r = t.regime or "unknown"
+            if r == "low_vol":
+                vol_regimes["low"].append(t)
+            elif r == "high_vol":
+                vol_regimes["high"].append(t)
+            else:
+                vol_regimes["medium"].append(t)
+        result = {}
+        for label, reg_trades in vol_regimes.items():
+            if not reg_trades:
+                continue
+            result[label] = self._calc_direction_stats(reg_trades, label)
+        return result
 
     def _calc_regime_stats(self, trades: list[BacktestTrade]) -> dict[str, RegimeStats]:
         """Calculate per-regime performance breakdown."""

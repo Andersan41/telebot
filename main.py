@@ -22,6 +22,7 @@ from storage.database import db
 from bot.handlers import register_handlers
 from bot.notifier import send_signal, send_error_alert
 from scheduler.tasks import TaskScheduler
+from context.fetcher import context_fetcher
 
 
 async def main():
@@ -41,8 +42,16 @@ async def main():
     # Подключаемся к бирже
     await exchange_client.connect()
 
-    # Создаём Telegram Application
-    app = Application.builder().token(config.telegram.token).build()
+    # Создаём Telegram Application с устойчивой к сетевым ошибкам конфигурацией
+    from telegram.request import HTTPXRequest
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=15.0,
+        read_timeout=15.0,
+        write_timeout=15.0,
+        pool_timeout=15.0,
+    )
+    app = Application.builder().token(config.telegram.token).request(request).build()
     register_handlers(app)
 
     # T3.2 — Telegram error sink для ERROR+ логов
@@ -87,6 +96,7 @@ async def main():
         logger.info("Shutting down...")
         scheduler.stop()
         await exchange_client.close()
+        await context_fetcher.close()
         if app.updater and app.updater.running:
             await app.updater.stop()
         if app.running:
@@ -96,6 +106,9 @@ async def main():
 
 
 if __name__ == "__main__":
+    # FIX N3: Windows asyncio compatibility
+    if sys.platform.startswith("win"):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):

@@ -341,6 +341,7 @@ class TestEntryPrice:
             patch("scheduler.scanner.config.trading.confirm_timeframe", "15m"),
         ):
             mock_sig.evaluate.side_effect = [mock_signal_result, opposite]
+            mock_sig.evaluate_confirm.return_value = False
             mock_db.save_signal = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
@@ -389,6 +390,7 @@ class TestMinVerdictGate:
             score=6, reasons=["test"],
         )
         monkeypatch.setattr(sc.signal_engine, "evaluate", lambda ind, **kw: real_result)
+        monkeypatch.setattr(sc.signal_engine, "evaluate_confirm", lambda ind, direction: True)
         monkeypatch.setattr(sc, "_get_indicators",
                             AsyncMock(return_value=(_make_ind_mock(), MagicMock())))
         monkeypatch.setattr(
@@ -481,6 +483,7 @@ class TestConfirmedFlag:
         )
         monkeypatch.setattr(sc.signal_engine, "evaluate",
                             lambda ind, **kw: main_result if hasattr(ind, 'timeframe') and getattr(ind, 'timeframe', None) != "15m" else confirm_result)
+        monkeypatch.setattr(sc.signal_engine, "evaluate_confirm", lambda ind, direction: True)
 
         call_count = [0]
         async def fake_get_indicators(symbol, timeframe):

@@ -34,8 +34,14 @@ async def check_open_outcomes() -> None:
                 close_price=signal.close_price, pnl_pct=0.0,
             )
             continue
-        # Текущая цена через 1m свечу
-        df = await exchange_client.fetch_ohlcv(signal.symbol, "1m", limit=2)
+        # Текущая цена через 1m свечу (с повторными попытками при сетевых ошибках)
+        df = None
+        for attempt in range(3):
+            df = await exchange_client.fetch_ohlcv(signal.symbol, "1m", limit=2)
+            if df is not None:
+                break
+            if attempt < 2:
+                await asyncio.sleep(5 * (attempt + 1))
         if df is None or df.empty:
             continue
         current = float(df["close"].iloc[-1])

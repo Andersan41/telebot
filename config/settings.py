@@ -61,11 +61,11 @@ class TradingConfig:
 
     # ─── EMA ─────────────────────────────────────────────────────────────
     # Период быстрой EMA
-    ema_fast: int = int(os.getenv("EMA_FAST", "9"))
+    ema_fast: int = int(os.getenv("EMA_FAST", "21"))
     # Период медленной EMA
-    ema_slow: int = int(os.getenv("EMA_SLOW", "21"))
+    ema_slow: int = int(os.getenv("EMA_SLOW", "55"))
     # Период трендовой EMA
-    ema_trend: int = int(os.getenv("EMA_TREND", "50"))
+    ema_trend: int = int(os.getenv("EMA_TREND", "200"))
     # Минимальный % разницы между EMA fast/slow (фильтр)
     min_ema_spread_pct: float = float(os.getenv("MIN_EMA_SPREAD_PCT", "0.15"))
     # Включить проверку наклона EMA fast
@@ -81,7 +81,7 @@ class TradingConfig:
     # Уровень перепроданности RSI
     rsi_oversold: float = float(os.getenv("RSI_OVERSOLD", "30"))
     # Минимальный RSI для бычьей зоны
-    rsi_bull_min: float = float(os.getenv("RSI_BULL_MIN", "50"))
+    rsi_bull_min: float = float(os.getenv("RSI_BULL_MIN", "55"))
     # Максимальный RSI для медвежьей зоны
     rsi_bear_max: float = float(os.getenv("RSI_BEAR_MAX", "50"))
     # Минимальный RSI для нейтрально-медвежьей зоны
@@ -127,11 +127,11 @@ class TradingConfig:
     # Период Supertrend
     supertrend_period: int = int(os.getenv("SUPERTREND_PERIOD", "10"))
     # Множитель Supertrend
-    supertrend_multiplier: float = float(os.getenv("SUPERTREND_MULTIPLIER", "3.0"))
+    supertrend_multiplier: float = float(os.getenv("SUPERTREND_MULTIPLIER", "2.5"))
 
     # ─── Volume ──────────────────────────────────────────────────────────
     # Множитель объёма выше SMA для фильтра
-    volume_factor: float = float(os.getenv("VOLUME_FACTOR", "1.2"))
+    volume_factor: float = float(os.getenv("VOLUME_FACTOR", "1.5"))
     # Период SMA объёма
     volume_sma_period: int = int(os.getenv("VOLUME_SMA_PERIOD", "20"))
     # Порог бычьей дельты объёма (%)
@@ -241,9 +241,9 @@ class RiskConfig:
 
     # ─── Volatility ──────────────────────────────────────────────────────
     # Порог низкой волатильности (% ATR от цены)
-    volatility_low_threshold: float = float(os.getenv("VOLATILITY_LOW_THRESHOLD", "1.0"))
+    volatility_low_threshold: float = float(os.getenv("VOLATILITY_LOW_THRESHOLD", "0.8"))
     # Порог высокой волатильности (% ATR от цены)
-    volatility_high_threshold: float = float(os.getenv("VOLATILITY_HIGH_THRESHOLD", "4.0"))
+    volatility_high_threshold: float = float(os.getenv("VOLATILITY_HIGH_THRESHOLD", "5.0"))
     # Период ATR для расчёта волатильности
     volatility_atr_period: int = int(os.getenv("VOLATILITY_ATR_PERIOD", "14"))
     # Множитель риска для высокой волатильности

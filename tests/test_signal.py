@@ -1532,8 +1532,8 @@ class TestRegimeSwitching:
             ema_spread_trend="rising",
         )
 
-    def test_compression_regime_blocks_all_signals(self, engine):
-        """Compression regime → NO_SIGNAL, _regime_blocked=True."""
+    def test_compression_regime_blocks_weak_signals(self, engine):
+        """Compression regime blocks signals that don't meet breakout conditions."""
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
@@ -1548,7 +1548,7 @@ class TestRegimeSwitching:
             macd_hist=50.0,
             macd_hist_prev=-10.0,
             volume_sma=900.0,
-            volume=1500.0,
+            volume=1500.0,  # 1.67x — not enough for breakout (need 2.0x)
             dmi_plus=32.0,
             dmi_minus=12.0,
             volume_delta_pct=20.0,
@@ -1558,7 +1558,42 @@ class TestRegimeSwitching:
         assert result.signal == SignalType.NO_SIGNAL
         assert result._regime == "compression"
         assert result._regime_blocked is True
-        assert "Compression" in result.reasons[0]
+
+    def test_compression_regime_breakout_mode_allows_signal(self, engine):
+        """Compression regime allows signals with breakout conditions:
+        strong trigger (BOS/sweep) + ADX>=25 + volume>=2.0x + supertrend aligned."""
+        from liquidity.sweep import SweepEvent
+        from datetime import datetime, timezone
+        ind = make_ind(
+            rsi=40.0,
+            adx=30.0,
+            close=50800.0,
+            ema_fast=48000.0,
+            ema_slow=47000.0,
+            ema_trend=46000.0,
+            ema_fast_prev=47000.0,
+            ema_slow_prev=47100.0,
+            supertrend_direction=1,
+            supertrend=45000.0,
+            macd_hist=50.0,
+            macd_hist_prev=-10.0,
+            volume_sma=900.0,
+            volume=2000.0,  # 2.22x — meets breakout threshold
+            dmi_plus=32.0,
+            dmi_minus=12.0,
+            volume_delta_pct=20.0,
+        )
+        sweeps = [SweepEvent(
+            type="bullish", swept_level=47000.0, sweep_low=46800.0, sweep_high=47200.0,
+            reclaim_candles=2, volume_ratio=2.0, timestamp=datetime.now(timezone.utc),
+            wick_body_ratio=3.0, displacement_after=1.5, delta_aligned=True, candle_index=0,
+        )]
+        regime = self._make_regime("compression")
+        result = engine.evaluate(ind, regime=regime, sweeps=sweeps)
+        assert result.signal == SignalType.BUY
+        assert result._regime == "compression"
+        assert result._regime_blocked is False
+        assert any("Breakout" in r for r in result.reasons)
 
     def test_range_regime_blocks_ema_cross_signal(self, engine):
         """Range regime + EMA cross → NO_SIGNAL (EMA entries disabled)."""

@@ -1,15 +1,34 @@
 """
 context/fetcher.py — Асинхронный клиент для получения данных из открытых источников.
 """
+import asyncio
 import re
 import html
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable, Awaitable
 from datetime import datetime, timezone, timedelta
+from functools import wraps
 from loguru import logger
 
 import aiohttp
 import feedparser
 from config.settings import config
+
+
+async def _with_retry(fn: Callable[[], Awaitable[Any]], retries: int = 3, delay: float = 0.5, backoff: float = 2) -> Any:
+    """Universal retry wrapper for async network calls."""
+    last_exc = None
+    current_delay = delay
+    for attempt in range(retries):
+        try:
+            return await fn()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            last_exc = e
+            if attempt < retries - 1:
+                logger.debug(f"Network attempt {attempt + 1}/{retries} failed: {e}, retrying in {current_delay}s")
+                await asyncio.sleep(current_delay)
+                current_delay *= backoff
+    logger.warning(f"All {retries} network attempts failed: {last_exc}")
+    raise last_exc
 
 
 class ContextFetcher:
@@ -53,17 +72,23 @@ class ContextFetcher:
         try:
             session = await self._get_session()
             url = "https://api.alternative.me/fng/?limit=1"
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Fear & Greed API returned status {resp.status}")
-                    return None
-                data = await resp.json()
-                result = data.get("data", [{}])[0]
-                value = int(result.get("value", 0))
-                label = result.get("value_classification", "Unknown")
-                self._fng_cache = ({"value": value, "label": label}, datetime.now(timezone.utc))
-                logger.debug(f"Fear & Greed: {value} ({label})")
-                return {"value": value, "label": label}
+
+            async def _do():
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Fear & Greed API returned status {resp.status}")
+                        return None
+                    return await resp.json()
+
+            data = await _with_retry(_do)
+            if data is None:
+                return None
+            result = data.get("data", [{}])[0]
+            value = int(result.get("value", 0))
+            label = result.get("value_classification", "Unknown")
+            self._fng_cache = ({"value": value, "label": label}, datetime.now(timezone.utc))
+            logger.debug(f"Fear & Greed: {value} ({label})")
+            return {"value": value, "label": label}
         except Exception as e:
             logger.warning(f"Error fetching Fear & Greed: {e}")
             return None

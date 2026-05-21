@@ -163,6 +163,9 @@ class SignalEngine:
         order_blocks: Optional[list] = None,
         **kwargs: Any,
     ) -> SignalResult:
+        # M1: gate pass rate tracking — log each gate outcome for real-world measurement
+        _gate_log: dict[str, bool] = {}
+
         # structure=None means "analysis attempted but failed" (production).
         # structure absent (not in kwargs) means "not provided" (tests/other callers).
         _structure_provided = "structure" in kwargs
@@ -186,30 +189,42 @@ class SignalEngine:
             elif isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
                 none_fields.append(name)
         if none_fields:
+            _gate_log["data_valid"] = False
+            _log_gates(_gate_log, ind)
             return SignalResult(
                 signal=SignalType.NO_SIGNAL,
                 symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
                 reasons=[f"Incomplete (None/NaN: {', '.join(none_fields)})"],
                 _regime=regime_name,
             )
+        _gate_log["data_valid"] = True
 
         # --- Regime gate ---
         if regime_name == "compression":
-            return SignalResult(
-                signal=SignalType.NO_SIGNAL,
-                symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
-                reasons=["Compression regime — все сигналы заблокированы, ждём expansion"],
-                _regime=regime_name, _regime_blocked=True,
-            )
+            # M7: breakout mode — allow signals in compression with stricter conditions
+            # instead of hard-blocking all signals. Compression often precedes breakouts,
+            # but can also resolve in the opposite direction, so we require:
+            #   1. Strong leading trigger (sweep or BOS, not just delta)
+            #   2. Higher ADX threshold (25 instead of adx_min)
+            #   3. Volume significantly above average (2.0x instead of volume_factor)
+            #   4. Supertrend must be aligned
+            # We defer the full breakout check until after direction is determined.
+            # For now, mark that we're in compression breakout evaluation.
+            _gate_log["regime_compression_deferred"] = True
+        else:
+            _gate_log["regime"] = True
 
         # --- ADX flat filter ---
         if ind.adx < cfg.adx_min:
+            _gate_log["adx"] = False
+            _log_gates(_gate_log, ind)
             return SignalResult(
                 signal=SignalType.NO_SIGNAL,
                 symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
                 reasons=[f"ADX={ind.adx:.1f} < {cfg.adx_min} (флэт, сигналы игнорируются)"],
                 _regime=regime_name,
             )
+        _gate_log["adx"] = True
 
         # --- Leading triggers ---
         has_leading_trigger = False
@@ -241,6 +256,12 @@ class SignalEngine:
                 has_leading_trigger = True
                 leading_reasons.append(f"Delta: {delta:.0f}% (продажи доминируют, leading trigger)")
 
+        # FIX P2: предварительное direction для OB confirmation (до основного определения direction)
+        _pre_direction = 'buy' if (
+            ind.ema_fast is not None and ind.ema_slow is not None
+            and ind.ema_fast > ind.ema_slow
+        ) else 'sell'
+
         # --- Order blocks confirmation (FIX C3) ---
         order_block_confirmation = False
         if order_blocks:
@@ -253,8 +274,8 @@ class SignalEngine:
                         if distance_pct < 2.0:  # within 2% of OB
                             order_block_confirmation = True
                             ob_type = getattr(ob, "type", "unknown")
-                            if (direction == "buy" and ob_type == "bullish") or \
-                               (direction == "sell" and ob_type == "bearish"):
+                            if (_pre_direction == "buy" and ob_type == "bullish") or \
+                               (_pre_direction == "sell" and ob_type == "bearish"):
                                 leading_reasons.append(
                                     f"Order Block {ob_type} confirmed at {ob_midpoint:.4f}"
                                 )
@@ -321,6 +342,45 @@ class SignalEngine:
             "SELL": -weighted_score / total_weight if total_weight else 0.0,
         }
 
+        # M7: compression breakout mode check (deferred until direction is known)
+        breakout_reasons: List[str] = []
+        if regime_name == "compression":
+            has_strong_trigger = False
+            if _structure_provided and structure and structure.last_bos:
+                has_strong_trigger = True
+            if sweeps:
+                for sw in sweeps:
+                    if getattr(sw, "is_valid", False):
+                        has_strong_trigger = True
+                        break
+
+            vol_strong = ind.volume > ind.volume_sma * 2.0
+            supertrend_ok = (
+                (direction == "buy" and ind.supertrend_direction == 1)
+                or (direction == "sell" and ind.supertrend_direction == -1)
+            )
+            adx_breakout = ind.adx >= 25
+
+            if has_strong_trigger and vol_strong and supertrend_ok and adx_breakout:
+                breakout_reasons.append(
+                    f"Breakout mode: strong trigger + ADX={ind.adx:.1f} + "
+                    f"vol={ind.volume / ind.volume_sma:.1f}x + Supertrend aligned"
+                )
+                _gate_log["regime_breakout"] = True
+                logger.info(
+                    f"Breakout mode activated for {ind.symbol} {ind.timeframe}: "
+                    f"{' | '.join(breakout_reasons)}"
+                )
+            else:
+                _gate_log["regime"] = False
+                _log_gates(_gate_log, ind)
+                return SignalResult(
+                    signal=SignalType.NO_SIGNAL,
+                    symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                    reasons=["Compression regime — breakout conditions not met (need strong trigger + ADX>=25 + high volume)"],
+                    _regime=regime_name, _regime_blocked=True,
+                )
+
         # Trigger gate: leading trigger required
         has_trigger = has_leading_trigger
 
@@ -356,6 +416,8 @@ class SignalEngine:
                 )
 
         if not has_trigger:
+            _gate_log["trigger"] = False
+            _log_gates(_gate_log, ind)
             return SignalResult(
                 signal=SignalType.NO_SIGNAL,
                 symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
@@ -365,6 +427,7 @@ class SignalEngine:
                 _factor_strengths=factor_strengths, _weighted_score=weighted_score,
                 _rsi_strength=rsi_str,
             )
+        _gate_log["trigger"] = True
 
         # --- EMA alignment gate ---
         ema_aligned = False
@@ -382,10 +445,12 @@ class SignalEngine:
         ema_alignment_info = ""
 
         if not ema_aligned:
+            _gate_log["ema_alignment"] = False
             if direction == "buy":
                 ema_alignment_info = f"BUY: fast={ind.ema_fast} slow={ind.ema_slow} trend={ind.ema_trend}"
             else:
                 ema_alignment_info = f"SELL: fast={ind.ema_fast} slow={ind.ema_slow} trend={ind.ema_trend}"
+            _log_gates(_gate_log, ind)
             return SignalResult(
                 signal=SignalType.NO_SIGNAL,
                 symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
@@ -396,9 +461,12 @@ class SignalEngine:
                 _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
                 _regime=regime_name,
             )
+        _gate_log["ema_alignment"] = True
 
         # EMA spread check
         if ema_spread_pct < min_spread:
+            _gate_log["ema_spread"] = False
+            _log_gates(_gate_log, ind)
             return SignalResult(
                 signal=SignalType.NO_SIGNAL,
                 symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
@@ -409,12 +477,15 @@ class SignalEngine:
                 _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
                 _regime=regime_name,
             )
+        _gate_log["ema_spread"] = True
 
         # EMA slope check: spread must be widening (5% tolerance)
         if cfg.ema_slope_check:
             current_spread = ind.ema_fast - ind.ema_slow
             prev_spread = ind.ema_fast_prev - ind.ema_slow_prev
             if abs(current_spread) < abs(prev_spread) * 0.95:
+                _gate_log["ema_slope"] = False
+                _log_gates(_gate_log, ind)
                 return SignalResult(
                     signal=SignalType.NO_SIGNAL,
                     symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
@@ -425,11 +496,14 @@ class SignalEngine:
                     _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
                     _regime=regime_name,
                 )
+        _gate_log["ema_slope"] = True
 
         ema_alignment_info = f"spread={ema_spread_pct:.2f}%"
 
         # --- Build reasons ---
         reasons: List[str] = []
+        if regime_name == "compression" and breakout_reasons:
+            reasons.extend(breakout_reasons)
         reasons.extend(leading_reasons)
 
         if abs(st_str) > 0.5:
@@ -472,6 +546,8 @@ class SignalEngine:
         min_score = config.scoring.min_score_for_signal
 
         if score < min_score:
+            _gate_log["min_score"] = False
+            _log_gates(_gate_log, ind)
             return SignalResult(
                 signal=SignalType.NO_SIGNAL,
                 symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
@@ -481,6 +557,7 @@ class SignalEngine:
                 _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
                 _regime=regime_name,
             )
+        _gate_log["min_score"] = True
 
         signal_type = SignalType.BUY if direction == "buy" else SignalType.SELL
 
@@ -489,6 +566,8 @@ class SignalEngine:
         if candle_range > 0:
             close_position = (ind.close - ind.low) / candle_range
             if direction == "buy" and close_position < CLOSE_CONFIRMATION_BUY_MIN:
+                _gate_log["candle_close"] = False
+                _log_gates(_gate_log, ind)
                 return SignalResult(
                     signal=SignalType.NO_SIGNAL,
                     symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
@@ -499,6 +578,8 @@ class SignalEngine:
                     _regime=regime_name,
                 )
             if direction == "sell" and close_position > CLOSE_CONFIRMATION_SELL_MAX:
+                _gate_log["candle_close"] = False
+                _log_gates(_gate_log, ind)
                 return SignalResult(
                     signal=SignalType.NO_SIGNAL,
                     symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
@@ -508,8 +589,12 @@ class SignalEngine:
                     _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
                     _regime=regime_name,
                 )
+        _gate_log["candle_close"] = True
 
         sl, tp = _calculate_sl_tp(ind, signal_type, structure)
+
+        # M1: all gates passed — log success
+        _log_gates(_gate_log, ind, passed=True)
 
         # Confidence V2 — 7 factors
         conf_v2 = None
@@ -543,6 +628,52 @@ class SignalEngine:
             _structure_trend=structure.trend if _structure_provided and structure else None,
             _structure_bos=structure.last_bos.type if _structure_provided and structure and structure.last_bos else None,
         )
+
+    # FIX P1: облегчённая проверка для confirmation timeframe (15m)
+    def evaluate_confirm(self, ind: IndicatorValues, direction: str) -> bool:
+        if ind is None:
+            return True
+
+        fast = ind.ema_fast
+        slow = ind.ema_slow
+
+        ema_aligned = False
+        if fast is not None and slow is not None:
+            try:
+                if direction == 'buy':
+                    ema_aligned = fast > slow
+                else:
+                    ema_aligned = fast < slow
+            except TypeError:
+                ema_aligned = False
+
+        if direction == 'buy':
+            st_aligned = ind.supertrend_direction is None or ind.supertrend_direction == 1
+        else:
+            st_aligned = ind.supertrend_direction is None or ind.supertrend_direction == -1
+
+        return ema_aligned or st_aligned
+
+
+def _log_gates(gates: dict[str, bool], ind: IndicatorValues, passed: bool = False) -> None:
+    """M1: Log gate pass/fail outcomes for real-world pass rate measurement.
+
+    Logs at DEBUG level per evaluation — aggregate with:
+        grep 'GATE_STATS' logs/bot.log | python -c "..."
+    """
+    if passed:
+        logger.debug(
+            f"GATE_STATS pass symbol={ind.symbol} tf={ind.timeframe} "
+            f"gates={'|'.join(f'{k}=1' for k, v in gates.items())}"
+        )
+    else:
+        failed = [k for k, v in gates.items() if not v]
+        if failed:
+            logger.debug(
+                f"GATE_STATS reject symbol={ind.symbol} tf={ind.timeframe} "
+                f"failed={'|'.join(failed)} "
+                f"passed={'|'.join(f'{k}=1' for k, v in gates.items() if v)}"
+            )
 
 
 def _get_weights() -> Dict[str, int]:
