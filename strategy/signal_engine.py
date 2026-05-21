@@ -16,6 +16,11 @@ from indicators.engine import IndicatorValues
 from scoring.confidence_v2 import ConfidenceResult, FactorScore
 
 
+# FIX S3: candle close confirmation thresholds
+CLOSE_CONFIRMATION_BUY_MIN = 0.6  # close must be in upper 40% of range
+CLOSE_CONFIRMATION_SELL_MAX = 0.4  # close must be in lower 40% of range
+
+
 class SignalType(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -155,8 +160,13 @@ class SignalEngine:
         ind: IndicatorValues,
         regime: Any = None,
         sweeps: Optional[list] = None,
-        structure: Optional[Any] = None,
+        order_blocks: Optional[list] = None,
+        **kwargs: Any,
     ) -> SignalResult:
+        # structure=None means "analysis attempted but failed" (production).
+        # structure absent (not in kwargs) means "not provided" (tests/other callers).
+        _structure_provided = "structure" in kwargs
+        structure = kwargs.get("structure")
         cfg = config.trading
         regime_name = regime.regime if regime else None
 
@@ -205,7 +215,7 @@ class SignalEngine:
         has_leading_trigger = False
         leading_reasons: List[str] = []
 
-        if structure and structure.last_bos:
+        if _structure_provided and structure and structure.last_bos:
             bos = structure.last_bos
             if bos.type == "bullish":
                 has_leading_trigger = True
@@ -230,6 +240,25 @@ class SignalEngine:
             elif delta < cfg.delta_bearish:
                 has_leading_trigger = True
                 leading_reasons.append(f"Delta: {delta:.0f}% (продажи доминируют, leading trigger)")
+
+        # --- Order blocks confirmation (FIX C3) ---
+        order_block_confirmation = False
+        if order_blocks:
+            for ob in order_blocks:
+                if getattr(ob, "is_valid", False):
+                    # Check if price is near order block zone
+                    ob_midpoint = getattr(ob, "midpoint", None)
+                    if ob_midpoint is not None and ind.close > 0:
+                        distance_pct = abs(ind.close - ob_midpoint) / ind.close * 100
+                        if distance_pct < 2.0:  # within 2% of OB
+                            order_block_confirmation = True
+                            ob_type = getattr(ob, "type", "unknown")
+                            if (direction == "buy" and ob_type == "bullish") or \
+                               (direction == "sell" and ob_type == "bearish"):
+                                leading_reasons.append(
+                                    f"Order Block {ob_type} confirmed at {ob_midpoint:.4f}"
+                                )
+                            break
 
         # --- Lagging triggers (confirmation only, not standalone triggers) ---
         ema_cross_type = None
@@ -295,6 +324,37 @@ class SignalEngine:
         # Trigger gate: leading trigger required
         has_trigger = has_leading_trigger
 
+        if not has_trigger and _structure_provided and structure is None:
+            if ema_cross_type is not None or macd_cross_type is not None:
+                has_trigger = True
+                leading_reasons.append(
+                    "EMA/MACD cross (fallback trigger — structure unavailable)"
+                )
+
+        # FIX M1: momentum entry mode — strong trend without explicit trigger
+        # Only when structure analysis ran (structure provided) but found no leading triggers
+        if not has_trigger and _structure_provided:
+            vol_above_avg = ind.volume > ind.volume_sma * cfg.volume_factor
+            supertrend_aligned = (
+                (direction == "buy" and ind.supertrend_direction == 1)
+                or (direction == "sell" and ind.supertrend_direction == -1)
+            )
+            ema_aligned_check = (
+                (direction == "buy" and ind.ema_fast > ind.ema_slow > ind.ema_trend)
+                or (direction == "sell" and ind.ema_fast < ind.ema_slow < ind.ema_trend)
+            )
+            if (
+                supertrend_aligned
+                and ema_aligned_check
+                and ind.adx >= 25
+                and vol_above_avg
+            ):
+                has_trigger = True
+                leading_reasons.append(
+                    f"Momentum entry (Supertrend {'bull' if direction == 'buy' else 'bear'} + "
+                    f"EMA aligned + ADX={ind.adx:.1f} + volume)"
+                )
+
         if not has_trigger:
             return SignalResult(
                 signal=SignalType.NO_SIGNAL,
@@ -350,34 +410,21 @@ class SignalEngine:
                 _regime=regime_name,
             )
 
-        # EMA slope check: spread must be widening
+        # EMA slope check: spread must be widening (5% tolerance)
         if cfg.ema_slope_check:
             current_spread = ind.ema_fast - ind.ema_slow
             prev_spread = ind.ema_fast_prev - ind.ema_slow_prev
-            if direction == "buy":
-                if current_spread <= prev_spread:
-                    return SignalResult(
-                        signal=SignalType.NO_SIGNAL,
-                        symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
-                        reasons=["EMA spread не расширяется для BUY"],
-                        _ema_alignment_info=f"spread={ema_spread_pct:.2f}%",
-                        _factor_strengths=factor_strengths, _weighted_score=weighted_score,
-                        _rsi_strength=rsi_str,
-                        _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
-                        _regime=regime_name,
-                    )
-            else:
-                if current_spread >= prev_spread:
-                    return SignalResult(
-                        signal=SignalType.NO_SIGNAL,
-                        symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
-                        reasons=["EMA spread не расширяется для SELL"],
-                        _ema_alignment_info=f"spread={ema_spread_pct:.2f}%",
-                        _factor_strengths=factor_strengths, _weighted_score=weighted_score,
-                        _rsi_strength=rsi_str,
-                        _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
-                        _regime=regime_name,
-                    )
+            if abs(current_spread) < abs(prev_spread) * 0.95:
+                return SignalResult(
+                    signal=SignalType.NO_SIGNAL,
+                    symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                    reasons=["EMA slope weakening (>5%)"],
+                    _ema_alignment_info=f"spread={ema_spread_pct:.2f}%",
+                    _factor_strengths=factor_strengths, _weighted_score=weighted_score,
+                    _rsi_strength=rsi_str,
+                    _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
+                    _regime=regime_name,
+                )
 
         ema_alignment_info = f"spread={ema_spread_pct:.2f}%"
 
@@ -436,6 +483,32 @@ class SignalEngine:
             )
 
         signal_type = SignalType.BUY if direction == "buy" else SignalType.SELL
+
+        # FIX S3: candle close confirmation — reject wick breakouts
+        candle_range = ind.high - ind.low
+        if candle_range > 0:
+            close_position = (ind.close - ind.low) / candle_range
+            if direction == "buy" and close_position < CLOSE_CONFIRMATION_BUY_MIN:
+                return SignalResult(
+                    signal=SignalType.NO_SIGNAL,
+                    symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                    reasons=[f"Candle close confirmation failed: close at {close_position:.0%} of range (need >={CLOSE_CONFIRMATION_BUY_MIN:.0%} for BUY)"],
+                    _factor_strengths=factor_strengths, _weighted_score=weighted_score,
+                    _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
+                    _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
+                    _regime=regime_name,
+                )
+            if direction == "sell" and close_position > CLOSE_CONFIRMATION_SELL_MAX:
+                return SignalResult(
+                    signal=SignalType.NO_SIGNAL,
+                    symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                    reasons=[f"Candle close confirmation failed: close at {close_position:.0%} of range (need <={CLOSE_CONFIRMATION_SELL_MAX:.0%} for SELL)"],
+                    _factor_strengths=factor_strengths, _weighted_score=weighted_score,
+                    _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
+                    _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
+                    _regime=regime_name,
+                )
+
         sl, tp = _calculate_sl_tp(ind, signal_type, structure)
 
         # Confidence V2 — 7 factors
@@ -467,8 +540,8 @@ class SignalEngine:
             _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
             _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
             _confidence_v2=conf_v2, _regime=regime_name, _regime_blocked=False,
-            _structure_trend=structure.trend if structure else None,
-            _structure_bos=structure.last_bos.type if structure and structure.last_bos else None,
+            _structure_trend=structure.trend if _structure_provided and structure else None,
+            _structure_bos=structure.last_bos.type if _structure_provided and structure and structure.last_bos else None,
         )
 
 
@@ -513,17 +586,17 @@ def _strength_macd(ind: IndicatorValues, direction: str) -> float:
 
 def _strength_rsi(ind: IndicatorValues, direction: str) -> float:
     rsi = ind.rsi
-    # Always from BUY perspective: positive = supports BUY, negative = supports SELL
     if rsi < 30:
-        return 1.0
+        base = 1.0
     elif rsi < 50:
-        return 0.5
+        base = 0.5
     elif rsi < 65:
-        return 0.0
+        base = 0.0
     elif rsi < 70:
-        return -0.5
+        base = -0.5
     else:
-        return -1.0
+        base = -1.0
+    return base if direction == "buy" else -base
 
 
 def _strength_volume(ind: IndicatorValues, direction: str) -> float:

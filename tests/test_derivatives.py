@@ -300,13 +300,14 @@ class TestDerivativesConfig:
 class TestFetchBTCContext:
     @pytest.mark.asyncio
     async def test_fetch_btc_context_success(self):
-        from derivatives.btc_correlation import fetch_btc_context
+        from derivatives.btc_correlation import fetch_btc_context, reset_btc_context_cache
+        reset_btc_context_cache()
 
         df = pd.DataFrame({
-            "close": [48000 + i * 100 for i in range(250)],
-            "high": [48100 + i * 100 for i in range(250)],
-            "low": [47900 + i * 100 for i in range(250)],
-            "open": [48000 + i * 100 for i in range(250)],
+            "close": [60000 + i * 100 for i in range(250)],
+            "high": [60100 + i * 100 for i in range(250)],
+            "low": [59900 + i * 100 for i in range(250)],
+            "open": [60000 + i * 100 for i in range(250)],
             "volume": [1000] * 250,
         }, index=pd.date_range("2024-01-01", periods=250, freq="4h"))
 
@@ -322,7 +323,8 @@ class TestFetchBTCContext:
 
     @pytest.mark.asyncio
     async def test_fetch_btc_context_not_enough_data(self):
-        from derivatives.btc_correlation import fetch_btc_context
+        from derivatives.btc_correlation import fetch_btc_context, reset_btc_context_cache
+        reset_btc_context_cache()
 
         df = pd.DataFrame({
             "close": [48000] * 50,
@@ -346,7 +348,8 @@ class TestFetchBTCContext:
 class TestFetchETHContext:
     @pytest.mark.asyncio
     async def test_fetch_eth_context_success(self):
-        from derivatives.eth_correlation import fetch_eth_context
+        from derivatives.eth_correlation import fetch_eth_context, reset_eth_context_cache
+        reset_eth_context_cache()
 
         df = pd.DataFrame({
             "close": [3000 + i * 10 for i in range(100)],
@@ -367,7 +370,8 @@ class TestFetchETHContext:
 
     @pytest.mark.asyncio
     async def test_fetch_eth_context_not_enough_data(self):
-        from derivatives.eth_correlation import fetch_eth_context
+        from derivatives.eth_correlation import fetch_eth_context, reset_eth_context_cache
+        reset_eth_context_cache()
 
         df = pd.DataFrame({
             "close": [3000] * 10,

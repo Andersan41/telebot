@@ -43,6 +43,7 @@ from scoring.confidence_v2 import (
     score_macd,
     score_adx,
 )
+from scheduler.circuit_breaker import is_circuit_breaker_active, check_recent_losses
 
 # Порядок вердиктов от худшего к лучшему — используется для CONTEXT_MIN_VERDICT.
 _VERDICT_RANK = {"BLOCKED": 0, "CONFLICTED": 1, "WEAK": 2, "CONFIRMED": 3}
@@ -205,11 +206,30 @@ async def _set_cooldown(symbol: str, timeframe: str) -> None:
     await db.set_cooldown(symbol, timeframe, datetime.now(timezone.utc))
 
 
-async def _get_indicators(symbol: str, timeframe: str) -> Optional[IndicatorValues]:
-    df = await exchange_client.fetch_ohlcv(symbol, timeframe, limit=config.trading.candles_limit)
+async def _get_indicators(symbol: str, timeframe: str):
+    df = await exchange_client.fetch_ohlcv(
+        symbol,
+        timeframe,
+        limit=config.trading.candles_limit,
+    )
+
     if df is None:
+        logger.warning(f"OHLCV unavailable for {symbol} {timeframe}")
         return None
-    return indicator_engine.calculate(df, symbol, timeframe), df
+
+    if hasattr(df, "empty") and getattr(df, "empty", False) is True:
+        logger.warning(f"Empty dataframe for {symbol} {timeframe}")
+        return None
+
+    ind = indicator_engine.calculate(df, symbol, timeframe)
+
+    if ind is None:
+        logger.warning(
+            f"Indicator calculation failed for {symbol} {timeframe}"
+        )
+        return None
+
+    return ind, df
 
 
 async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[SignalResult]:
@@ -257,6 +277,9 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             return None
 
         logger.info(f"Signal candidate: {result.signal} {symbol} {timeframe} (score={result.score})")
+
+        # FIX M7: define is_buy once at function scope to avoid stale scope bug
+        is_buy = result.signal == SignalType.BUY
 
         # Шаг 2: Подтверждение на 15M
         confirm_tf = config.trading.confirm_timeframe
@@ -316,7 +339,6 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
 
         if sr_levels:
             result.sr_levels = sr_levels
-            is_buy = result.signal == SignalType.BUY
             result.level_warnings = validate_levels_vs_trade(
                 sr_levels, entry_price or result.close, result.sl, result.tp, is_buy
             )
@@ -505,22 +527,21 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                 try:
                     _btc_ctx = await fetch_btc_context()
                     if _btc_ctx is not None:
-                        is_buy = result.signal == SignalType.BUY
-                    if is_buy and not _btc_ctx.allows_long():
-                        logger.info(
-                            f"Signal BLOCKED by BTC correlation: LONG not allowed "
-                            f"(above_ema200={_btc_ctx.above_ema200}, structure={_btc_ctx.structure})"
-                        )
-                        return None
-                    if not is_buy and not _btc_ctx.allows_short():
-                        logger.info(
-                            f"Signal BLOCKED by BTC correlation: SHORT not allowed "
-                            f"(bullish breakout detected)"
-                        )
-                        return None
-                    _btc_allows = True
-                    _btc_strong = _btc_ctx.above_ema200 if is_buy else not _btc_ctx.above_ema200
-                    logger.debug(
+                        if is_buy and not _btc_ctx.allows_long():
+                            logger.info(
+                                f"Signal BLOCKED by BTC correlation: LONG not allowed "
+                                f"(above_ema200={_btc_ctx.above_ema200}, structure={_btc_ctx.structure})"
+                            )
+                            return None
+                        if not is_buy and not _btc_ctx.allows_short():
+                            logger.info(
+                                f"Signal BLOCKED by BTC correlation: SHORT not allowed "
+                                f"(bullish breakout detected)"
+                            )
+                            return None
+                        _btc_allows = True
+                        _btc_strong = _btc_ctx.above_ema200 if is_buy else not _btc_ctx.above_ema200
+                        logger.debug(
                             f"BTC correlation OK for {symbol}: "
                             f"price={_btc_ctx.price:.0f}, ema200={_btc_ctx.ema200_4h:.0f}, "
                             f"structure={_btc_ctx.structure}"
@@ -528,20 +549,25 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                 except Exception as e:
                     logger.warning(f"BTC correlation check failed for {symbol}: {e}")
 
-            # Шаг 2.11: ETH Correlation Gate
+            # Шаг 2.11: ETH Correlation Gate (FIX E1)
             if config.derivatives.eth_correlation_enabled:
                 try:
                     _eth_ctx = await fetch_eth_context()
                     if _eth_ctx is not None:
-                        is_buy = result.signal == SignalType.BUY
-                    if not is_buy and not _eth_ctx.allows_short(symbol):
-                        logger.info(
-                            f"Signal BLOCKED by ETH correlation: SHORT not allowed "
-                            f"for {symbol} (ETH impulsive up, momentum={_eth_ctx.momentum:+.1f}%)"
-                        )
-                        return None
-                    _eth_allows = True
-                    logger.debug(
+                        if is_buy and not _eth_ctx.allows_long(symbol):
+                            logger.info(
+                                f"Signal BLOCKED by ETH correlation: LONG not allowed "
+                                f"for {symbol} (ETH structure={_eth_ctx.structure}, momentum={_eth_ctx.momentum:+.1f}%)"
+                            )
+                            return None
+                        if not is_buy and not _eth_ctx.allows_short(symbol):
+                            logger.info(
+                                f"Signal BLOCKED by ETH correlation: SHORT not allowed "
+                                f"for {symbol} (ETH impulsive up, momentum={_eth_ctx.momentum:+.1f}%)"
+                            )
+                            return None
+                        _eth_allows = True
+                        logger.debug(
                             f"ETH correlation OK for {symbol}: "
                             f"structure={_eth_ctx.structure}, impulsive={_eth_ctx.is_impulsive_up}"
                         )
@@ -665,14 +691,12 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         eth_ok = True
         try:
             if config.derivatives.btc_correlation_enabled and _btc_ctx is not None:
-                is_buy = result.signal == SignalType.BUY
                 btc_ok = _btc_ctx.allows_long() if is_buy else _btc_ctx.allows_short()
         except Exception:
             pass
 
         try:
             if config.derivatives.eth_correlation_enabled and _eth_ctx is not None:
-                is_buy = result.signal == SignalType.BUY
                 eth_ok = _eth_ctx.allows_short(symbol) if not is_buy else True
         except Exception:
             pass
@@ -866,6 +890,12 @@ async def run_scan_cycle(notify_callback, timeframes: Optional[list[str]] = None
     Cron-джоб может передавать конкретный список, чтобы не дублировать
     сканирование других ТФ.
     """
+    # Circuit breaker check — pause after series of losses
+    await check_recent_losses()
+    if is_circuit_breaker_active():
+        logger.warning("Scan skipped — circuit breaker active (too many recent losses)")
+        return
+
     symbols = get_active_symbols()
     disabled = await db.get_disabled_symbols() or []
     symbols = [s for s in symbols if s not in disabled]

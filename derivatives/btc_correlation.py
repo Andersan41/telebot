@@ -6,12 +6,23 @@ Blocks SHORT if BTC is in strong bullish breakout.
 """
 from dataclasses import dataclass
 from typing import Literal, Optional
+from datetime import datetime, timezone
 
 import pandas as pd
 from loguru import logger
 
 from config.settings import config
 from data.exchange_client import exchange_client
+
+
+BTC_CTX_TTL = 60 * 60  # 1 hour cache
+_btc_ctx_cache: Optional[tuple] = None  # (BTCContext, timestamp)
+
+
+def reset_btc_context_cache():
+    """Reset BTC context cache (useful for testing)."""
+    global _btc_ctx_cache
+    _btc_ctx_cache = None
 
 
 @dataclass
@@ -37,7 +48,21 @@ class BTCContext:
 
 
 async def fetch_btc_context() -> Optional[BTCContext]:
-    """Fetch BTC OHLCV and compute EMA200 + structure + breakout detection."""
+    """Fetch BTC OHLCV and compute EMA200 + structure + breakout detection.
+    
+    Results are cached for BTC_CTX_TTL (1 hour) to reduce API calls.
+    """
+    global _btc_ctx_cache
+    
+    # Check cache
+    if _btc_ctx_cache is not None:
+        cached_ctx, cached_time = _btc_ctx_cache
+        age = (datetime.now(timezone.utc) - cached_time).total_seconds()
+        if age < BTC_CTX_TTL:
+            logger.debug(f"BTC context cache hit (age={age:.0f}s)")
+            return cached_ctx
+        logger.debug(f"BTC context cache expired (age={age:.0f}s)")
+    
     btc_symbol = config.derivatives.btc_symbol
     tf = config.derivatives.btc_ema200_timeframe
 
@@ -54,7 +79,7 @@ async def fetch_btc_context() -> Optional[BTCContext]:
         structure = _detect_structure(df)
         is_breakout, breakout_dir = _detect_breakout(df)
 
-        return BTCContext(
+        ctx = BTCContext(
             price=current_price,
             ema200_4h=ema200,
             above_ema200=above_ema200,
@@ -62,6 +87,8 @@ async def fetch_btc_context() -> Optional[BTCContext]:
             is_breakout=is_breakout,
             breakout_direction=breakout_dir,
         )
+        _btc_ctx_cache = (ctx, datetime.now(timezone.utc))
+        return ctx
     except Exception as e:
         logger.warning(f"BTC context fetch failed: {e}")
         return None

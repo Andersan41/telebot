@@ -270,6 +270,19 @@ class Database:
             )
             return list(result.scalars().all())
 
+    async def get_outcomes_since(self, since: datetime) -> list["SignalOutcome"]:
+        """Get all closed outcomes since a given time, ordered by closed_at desc."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(SignalOutcome)
+                .where(
+                    SignalOutcome.status != "OPEN",
+                    SignalOutcome.closed_at >= since,
+                )
+                .order_by(SignalOutcome.closed_at.desc())
+            )
+            return list(result.scalars().all())
+
     async def close_outcome(
         self, outcome_id: int, status: str, close_price: float, pnl_pct: float
     ) -> None:

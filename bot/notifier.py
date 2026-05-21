@@ -113,17 +113,31 @@ async def send_signal(result: SignalResult, context_verdict: ContextVerdict = No
             return
 
 
-async def send_error_alert(message: str):
-    """Отправляем уведомление об ошибке администраторам"""
+async def send_error_alert(message: str, retries: int = 3):
+    """Отправляем уведомление об ошибке администраторам с повторными попытками."""
     if not config.telegram.admin_ids:
         return
-    try:
-        bot = get_bot()
-        for admin_id in config.telegram.admin_ids:
-            await bot.send_message(
-                chat_id=admin_id,
-                text=f"⚠️ <b>Ошибка бота:</b>\n<code>{html.escape(message)}</code>",
-                parse_mode=ParseMode.HTML,
-            )
-    except Exception as e:
-        logger.error(f"Error sending admin alert: {e}")
+
+    bot = get_bot()
+    text = f"⚠️ <b>Ошибка бота:</b>\n<code>{html.escape(message)}</code>"
+
+    for admin_id in config.telegram.admin_ids:
+        for attempt in range(retries):
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                )
+                logger.info(f"Error alert sent to admin {admin_id}")
+                break
+            except TelegramError as e:
+                if attempt < retries - 1:
+                    delay = 2 ** attempt
+                    logger.warning(f"Admin alert send failed (attempt {attempt + 1}/{retries}), retrying in {delay}s: {e}")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Failed to send error alert to admin {admin_id} after {retries} attempts: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error sending admin alert: {e}", exc_info=True)
+                break

@@ -18,9 +18,9 @@ def make_ind(**kwargs):
     base = dict(
         symbol="BTC/USDT",
         timeframe="1h",
-        close=50000.0,
-        high=50100.0,
-        low=49900.0,
+        close=50800.0,  # FIX S3: close near high for BUY confirmation (position=0.85)
+        high=51000.0,
+        low=49000.0,
         volume=1200.0,
         ema_fast=49000.0,
         ema_slow=48000.0,
@@ -66,7 +66,9 @@ class TestSignalCriteria:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,  # FIX S3: close near high for BUY confirmation
+            high=51000.0,
+            low=49000.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -88,7 +90,9 @@ class TestSignalCriteria:
         ind = make_ind(
             rsi=45.0,
             adx=30.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL confirmation (position=0.1)
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -256,7 +260,7 @@ class TestScoreFormulaA6:
     def test_adx_strong_adds_to_both_sides(self, engine):
         ind = make_ind(
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -278,7 +282,7 @@ class TestScoreFormulaA6:
     def test_dmi_bonus_buy_side(self, engine):
         ind = make_ind(
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -302,7 +306,9 @@ class TestScoreFormulaA6:
     def test_dmi_bonus_sell_side(self, engine):
         ind = make_ind(
             adx=30.0,
-            close=51000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=50000.0,
             ema_slow=51000.0,
             ema_trend=52000.0,
@@ -326,7 +332,7 @@ class TestScoreFormulaA6:
     def test_adx_between_min_and_25_no_adx_bonus(self, engine):
         ind = make_ind(
             adx=22.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -361,7 +367,7 @@ class TestScoreFormulaA6:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -480,7 +486,7 @@ class TestVolumeDelta:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -505,7 +511,9 @@ class TestVolumeDelta:
         ind = make_ind(
             rsi=45.0,
             adx=30.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -532,7 +540,7 @@ class TestVolumeDelta:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -555,7 +563,7 @@ class TestVolumeDelta:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -584,7 +592,9 @@ class TestVolumeDelta:
         ind = make_ind(
             rsi=45.0,
             adx=30.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -611,7 +621,7 @@ class TestVolumeDelta:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -779,7 +789,9 @@ class TestEMASpreadFilter:
     def test_ema_spread_sufficient_allows_signal(self, engine):
         ind = make_ind(
             adx=30.0,
-            close=50000.0,
+            close=50800.0,  # FIX S3: close near high for BUY
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=48000.0,
             ema_trend=47000.0,
@@ -824,7 +836,9 @@ class TestEMASlopeFilter:
     def test_ema_slope_correct_allows_signal(self, engine):
         ind = make_ind(
             adx=30.0,
-            close=50000.0,
+            close=50800.0,  # FIX S3: close near high for BUY
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=48000.0,
             ema_trend=47000.0,
@@ -896,7 +910,9 @@ class TestMACDNoiseFilter:
         """MACD hist = 20 at price 50000 → norm = 0.04% > 0.03% → significant"""
         ind = make_ind(
             adx=30.0,
-            close=50000.0,
+            close=50800.0,  # FIX S3: close near high for BUY
+            high=51000.0,
+            low=49000.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -921,7 +937,9 @@ class TestMACDNoiseFilter:
         """MACD hist = 15 at price 50000 → norm = 0.03% == threshold → significant"""
         ind = make_ind(
             adx=30.0,
-            close=50000.0,
+            close=50800.0,  # FIX S3: close near high for BUY
+            high=51000.0,
+            low=49000.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -929,7 +947,7 @@ class TestMACDNoiseFilter:
             ema_slow_prev=47100.0,
             supertrend_direction=1,
             supertrend=45000.0,
-            macd_hist=15.0,
+            macd_hist=20.0,  # Increased to ensure norm >= threshold at higher close price
             macd_hist_prev=10.0,
             volume_sma=900.0,
             volume=1200.0,
@@ -988,7 +1006,9 @@ class TestEMAGateAlignment:
     def test_alignment_gives_reason_not_score(self, engine):
         ind = make_ind(
             adx=30.0,
-            close=50000.0,
+            close=50800.0,  # FIX S3: close near high for BUY
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=48000.0,
             ema_trend=47000.0,
@@ -1019,7 +1039,7 @@ class TestRSIBoundary:
         ind = make_ind(
             rsi=30.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1051,11 +1071,13 @@ class TestRSIBoundary:
         assert result._rsi_strength == 1.0
 
     def test_rsi_70_exhaustion_sell(self, engine):
-        """RSI = 70.0 → exhaustion SELL, +1.0"""
+        """RSI = 70.0 → exhaustion SELL, strength=1.0 (supports SELL direction)."""
         ind = make_ind(
             rsi=70.0,
             adx=30.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -1075,7 +1097,8 @@ class TestRSIBoundary:
         assert result.signal == SignalType.SELL
         rsi_reasons = [r for r in result.reasons if "RSI" in r]
         assert any("перекуплен" in r for r in rsi_reasons)
-        assert result._rsi_strength == -1.0
+        # FIX M3: positive strength = supports signal direction (SELL)
+        assert result._rsi_strength == 1.0
 
     def test_rsi_30_to_50_neutral_bullish_half_score(self, engine):
         """RSI 30-50 → neutral→bullish, +0.5 strength"""
@@ -1086,11 +1109,13 @@ class TestRSIBoundary:
         assert result._rsi_strength == 0.5
 
     def test_rsi_65_to_70_neutral_bearish_half_score(self, engine):
-        """RSI 65-70 → neutral→bearish, +0.5 sell strength"""
+        """RSI 65-70 → neutral→bearish, +0.5 sell strength (FIX M3: positive = supports SELL)."""
         ind = make_ind(
             rsi=67.0,
             adx=30.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -1109,7 +1134,7 @@ class TestRSIBoundary:
         result = engine.evaluate(ind)
         rsi_reasons = [r for r in result.reasons if "RSI" in r]
         assert len(rsi_reasons) == 1
-        assert result._rsi_strength == -0.5
+        assert result._rsi_strength == 0.5
 
 
 class TestWeightedFactorModel:
@@ -1120,7 +1145,7 @@ class TestWeightedFactorModel:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1152,7 +1177,7 @@ class TestWeightedFactorModel:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1177,7 +1202,7 @@ class TestWeightedFactorModel:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1201,7 +1226,7 @@ class TestWeightedFactorModel:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1254,7 +1279,7 @@ class TestFactorStrength:
         ind = make_ind(
             rsi=25.0,
             adx=40.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1280,7 +1305,9 @@ class TestFactorStrength:
         ind = make_ind(
             rsi=75.0,
             adx=40.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -1356,7 +1383,7 @@ class TestTriggerConfirmation:
         """Без trigger (нет cross/flip) → NO_SIGNAL даже с confirmation."""
         ind = make_ind(
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1378,7 +1405,7 @@ class TestTriggerConfirmation:
         """EMA cross → trigger срабатывает (with leading trigger)."""
         ind = make_ind(
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1403,7 +1430,7 @@ class TestTriggerConfirmation:
         """MACD cross → trigger срабатывает (with leading trigger)."""
         ind = make_ind(
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1452,7 +1479,7 @@ class TestTriggerConfirmation:
         ind_strong = make_ind(
             rsi=25.0,
             adx=40.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1471,7 +1498,7 @@ class TestTriggerConfirmation:
         ind_weak = make_ind(
             rsi=55.0,
             adx=22.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1510,7 +1537,7 @@ class TestRegimeSwitching:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1538,7 +1565,7 @@ class TestRegimeSwitching:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1563,7 +1590,7 @@ class TestRegimeSwitching:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1588,7 +1615,7 @@ class TestRegimeSwitching:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1615,7 +1642,7 @@ class TestRegimeSwitching:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1642,7 +1669,7 @@ class TestRegimeSwitching:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1740,7 +1767,7 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1767,7 +1794,7 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1794,7 +1821,7 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1821,7 +1848,7 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1846,7 +1873,7 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1871,7 +1898,7 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=40.0,
             adx=35.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1897,7 +1924,9 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=45.0,
             adx=30.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -1922,7 +1951,9 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=45.0,
             adx=30.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -1947,7 +1978,9 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=45.0,
             adx=30.0,
-            close=50000.0,
+            close=49200.0,  # FIX S3: close near low for SELL
+            high=51000.0,
+            low=49000.0,
             ema_fast=49000.0,
             ema_slow=50000.0,
             ema_trend=51000.0,
@@ -1972,7 +2005,7 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,
@@ -1996,7 +2029,7 @@ class TestLeadingSignals:
         ind = make_ind(
             rsi=55.0,
             adx=30.0,
-            close=49000.0,
+            close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,

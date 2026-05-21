@@ -6,6 +6,7 @@ Important for L2 tokens (OP, ARB) and DeFi tokens.
 """
 from dataclasses import dataclass
 from typing import Literal, Optional
+from datetime import datetime, timezone
 
 import pandas as pd
 from loguru import logger
@@ -14,12 +15,30 @@ from config.settings import config
 from data.exchange_client import exchange_client
 
 
+ETH_CTX_TTL = 60 * 60  # 1 hour cache
+_eth_ctx_cache: Optional[tuple] = None  # (ETHContext, timestamp)
+
+
+def reset_eth_context_cache():
+    """Reset ETH context cache (useful for testing)."""
+    global _eth_ctx_cache
+    _eth_ctx_cache = None
+
+
 @dataclass
 class ETHContext:
     price: float
     structure: Literal["bullish", "bearish", "ranging"]
     is_impulsive_up: bool
     momentum: float
+
+    def allows_long(self, alt_symbol: str) -> bool:
+        """Block LONG if ETH is bearish (FIX E1)."""
+        if self.structure == "bearish":
+            return False
+        if self._is_eth_correlated(alt_symbol) and self.momentum < -2.0:
+            return False
+        return True
 
     def allows_short(self, alt_symbol: str) -> bool:
         if self.is_impulsive_up:
@@ -36,7 +55,21 @@ class ETHContext:
 
 
 async def fetch_eth_context() -> Optional[ETHContext]:
-    """Fetch ETH OHLCV and detect impulsive moves."""
+    """Fetch ETH OHLCV and detect impulsive moves.
+    
+    Results are cached for ETH_CTX_TTL (1 hour) to reduce API calls.
+    """
+    global _eth_ctx_cache
+    
+    # Check cache
+    if _eth_ctx_cache is not None:
+        cached_ctx, cached_time = _eth_ctx_cache
+        age = (datetime.now(timezone.utc) - cached_time).total_seconds()
+        if age < ETH_CTX_TTL:
+            logger.debug(f"ETH context cache hit (age={age:.0f}s)")
+            return cached_ctx
+        logger.debug(f"ETH context cache expired (age={age:.0f}s)")
+    
     eth_symbol = config.derivatives.eth_symbol
 
     try:
@@ -48,12 +81,14 @@ async def fetch_eth_context() -> Optional[ETHContext]:
         structure = _detect_structure(df)
         is_impulsive, momentum = _detect_impulsive_move(df)
 
-        return ETHContext(
+        ctx = ETHContext(
             price=df["close"].iloc[-1],
             structure=structure,
             is_impulsive_up=is_impulsive,
             momentum=momentum,
         )
+        _eth_ctx_cache = (ctx, datetime.now(timezone.utc))
+        return ctx
     except Exception as e:
         logger.warning(f"ETH context fetch failed: {e}")
         return None
