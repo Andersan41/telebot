@@ -215,7 +215,7 @@ class SignalEngine:
             _gate_log["regime"] = True
 
         # --- ADX flat filter ---
-        if ind.adx < cfg.adx_min:
+        if cfg.adx_filter_enabled and ind.adx < cfg.adx_min:
             _gate_log["adx"] = False
             _log_gates(_gate_log, ind)
             return SignalResult(
@@ -344,7 +344,7 @@ class SignalEngine:
 
         # M7: compression breakout mode check (deferred until direction is known)
         breakout_reasons: List[str] = []
-        if regime_name == "compression":
+        if cfg.compression_enabled and regime_name == "compression":
             has_strong_trigger = False
             if _structure_provided and structure and structure.last_bos:
                 has_strong_trigger = True
@@ -415,7 +415,7 @@ class SignalEngine:
                     f"EMA aligned + ADX={ind.adx:.1f} + volume)"
                 )
 
-        if not has_trigger:
+        if cfg.trigger_required and not has_trigger:
             _gate_log["trigger"] = False
             _log_gates(_gate_log, ind)
             return SignalResult(
@@ -444,7 +444,7 @@ class SignalEngine:
         min_spread = cfg.min_ema_spread_pct
         ema_alignment_info = ""
 
-        if not ema_aligned:
+        if cfg.ema_alignment_enabled and not ema_aligned:
             _gate_log["ema_alignment"] = False
             if direction == "buy":
                 ema_alignment_info = f"BUY: fast={ind.ema_fast} slow={ind.ema_slow} trend={ind.ema_trend}"
@@ -464,7 +464,7 @@ class SignalEngine:
         _gate_log["ema_alignment"] = True
 
         # EMA spread check
-        if ema_spread_pct < min_spread:
+        if cfg.ema_spread_enabled and ema_spread_pct < min_spread:
             _gate_log["ema_spread"] = False
             _log_gates(_gate_log, ind)
             return SignalResult(
@@ -545,7 +545,7 @@ class SignalEngine:
         score = len(reasons)
         min_score = config.scoring.min_score_for_signal
 
-        if score < min_score:
+        if cfg.min_score_enabled and score < min_score:
             _gate_log["min_score"] = False
             _log_gates(_gate_log, ind)
             return SignalResult(
@@ -562,33 +562,34 @@ class SignalEngine:
         signal_type = SignalType.BUY if direction == "buy" else SignalType.SELL
 
         # FIX S3: candle close confirmation — reject wick breakouts
-        candle_range = ind.high - ind.low
-        if candle_range > 0:
-            close_position = (ind.close - ind.low) / candle_range
-            if direction == "buy" and close_position < CLOSE_CONFIRMATION_BUY_MIN:
-                _gate_log["candle_close"] = False
-                _log_gates(_gate_log, ind)
-                return SignalResult(
-                    signal=SignalType.NO_SIGNAL,
-                    symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
-                    reasons=[f"Candle close confirmation failed: close at {close_position:.0%} of range (need >={CLOSE_CONFIRMATION_BUY_MIN:.0%} for BUY)"],
-                    _factor_strengths=factor_strengths, _weighted_score=weighted_score,
-                    _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
-                    _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
-                    _regime=regime_name,
-                )
-            if direction == "sell" and close_position > CLOSE_CONFIRMATION_SELL_MAX:
-                _gate_log["candle_close"] = False
-                _log_gates(_gate_log, ind)
-                return SignalResult(
-                    signal=SignalType.NO_SIGNAL,
-                    symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
-                    reasons=[f"Candle close confirmation failed: close at {close_position:.0%} of range (need <={CLOSE_CONFIRMATION_SELL_MAX:.0%} for SELL)"],
-                    _factor_strengths=factor_strengths, _weighted_score=weighted_score,
-                    _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
-                    _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
-                    _regime=regime_name,
-                )
+        if cfg.candle_close_enabled:
+            candle_range = ind.high - ind.low
+            if candle_range > 0:
+                close_position = (ind.close - ind.low) / candle_range
+                if direction == "buy" and close_position < CLOSE_CONFIRMATION_BUY_MIN:
+                    _gate_log["candle_close"] = False
+                    _log_gates(_gate_log, ind)
+                    return SignalResult(
+                        signal=SignalType.NO_SIGNAL,
+                        symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                        reasons=[f"Candle close confirmation failed: close at {close_position:.0%} of range (need >={CLOSE_CONFIRMATION_BUY_MIN:.0%} for BUY)"],
+                        _factor_strengths=factor_strengths, _weighted_score=weighted_score,
+                        _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
+                        _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
+                        _regime=regime_name,
+                    )
+                if direction == "sell" and close_position > CLOSE_CONFIRMATION_SELL_MAX:
+                    _gate_log["candle_close"] = False
+                    _log_gates(_gate_log, ind)
+                    return SignalResult(
+                        signal=SignalType.NO_SIGNAL,
+                        symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                        reasons=[f"Candle close confirmation failed: close at {close_position:.0%} of range (need <={CLOSE_CONFIRMATION_SELL_MAX:.0%} for SELL)"],
+                        _factor_strengths=factor_strengths, _weighted_score=weighted_score,
+                        _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
+                        _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
+                        _regime=regime_name,
+                    )
         _gate_log["candle_close"] = True
 
         sl, tp = _calculate_sl_tp(ind, signal_type, structure)

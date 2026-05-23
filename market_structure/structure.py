@@ -299,6 +299,8 @@ async def check_mtf_alignment(
                 if direction == "bearish":
                     aligned_count += 1
             else:
+                if state.last_bos and state.last_bos.type == direction:
+                    aligned_count += 1
                 ranging_count += 1
         except Exception:
             continue

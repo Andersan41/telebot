@@ -4,9 +4,38 @@ main.py — Точка входа. Запускает бота и планиро
 import asyncio
 import sys
 import os
+import atexit
 
 # Добавляем корень проекта в PYTHONPATH
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Lock-файл для защиты от повторного запуска
+LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".trading_bot.lock")
+
+
+def acquire_lock():
+    if os.path.exists(LOCK_FILE):
+        with open(LOCK_FILE) as f:
+            old_pid = f.read().strip()
+        if old_pid.isdigit():
+            try:
+                os.kill(int(old_pid), 0)  # сигнал 0 = проверка существования процесса
+                print(f"Bot already running (PID {old_pid}). Exiting.")
+                sys.exit(1)
+            except ProcessLookupError:
+                pass  # процесс мёртв — можно удалить lock
+        os.remove(LOCK_FILE)
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(release_lock)
+
+
+def release_lock():
+    try:
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+    except Exception:
+        pass
 
 from loguru import logger
 import config.logger  # noqa — инициализирует логгер
@@ -26,6 +55,8 @@ from context.fetcher import context_fetcher
 
 
 async def main():
+    acquire_lock()
+
     logger.info("=" * 60)
     logger.info("  Trading Signal Bot starting...")
     logger.info("=" * 60)
@@ -38,6 +69,8 @@ async def main():
     # Инициализируем БД
     await db.init()
     await refresh_runtime_symbols()
+    from config.settings import reload_filter_toggles
+    await reload_filter_toggles()
 
     # Подключаемся к бирже
     await exchange_client.connect()
@@ -113,6 +146,7 @@ async def main():
         if app.running:
             await app.stop()
         await app.shutdown()
+        release_lock()
         logger.info("Bot stopped.")
 
 

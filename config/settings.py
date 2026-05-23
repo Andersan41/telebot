@@ -58,6 +58,8 @@ class TradingConfig:
     ])
     # Таймфрейм подтверждения сигнала
     confirm_timeframe: str = os.getenv("CONFIRM_TIMEFRAME", "15m")
+    # Включить подтверждение на confirm_timeframe
+    confirm_tf_enabled: bool = os.getenv("CONFIRM_TF_ENABLED", "true").lower() == "true"
 
     # ─── EMA ─────────────────────────────────────────────────────────────
     # Период быстрой EMA
@@ -141,6 +143,22 @@ class TradingConfig:
     # Делитель нормализации volume delta strength
     volume_delta_norm: float = float(os.getenv("VOLUME_DELTA_NORM", "50"))
 
+    # ─── Filter toggles (signal_engine gates) ──────────────────────────
+    # ADX flat filter (NO_SIGNAL if ADX < adx_min)
+    adx_filter_enabled: bool = os.getenv("ADX_FILTER_ENABLED", "true").lower() == "true"
+    # EMA alignment gate (fast > slow > trend for BUY, reverse for SELL)
+    ema_alignment_enabled: bool = os.getenv("EMA_ALIGNMENT_ENABLED", "true").lower() == "true"
+    # EMA minimum spread gate
+    ema_spread_enabled: bool = os.getenv("EMA_SPREAD_ENABLED", "true").lower() == "true"
+    # Trigger gate (requires at least one trigger)
+    trigger_required: bool = os.getenv("TRIGGER_REQUIRED", "true").lower() == "true"
+    # Candle close confirmation (reject wick breakouts)
+    candle_close_enabled: bool = os.getenv("CANDLE_CLOSE_ENABLED", "true").lower() == "true"
+    # Minimum score gate
+    min_score_enabled: bool = os.getenv("MIN_SCORE_ENABLED", "true").lower() == "true"
+    # Compression breakout mode (stricter checks in compression regime)
+    compression_enabled: bool = os.getenv("COMPRESSION_ENABLED", "true").lower() == "true"
+
     # ─── Candles ─────────────────────────────────────────────────────────
     # Лимит свечей при запросе OHLCV
     candles_limit: int = int(os.getenv("CANDLES_LIMIT", "200"))
@@ -223,6 +241,10 @@ class MarketStructureConfig:
     mtf_timeframes: str = os.getenv("MTF_TIMEFRAMES", "1d,4h,1h")
     # Включить ли MTF анализ
     mtf_enabled: bool = os.getenv("MTF_ENABLED", "true").lower() == "true"
+    # Distance filter (blocks if too close to S/R)
+    distance_filter_enabled: bool = os.getenv("DISTANCE_FILTER_ENABLED", "true").lower() == "true"
+    # TP path quality filter
+    tp_path_enabled: bool = os.getenv("TP_PATH_ENABLED", "true").lower() == "true"
     # Lookback для swing point detection
     structure_lookback: int = int(os.getenv("STRUCTURE_LOOKBACK", "50"))
     # Окно для swing point detection
@@ -262,6 +284,14 @@ class RiskConfig:
     # ─── Correlation ─────────────────────────────────────────────────────
     # Множитель риска при misaligned корреляции BTC/ETH
     correlation_misaligned_multiplier: float = float(os.getenv("CORRELATION_MISALIGNED_MULTIPLIER", "0.5"))
+
+    # ─── Filter toggles (scanner additional gates) ─────────────────────
+    # Volatility regime filter (blocks breakout in low vol)
+    volatility_filter_enabled: bool = os.getenv("VOLATILITY_FILTER_ENABLED", "true").lower() == "true"
+    # No-trade zones check
+    no_trade_zones_enabled: bool = os.getenv("NO_TRADE_ZONES_ENABLED", "true").lower() == "true"
+    # Dynamic risk filter
+    dynamic_risk_enabled: bool = os.getenv("DYNAMIC_RISK_ENABLED", "true").lower() == "true"
 
     # ─── Market Regime ───────────────────────────────────────────────────
     # Порог ADX для трендового режима
@@ -373,6 +403,10 @@ class ScoringConfig:
     market_confidence_blend: float = float(os.getenv("MARKET_CONFIDENCE_BLEND", "0.4"))
     # Доля исторического WR в blended confidence
     historical_wr_blend: float = float(os.getenv("HISTORICAL_WR_BLEND", "0.6"))
+
+    # ─── Filter toggles ──────────────────────────────────────────────────
+    # Confidence V2 scoring (10-factor weighted)
+    confidence_v2_enabled: bool = os.getenv("CONFIDENCE_V2_ENABLED", "true").lower() == "true"
 
     # ─── Quality thresholds ──────────────────────────────────────────────
     # Порог weighted confidence для strong quality
@@ -555,6 +589,77 @@ class AppConfig:
         return self.liquidity.ob_retest_required
 
 
+# Mapping: DB key → (config_attribute_path, type)
+FILTER_TOGGLE_KEYS: dict[str, tuple[str, type]] = {
+    "adx_filter": ("trading.adx_filter_enabled", bool),
+    "ema_alignment": ("trading.ema_alignment_enabled", bool),
+    "ema_spread": ("trading.ema_spread_enabled", bool),
+    "trigger": ("trading.trigger_required", bool),
+    "candle_close": ("trading.candle_close_enabled", bool),
+    "min_score": ("trading.min_score_enabled", bool),
+    "compression": ("trading.compression_enabled", bool),
+    "confirm_tf": ("trading.confirm_tf_enabled", bool),
+    "ema_slope": ("trading.ema_slope_check", bool),
+    "mtf": ("market_structure.mtf_enabled", bool),
+    "distance_filter": ("market_structure.distance_filter_enabled", bool),
+    "tp_path": ("market_structure.tp_path_enabled", bool),
+    "btc_corr": ("derivatives.btc_correlation_enabled", bool),
+    "eth_corr": ("derivatives.eth_correlation_enabled", bool),
+    "volatility": ("risk.volatility_filter_enabled", bool),
+    "no_trade_zones": ("risk.no_trade_zones_enabled", bool),
+    "dynamic_risk": ("risk.dynamic_risk_enabled", bool),
+    "context": ("context_enabled", bool),
+    "confidence_v2": ("scoring.confidence_v2_enabled", bool),
+}
+
+FILTER_PARAM_KEYS: dict[str, tuple[str, type]] = {
+    "adx_min": ("trading.adx_min", float),
+    "ema_fast": ("trading.ema_fast", int),
+    "ema_slow": ("trading.ema_slow", int),
+    "ema_trend": ("trading.ema_trend", int),
+    "min_ema_spread_pct": ("trading.min_ema_spread_pct", float),
+    "rsi_period": ("trading.rsi_period", int),
+    "rsi_overbought": ("trading.rsi_overbought", float),
+    "rsi_oversold": ("trading.rsi_oversold", float),
+    "macd_fast": ("trading.macd_fast", int),
+    "macd_slow": ("trading.macd_slow", int),
+    "macd_signal": ("trading.macd_signal", int),
+    "adx_period": ("trading.adx_period", int),
+    "atr_period": ("trading.atr_period", int),
+    "atr_multiplier_sl": ("trading.atr_multiplier_sl", float),
+    "atr_multiplier_tp": ("trading.atr_multiplier_tp", float),
+    "supertrend_period": ("trading.supertrend_period", int),
+    "supertrend_multiplier": ("trading.supertrend_multiplier", float),
+    "volume_factor": ("trading.volume_factor", float),
+    "volume_sma_period": ("trading.volume_sma_period", int),
+    "min_score_for_signal": ("scoring.min_score_for_signal", int),
+    "confirm_timeframe": ("trading.confirm_timeframe", str),
+    "signal_cooldown_minutes": ("signal_cooldown_minutes", int),
+    # MarketStructure params
+    "distance_filter_min_pct": ("market_structure.distance_filter_min_pct", float),
+    "mtf_required_alignment": ("market_structure.mtf_required_alignment", int),
+    "structure_lookback": ("market_structure.structure_lookback", int),
+    "structure_swing_window": ("market_structure.structure_swing_window", int),
+    # Derivatives params
+    "funding_strong_threshold": ("derivatives.funding_strong_threshold", float),
+    "oi_moderate_threshold": ("derivatives.oi_moderate_threshold", float),
+    "oi_strong_threshold": ("derivatives.oi_strong_threshold", float),
+    # Risk params
+    "volatility_low_threshold": ("risk.volatility_low_threshold", float),
+    "volatility_high_threshold": ("risk.volatility_high_threshold", float),
+    "no_trade_min_atr_pct": ("risk.no_trade_min_atr_pct", float),
+    "risk_strong_pct": ("risk.risk_strong_pct", float),
+    "risk_moderate_pct": ("risk.risk_moderate_pct", float),
+    # Context params
+    "context_min_verdict": ("context_min_verdict", str),
+    "context_fetch_timeout": ("context_fetch_timeout", float),
+    # Scoring params
+    "confidence_strong_threshold": ("scoring.confidence_strong_threshold", float),
+    "confidence_moderate_threshold": ("scoring.confidence_moderate_threshold", float),
+    "quality_strong_threshold": ("scoring.quality_strong_threshold", float),
+    "quality_moderate_threshold": ("scoring.quality_moderate_threshold", float),
+}
+
 # ─── Singleton ────────────────────────────────────────────────────────────
 config = AppConfig()
 
@@ -569,6 +674,58 @@ async def reload_config() -> None:
     global config
     load_dotenv()
     config = AppConfig()
+    from storage.database import db
+    if hasattr(db, '_session_factory') and db._session_factory is not None:
+        await reload_filter_toggles()
+
+
+def _set_nested_config(obj, path: str, value):
+    """Set a value on a nested config object using dot-separated path."""
+    parts = path.split(".")
+    current = obj
+    for part in parts[:-1]:
+        current = getattr(current, part)
+    setattr(current, parts[-1], value)
+
+
+def _get_nested_config(obj, path: str):
+    """Get a value from a nested config object using dot-separated path."""
+    parts = path.split(".")
+    current = obj
+    for part in parts:
+        current = getattr(current, part)
+    return current
+
+
+async def reload_filter_toggles() -> None:
+    """Load filter toggle / param overrides from DB into the global config singleton.
+
+    Reads keys:
+      - `filter:toggle:<key>` — boolean toggles
+      - `filter:param:<key>` — typed parameter values
+      - `param:<UPPER_NAME>` — legacy /setparam format (backward compat)
+    """
+    from storage.database import db
+    for key, (attr_path, _) in FILTER_TOGGLE_KEYS.items():
+        db_val = await db.get_setting(f"filter:toggle:{key}", "")
+        if db_val != "":
+            _set_nested_config(config, attr_path, db_val.lower() == "true")
+    for key, (attr_path, cast_type) in FILTER_PARAM_KEYS.items():
+        db_val = await db.get_setting(f"filter:param:{key}", "")
+        if db_val != "":
+            try:
+                _set_nested_config(config, attr_path, cast_type(db_val))
+            except (ValueError, TypeError):
+                pass
+        else:
+            # Legacy /setparam format: param:EMA_FAST
+            legacy_key = f"param:{key.upper()}"
+            legacy_val = await db.get_setting(legacy_key, "")
+            if legacy_val != "":
+                try:
+                    _set_nested_config(config, attr_path, cast_type(legacy_val))
+                except (ValueError, TypeError):
+                    pass
 
 
 async def refresh_runtime_symbols() -> None:

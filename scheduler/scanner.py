@@ -285,7 +285,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         confirm_tf = config.trading.confirm_timeframe
         entry_price: Optional[float] = None
         confirmed_on_lower_tf = False
-        if confirm_tf != timeframe:
+        if config.trading.confirm_tf_enabled and confirm_tf != timeframe:
             ind_confirm_result = await _get_indicators(symbol, confirm_tf)
             if ind_confirm_result is not None:
                 ind_confirm, _df_confirm = ind_confirm_result
@@ -347,34 +347,36 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
 
             # Шаг 2.6: Distance Filter
             direction = "long" if is_buy else "short"
-            dist_result = check_distance_filter(
-                direction=direction,
-                entry_price=entry_price or result.close,
-                sr_levels=sr_levels,
-            )
-            if dist_result.blocked:
-                logger.info(
-                    f"Signal BLOCKED by distance filter: {result.signal} {symbol} {timeframe} — "
-                    f"{'; '.join(dist_result.reasons)}"
+            if config.market_structure.distance_filter_enabled:
+                dist_result = check_distance_filter(
+                    direction=direction,
+                    entry_price=entry_price or result.close,
+                    sr_levels=sr_levels,
                 )
-                return None
+                if dist_result.blocked:
+                    logger.info(
+                        f"Signal BLOCKED by distance filter: {result.signal} {symbol} {timeframe} — "
+                        f"{'; '.join(dist_result.reasons)}"
+                    )
+                    return None
             result._distance_filter_blocked = False
 
             # Шаг 2.7: TP Path Quality
-            tp_eval = evaluate_tp_path(
-                direction=direction,
-                entry_price=entry_price or result.close,
-                tp_price=result.tp or 0,
-                sr_levels=sr_levels,
-            )
-            result._tp_path_score = tp_eval.score
-            result._tp_path_blocked = tp_eval.blocked
-            if tp_eval.blocked:
-                logger.info(
-                    f"Signal BLOCKED by TP path quality: {result.signal} {symbol} {timeframe} — "
-                    f"{tp_eval.reject_reason}"
+            if config.market_structure.tp_path_enabled:
+                tp_eval = evaluate_tp_path(
+                    direction=direction,
+                    entry_price=entry_price or result.close,
+                    tp_price=result.tp or 0,
+                    sr_levels=sr_levels,
                 )
-                return None
+                result._tp_path_score = tp_eval.score
+                result._tp_path_blocked = tp_eval.blocked
+                if tp_eval.blocked:
+                    logger.info(
+                        f"Signal BLOCKED by TP path quality: {result.signal} {symbol} {timeframe} — "
+                        f"{tp_eval.reject_reason}"
+                    )
+                    return None
             for obs in tp_eval.obstacles:
                 result.level_warnings.append(f"⚠️ TP path: {obs.description}")
 
@@ -477,23 +479,24 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                                 f"Weak candle pattern (body={candle_quality.body_pct:.0%}, momentum={candle_quality.momentum_score:+.2f})"
                             )
 
-                    tp_eval_with_liquidity = evaluate_tp_path(
-                        direction=direction,
-                        entry_price=entry_price or result.close,
-                        tp_price=result.tp or 0,
-                        sr_levels=sr_levels,
-                        order_blocks=_order_blocks,
-                        fvgs=fvgs,
-                    )
-                    if tp_eval_with_liquidity.blocked and not tp_eval.blocked:
-                        logger.info(
-                            f"Signal BLOCKED by liquidity obstacles: {result.signal} {symbol} {timeframe} — "
-                            f"{tp_eval_with_liquidity.reject_reason}"
+                    if config.market_structure.tp_path_enabled:
+                        tp_eval_with_liquidity = evaluate_tp_path(
+                            direction=direction,
+                            entry_price=entry_price or result.close,
+                            tp_price=result.tp or 0,
+                            sr_levels=sr_levels,
+                            order_blocks=_order_blocks,
+                            fvgs=fvgs,
                         )
-                        return None
-                    for obs in tp_eval_with_liquidity.obstacles:
-                        if obs not in tp_eval.obstacles:
-                            result.level_warnings.append(f"TP path: {obs.description}")
+                        if tp_eval_with_liquidity.blocked and not tp_eval.blocked:
+                            logger.info(
+                                f"Signal BLOCKED by liquidity obstacles: {result.signal} {symbol} {timeframe} — "
+                                f"{tp_eval_with_liquidity.reject_reason}"
+                            )
+                            return None
+                        for obs in tp_eval_with_liquidity.obstacles:
+                            if obs not in tp_eval.obstacles:
+                                result.level_warnings.append(f"TP path: {obs.description}")
                 else:
                     logger.warning(f"Liquidity data not available: {symbol} {timeframe}")
             except Exception as e:
@@ -583,7 +586,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             f"regime={vol_regime.regime}, atr_pct={vol_regime.atr_pct:.2f}%"
         )
 
-        if not vol_regime.allow_breakout:
+        if config.risk.volatility_filter_enabled and not vol_regime.allow_breakout:
             logger.info(
                 f"Signal BLOCKED by volatility regime: {result.signal} {symbol} {timeframe} — "
                 f"low volatility (ATR%={vol_regime.atr_pct:.2f}), breakout trades disabled"
@@ -721,24 +724,25 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         structure_trend = getattr(result, "_structure_trend", None)
         tp_blocked = getattr(result, "_tp_path_blocked", False)
 
-        no_trade = check_no_trade_zones(
-            funding_state=funding_state_val,
-            funding_strength=funding_strength_val,
-            atr_pct=vol_regime.atr_pct,
-            market_structure=structure_trend,
-            btc_aligned=btc_ok,
-            tp_blocked=tp_blocked,
-            oi_significance=oi_sig_val,
-            oi_pattern=oi_pattern_val,
-            market_type=config.exchange.market_type,
-        )
-
-        if no_trade.blocked:
-            logger.info(
-                f"Signal BLOCKED by no-trade zones: {result.signal} {symbol} {timeframe} — "
-                f"{'; '.join(no_trade.reasons)}"
+        if config.risk.no_trade_zones_enabled:
+            no_trade = check_no_trade_zones(
+                funding_state=funding_state_val,
+                funding_strength=funding_strength_val,
+                atr_pct=vol_regime.atr_pct,
+                market_structure=structure_trend,
+                btc_aligned=btc_ok,
+                tp_blocked=tp_blocked,
+                oi_significance=oi_sig_val,
+                oi_pattern=oi_pattern_val,
+                market_type=config.exchange.market_type,
             )
-            return None
+
+            if no_trade.blocked:
+                logger.info(
+                    f"Signal BLOCKED by no-trade zones: {result.signal} {symbol} {timeframe} — "
+                    f"{'; '.join(no_trade.reasons)}"
+                )
+                return None
 
         # Dynamic risk calculation
         setup_quality = result.verdict.lower() if result.verdict.lower() in ("strong", "moderate", "weak") else "moderate"
@@ -754,7 +758,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             f"effective_risk={risk_params.effective_risk_pct}%, should_trade={risk_params.should_trade}"
         )
 
-        if not risk_params.should_trade:
+        if config.risk.dynamic_risk_enabled and not risk_params.should_trade:
             logger.info(
                 f"Signal BLOCKED by dynamic risk: {result.signal} {symbol} {timeframe} — "
                 f"weak setup, trading disabled"

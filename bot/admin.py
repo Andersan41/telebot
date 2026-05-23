@@ -114,9 +114,10 @@ async def setparam_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(f"\u274c {raw} \u043d\u0435 \u043f\u0440\u0438\u0432\u043e\u0434\u0438\u0442\u0441\u044f \u043a {caster.__name__}")
         return
     await db.set_setting(f"param:{name}", str(value))
+    from config.settings import reload_filter_toggles
+    await reload_filter_toggles()
     await update.message.reply_text(
-        f"\u2705 {name}={value}. \u041f\u0440\u0438\u043c\u0435\u043d\u0438\u0442\u0441\u044f \u043f\u043e\u0441\u043b\u0435 \u0440\u0435\u0441\u0442\u0430\u0440\u0442\u0430 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u0430 "
-        f"(\u043f\u043e\u043b\u043d\u044b\u0439 live-update \u043f\u043e\u043a\u0430 \u043d\u0435 \u0440\u0435\u0430\u043b\u0438\u0437\u043e\u0432\u0430\u043d)."
+        f"\u2705 {name}={value}. \u041f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u043e (live)."
     )
 
 

@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from loguru import logger
 
-from config.settings import config, get_active_symbols
+from config.settings import config, get_active_symbols, FILTER_TOGGLE_KEYS, FILTER_PARAM_KEYS, reload_filter_toggles
 from indicators.engine import indicator_engine, IndicatorValues
 from strategy.signal_engine import signal_engine, SignalType, SignalResult
 from strategy.levels import get_support_resistance, validate_levels_vs_trade
@@ -148,7 +148,46 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
         if data == "m:settings":
             text = _format_settings()
-            await query.edit_message_text(text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔧 Фильтры сигналов", callback_data="m:sf")],
+                [InlineKeyboardButton("📐 Параметры индикаторов", callback_data="m:sf_params_list")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")],
+            ])
+            await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+
+        if data == "m:sf":
+            text, kb = _format_filters_list()
+            await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+
+        if data == "m:sf_params_list":
+            text, kb = _format_indicator_params()
+            await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+
+        if data.startswith("m:sf_toggle:"):
+            key = data.split(":", 2)[2]
+            await _handle_filter_toggle(key)
+            text, kb = _format_filters_list()
+            await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+
+        if data.startswith("m:sf_detail:"):
+            key = data.split(":", 2)[2]
+            text, kb = _format_filter_detail(key)
+            await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+
+        if data.startswith("m:sf_param_set:"):
+            key = data.split(":", 2)[2]
+            WAITING[chat_id] = f"sf_param:{key}"
+            label = FILTER_PARAM_KEYS.get(key, (key, str))[0].split(".")[-1]
+            await query.edit_message_text(
+                f"✏️ Введите новое значение для <b>{label}</b>:\n\n"
+                f"Текущее: <code>{_get_nested_config(config, FILTER_PARAM_KEYS[key][0])}</code>",
+                reply_markup=_settings_back_kb(), parse_mode=ParseMode.HTML
+            )
             return
 
         if data.startswith("analyze:"):
@@ -224,6 +263,32 @@ async def handle_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             safe_text = result.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
             await context.bot.send_message(chat_id, safe_text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
 
+    if state and state.startswith("sf_param:"):
+        key = state.split(":", 1)[1]
+        entry = FILTER_PARAM_KEYS.get(key)
+        if entry is None:
+            await context.bot.send_message(chat_id, f"❌ Неизвестный параметр: {key}")
+            return
+        attr_path, cast_type = entry
+        try:
+            value = cast_type(text)
+        except (ValueError, TypeError):
+            await context.bot.send_message(
+                chat_id,
+                f"❌ Не удалось преобразовать <code>{html.escape(text)}</code> в {cast_type.__name__}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        from storage.database import db
+        await db.set_setting(f"filter:param:{key}", str(value))
+        await reload_filter_toggles()
+        await context.bot.send_message(
+            chat_id,
+            f"✅ <b>Параметр изменён</b>\n<code>{attr_path.split('.')[-1]}</code> = {value}",
+            reply_markup=_settings_back_kb(),
+            parse_mode=ParseMode.HTML,
+        )
+
 
 def _normalize_symbol(text: str) -> str:
     s = text.upper().strip()
@@ -252,23 +317,191 @@ def _fmt_price(p: float) -> str:
 
 
 def _format_settings() -> str:
-    cfg = config.trading
     lines = [
         "⚙️ <b>Настройки бота</b>\n",
         f"📊 Символов: <b>{len(get_active_symbols())}</b>",
         f"⏱ Основные ТФ: <b>{', '.join(config.trading.primary_timeframes)}</b>",
         f"🔁 Подтверждение: <b>{config.trading.confirm_timeframe}</b>",
         f"⏰ Cooldown: <b>{config.signal_cooldown_minutes} мин</b>\n",
-        "📐 <b>Индикаторы:</b>",
-        f"  EMA: {cfg.ema_fast}/{cfg.ema_slow}/{cfg.ema_trend}",
-        f"  RSI: period={cfg.rsi_period}, OB&gt;{cfg.rsi_overbought}, OS&lt;{cfg.rsi_oversold}",
-        f"  MACD: {cfg.macd_fast}/{cfg.macd_slow}/{cfg.macd_signal}",
-        f"  ADX: period={cfg.adx_period}, min={cfg.adx_min}",
-        f"  ATR: period={cfg.atr_period}  SL×{cfg.atr_multiplier_sl}  TP×{cfg.atr_multiplier_tp}",
-        f"  SuperTrend: {cfg.supertrend_period}/{cfg.supertrend_multiplier}",
-        f"  Volume: ×{cfg.volume_factor} SMA",
     ]
     return "\n".join(lines)
+
+
+def _format_indicator_params() -> tuple[str, InlineKeyboardMarkup]:
+    sections = {
+        "EMA": ["ema_fast", "ema_slow", "ema_trend", "min_ema_spread_pct"],
+        "RSI": ["rsi_period", "rsi_overbought", "rsi_oversold"],
+        "MACD": ["macd_fast", "macd_slow", "macd_signal"],
+        "ADX": ["adx_period", "adx_min"],
+        "ATR": ["atr_period", "atr_multiplier_sl", "atr_multiplier_tp"],
+        "Supertrend": ["supertrend_period", "supertrend_multiplier"],
+        "Volume": ["volume_factor", "volume_sma_period"],
+        "Прочее": ["min_score_for_signal", "confirm_timeframe", "signal_cooldown_minutes", "distance_filter_min_pct"],
+    }
+
+    lines = ["📐 <b>Параметры индикаторов</b>\n"]
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for section_name, param_keys in sections.items():
+        lines.append(f"<b>{section_name}</b>")
+        row_btns = []
+        for pkey in param_keys:
+            entry = FILTER_PARAM_KEYS.get(pkey)
+            if entry is None:
+                continue
+            try:
+                pval = _get_nested_config(config, entry[0])
+                pshort = entry[0].split(".")[-1]
+                lines.append(f"  • {pshort}: <code>{pval}</code>")
+                row_btns.append(
+                    InlineKeyboardButton(f"✏️ {pshort}", callback_data=f"m:sf_param_set:{pkey}")
+                )
+            except AttributeError:
+                pass
+        if row_btns:
+            rows.append(row_btns)
+        lines.append("")
+
+    rows.append([InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+# ── Filter management ────────────────────────────────────────────────
+
+FILTER_META: dict[str, dict] = {
+    "adx_filter":      {"label": "ADX (флэт)",        "group": "signal_engine"},
+    "ema_alignment":   {"label": "EMA alignment",      "group": "signal_engine"},
+    "ema_spread":      {"label": "EMA spread",         "group": "signal_engine"},
+    "ema_slope":       {"label": "EMA наклон",         "group": "signal_engine"},
+    "trigger":         {"label": "Триггер",            "group": "signal_engine"},
+    "candle_close":    {"label": "Candle close",       "group": "signal_engine"},
+    "min_score":       {"label": "Min score",          "group": "signal_engine"},
+    "compression":     {"label": "Компрессия",         "group": "signal_engine"},
+    "confirm_tf":      {"label": "Подтверждение ТФ",   "group": "signal_engine"},
+    "mtf":             {"label": "MTF alignment",      "group": "scanner"},
+    "distance_filter": {"label": "Distance filter",    "group": "scanner"},
+    "tp_path":         {"label": "TP path",            "group": "scanner"},
+    "btc_corr":        {"label": "BTC correlation",    "group": "scanner"},
+    "eth_corr":        {"label": "ETH correlation",    "group": "scanner"},
+    "volatility":      {"label": "Волатильность",      "group": "scanner"},
+    "no_trade_zones":  {"label": "No-trade зоны",      "group": "scanner"},
+    "dynamic_risk":    {"label": "Dynamic risk",       "group": "scanner"},
+    "context":         {"label": "Контекст",           "group": "scanner"},
+    "confidence_v2":   {"label": "Confidence V2",      "group": "scanner"},
+}
+
+FILTER_GROUP_LABELS = {
+    "signal_engine": "🧠 Ядро сигнала",
+    "scanner":       "📡 Сканер",
+}
+
+
+def _get_filter_status(key: str) -> bool:
+    """Get current on/off status of a filter toggle."""
+    entry = FILTER_TOGGLE_KEYS.get(key)
+    if entry is None:
+        return True
+    return bool(_get_nested_config(config, entry[0]))
+
+
+def _get_nested_config(obj, path: str):
+    parts = path.split(".")
+    current = obj
+    for part in parts:
+        current = getattr(current, part)
+    return current
+
+
+def _settings_back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ Назад к фильтрам", callback_data="m:sf")],
+        [InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")],
+    ])
+
+
+def _format_filters_list() -> tuple[str, InlineKeyboardMarkup]:
+    lines = ["🔧 <b>Фильтры сигналов</b>\n"]
+    rows: list[list[InlineKeyboardButton]] = []
+    prev_group = None
+
+    for key, meta in FILTER_META.items():
+        group = meta["group"]
+        if prev_group is not None and group != prev_group:
+            lines.append("")
+        if prev_group != group:
+            lines.append(f"\n{_get_group_label_caption(group)}")
+            prev_group = group
+
+        status = _get_filter_status(key)
+        icon = "🟢" if status else "🔴"
+        lines.append(f"{icon} <b>{meta['label']}</b>: {'ON' if status else 'OFF'}")
+
+        rows.append([
+            InlineKeyboardButton(
+                f"{icon} {meta['label']}",
+                callback_data=f"m:sf_detail:{key}"
+            ),
+            InlineKeyboardButton(
+                "ON" if status else "OFF",
+                callback_data=f"m:sf_toggle:{key}",
+            ),
+        ])
+
+    rows.append([InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _get_group_label_caption(group: str) -> str:
+    labels = {
+        "signal_engine": "🧠 Ядро сигнала (signal_engine)",
+        "scanner": "📡 Сканер (доп. фильтры)",
+    }
+    return labels.get(group, group)
+
+
+def _format_filter_detail(key: str) -> tuple[str, InlineKeyboardMarkup]:
+    meta = FILTER_META.get(key)
+    if meta is None:
+        return f"❌ Неизвестный фильтр: {key}", _settings_back_kb()
+
+    entry = FILTER_TOGGLE_KEYS.get(key)
+    if entry is None:
+        return f"❌ Нет данных: {key}", _settings_back_kb()
+
+    attr_path, _ = entry
+    current_val = _get_filter_status(key)
+    lines = [
+        f"🔧 <b>{meta['label']}</b>\n",
+        f"Группа: {FILTER_GROUP_LABELS.get(meta['group'], meta['group'])}",
+        f"Состояние: {'🟢 <b>ВКЛ</b>' if current_val else '🔴 <b>ВЫКЛ</b>'}\n",
+    ]
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"{'🔴 Выключить' if current_val else '🟢 Включить'}",
+                callback_data=f"m:sf_toggle:{key}",
+            ),
+        ],
+    ]
+
+    rows.append([InlineKeyboardButton("◀️ Назад к фильтрам", callback_data="m:sf")])
+    rows.append([InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")])
+
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def _handle_filter_toggle(key: str) -> None:
+    """Toggle a filter on/off in DB and reload config."""
+    entry = FILTER_TOGGLE_KEYS.get(key)
+    if entry is None:
+        return
+    attr_path, _ = entry
+    current = _get_filter_status(key)
+    new_value = not current
+    from storage.database import db
+    await db.set_setting(f"filter:toggle:{key}", str(new_value).lower())
+    await reload_filter_toggles()
 
 
 async def _get_indicators(symbol: str, timeframe: str) -> Optional[IndicatorValues]:
@@ -295,7 +528,7 @@ async def _do_full_analysis(symbol: str) -> str:
             entry_price = 0.0
         entry_price = float(entry_price)
 
-        if result.is_actionable and confirm_tf and confirm_tf != primary_tf:
+        if config.trading.confirm_tf_enabled and result.is_actionable and confirm_tf and confirm_tf != primary_tf:
             ind_confirm = await _get_indicators(symbol, confirm_tf)
             if ind_confirm is not None:
                 confirm_result = signal_engine.evaluate(ind_confirm)
@@ -330,47 +563,62 @@ async def _do_full_analysis(symbol: str) -> str:
             )
 
         # --- Рыночный контекст ---
-        if config.context_enabled and result.is_actionable:
+        if config.context_enabled:
             try:
                 snapshot = await asyncio.wait_for(
                     context_engine.get_snapshot(symbol),
                     timeout=10.0,
                 )
-                context_verdict = context_scorer.score(result.signal.value, snapshot)
-                result._context_score = context_verdict.score
 
-                snap = context_verdict.snapshot
+                if result.is_actionable:
+                    context_verdict = context_scorer.score(result.signal.value, snapshot)
+                    result._context_score = context_verdict.score
+
+                snap = snapshot
+                dir_for_emoji = result.signal.value if result.is_actionable else None
                 if snap:
                     ctx_items = []
                     if snap.fear_greed_value is not None:
                         try:
                             fg_val = int(snap.fear_greed_value)
-                            fg_score = context_scorer._score_fear_greed(fg_val, result.signal.value)
-                            fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                            if dir_for_emoji:
+                                fg_score = context_scorer._score_fear_greed(fg_val, dir_for_emoji)
+                                fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                            else:
+                                fg_emoji = "📊"
                             ctx_items.append(f"{fg_emoji} Fear & Greed: {fg_val} ({snap.fear_greed_label})")
                         except (ValueError, TypeError):
                             ctx_items.append(f"⚠️ Fear & Greed: invalid value")
                     if snap.funding_rate is not None:
                         try:
                             fr_val = float(snap.funding_rate)
-                            fr_score = context_scorer._score_funding_rate(fr_val, result.signal.value)
-                            fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                            if dir_for_emoji:
+                                fr_score = context_scorer._score_funding_rate(fr_val, dir_for_emoji)
+                                fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                            else:
+                                fr_emoji = "📊"
                             ctx_items.append(f"{fr_emoji} Funding: {fr_val * 100:.3f}%")
                         except (ValueError, TypeError):
                             ctx_items.append(f"⚠️ Funding: invalid value")
                     if snap.long_short_ratio is not None:
                         try:
                             ls_val = float(snap.long_short_ratio)
-                            ls_score = context_scorer._score_long_short(ls_val, result.signal.value)
-                            ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                            if dir_for_emoji:
+                                ls_score = context_scorer._score_long_short(ls_val, dir_for_emoji)
+                                ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                            else:
+                                ls_emoji = "📊"
                             ctx_items.append(f"{ls_emoji} Long/Short: {ls_val:.2f}")
                         except (ValueError, TypeError):
                             ctx_items.append(f"⚠️ Long/Short: invalid value")
                     if snap.open_interest_delta is not None:
                         try:
                             oi_val = float(snap.open_interest_delta)
-                            oi_score = context_scorer._score_oi(oi_val, result.signal.value)
-                            oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                            if dir_for_emoji:
+                                oi_score = context_scorer._score_oi(oi_val, dir_for_emoji)
+                                oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                            else:
+                                oi_emoji = "📊"
                             ctx_items.append(f"{oi_emoji} OI: {oi_val:+.1f}%")
                         except (ValueError, TypeError):
                             ctx_items.append(f"⚠️ OI: invalid value")
@@ -411,7 +659,7 @@ async def _indicator_view(symbol: str) -> str:
         entry_price = float(entry_price)
 
         confirm_tf = cfg.confirm_timeframe
-        if result.is_actionable and confirm_tf and confirm_tf != primary_tf:
+        if config.trading.confirm_tf_enabled and result.is_actionable and confirm_tf and confirm_tf != primary_tf:
             ind_confirm = await _get_indicators(symbol, confirm_tf)
             if ind_confirm is not None:
                 confirm_result = signal_engine.evaluate(ind_confirm)
@@ -446,47 +694,62 @@ async def _indicator_view(symbol: str) -> str:
             )
 
         # --- Рыночный контекст ---
-        if config.context_enabled and result.is_actionable:
+        if config.context_enabled:
             try:
                 snapshot = await asyncio.wait_for(
                     context_engine.get_snapshot(symbol),
                     timeout=10.0,
                 )
-                context_verdict = context_scorer.score(result.signal.value, snapshot)
-                result._context_score = context_verdict.score
 
-                snap = context_verdict.snapshot
+                if result.is_actionable:
+                    context_verdict = context_scorer.score(result.signal.value, snapshot)
+                    result._context_score = context_verdict.score
+
+                snap = snapshot
+                dir_for_emoji = result.signal.value if result.is_actionable else None
                 if snap:
                     ctx_items = []
                     if snap.fear_greed_value is not None:
                         try:
                             fg_val = int(snap.fear_greed_value)
-                            fg_score = context_scorer._score_fear_greed(fg_val, result.signal.value)
-                            fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                            if dir_for_emoji:
+                                fg_score = context_scorer._score_fear_greed(fg_val, dir_for_emoji)
+                                fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
+                            else:
+                                fg_emoji = "📊"
                             ctx_items.append(f"{fg_emoji} Fear & Greed: {fg_val} ({snap.fear_greed_label})")
                         except (ValueError, TypeError):
                             ctx_items.append(f"⚠️ Fear & Greed: invalid value")
                     if snap.funding_rate is not None:
                         try:
                             fr_val = float(snap.funding_rate)
-                            fr_score = context_scorer._score_funding_rate(fr_val, result.signal.value)
-                            fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                            if dir_for_emoji:
+                                fr_score = context_scorer._score_funding_rate(fr_val, dir_for_emoji)
+                                fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
+                            else:
+                                fr_emoji = "📊"
                             ctx_items.append(f"{fr_emoji} Funding: {fr_val * 100:.3f}%")
                         except (ValueError, TypeError):
                             ctx_items.append(f"⚠️ Funding: invalid value")
                     if snap.long_short_ratio is not None:
                         try:
                             ls_val = float(snap.long_short_ratio)
-                            ls_score = context_scorer._score_long_short(ls_val, result.signal.value)
-                            ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                            if dir_for_emoji:
+                                ls_score = context_scorer._score_long_short(ls_val, dir_for_emoji)
+                                ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
+                            else:
+                                ls_emoji = "📊"
                             ctx_items.append(f"{ls_emoji} Long/Short: {ls_val:.2f}")
                         except (ValueError, TypeError):
                             ctx_items.append(f"⚠️ Long/Short: invalid value")
                     if snap.open_interest_delta is not None:
                         try:
                             oi_val = float(snap.open_interest_delta)
-                            oi_score = context_scorer._score_oi(oi_val, result.signal.value)
-                            oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                            if dir_for_emoji:
+                                oi_score = context_scorer._score_oi(oi_val, dir_for_emoji)
+                                oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
+                            else:
+                                oi_emoji = "📊"
                             ctx_items.append(f"{oi_emoji} OI: {oi_val:+.1f}%")
                         except (ValueError, TypeError):
                             ctx_items.append(f"⚠️ OI: invalid value")
