@@ -150,6 +150,25 @@ def _verdict_passes_min(verdict: str) -> bool:
     return _VERDICT_RANK.get(verdict, 0) >= _VERDICT_RANK[min_v]
 
 
+async def _notify_blocked(
+    blocked_callback,
+    result: SignalResult,
+    symbol: str,
+    timeframe: str,
+    reason: str,
+    context_verdict: ContextVerdict = None,
+):
+    """Логирует блокировку с тегом signal_block и опционально уведомляет канал."""
+    logger.bind(tags="signal_block").info(
+        f"Signal BLOCKED: {result.signal} {symbol} {timeframe} — {reason}"
+    )
+    if blocked_callback:
+        try:
+            await blocked_callback(result, symbol, timeframe, reason, context_verdict)
+        except Exception as e:
+            logger.warning(f"Blocked callback failed: {e}")
+
+
 def _detect_regime(ind: IndicatorValues, df) -> Optional[MarketRegime]:
     """Detect market regime from indicator values and OHLCV data."""
     try:
@@ -232,7 +251,7 @@ async def _get_indicators(symbol: str, timeframe: str):
     return ind, df
 
 
-async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[SignalResult]:
+async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_callback=None) -> Optional[SignalResult]:
     """
     Сканируем один символ на одном таймфрейме.
     Если есть сигнал — подтверждаем на 15M.
@@ -294,6 +313,10 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     direction='buy' if result.signal == SignalType.BUY else 'sell'
                 )
                 if not confirm_ok:
+                    await _notify_blocked(
+                        blocked_callback, result, symbol, timeframe,
+                        f"not confirmed on {confirm_tf} (direction mismatch)"
+                    )
                     logger.info(
                         f"Signal NOT confirmed on {confirm_tf}: "
                         f"direction mismatch — {symbol}"
@@ -328,16 +351,17 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         _btc_strong = False
         _eth_ctx = None
         _eth_allows = True
-        for sr_tf in ['1h', '4h']:
-            try:
-                sr_df = await exchange_client.fetch_ohlcv(symbol, sr_tf, limit=100)
-                if sr_df is not None and len(sr_df) > 0:
-                    current_price = entry_price or result.close
-                    levels = get_support_resistance(sr_df, current_price)
-                    if levels['resistance'] or levels['support']:
-                        sr_levels[sr_tf] = levels
-            except Exception as e:
-                logger.warning(f"Failed to calculate S/R levels for {symbol} {sr_tf}: {e}")
+        if config.market_structure.sr_levels_enabled:
+            for sr_tf in ['1h', '4h']:
+                try:
+                    sr_df = await exchange_client.fetch_ohlcv(symbol, sr_tf, limit=100)
+                    if sr_df is not None and len(sr_df) > 0:
+                        current_price = entry_price or result.close
+                        levels = get_support_resistance(sr_df, current_price)
+                        if levels['resistance'] or levels['support']:
+                            sr_levels[sr_tf] = levels
+                except Exception as e:
+                    logger.warning(f"Failed to calculate S/R levels for {symbol} {sr_tf}: {e}")
 
         if sr_levels:
             result.sr_levels = sr_levels
@@ -354,6 +378,10 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     sr_levels=sr_levels,
                 )
                 if dist_result.blocked:
+                    await _notify_blocked(
+                        blocked_callback, result, symbol, timeframe,
+                        f"distance filter: {'; '.join(dist_result.reasons)}"
+                    )
                     logger.info(
                         f"Signal BLOCKED by distance filter: {result.signal} {symbol} {timeframe} — "
                         f"{'; '.join(dist_result.reasons)}"
@@ -372,13 +400,17 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                 result._tp_path_score = tp_eval.score
                 result._tp_path_blocked = tp_eval.blocked
                 if tp_eval.blocked:
+                    await _notify_blocked(
+                        blocked_callback, result, symbol, timeframe,
+                        f"TP path blocked: {tp_eval.reject_reason}"
+                    )
                     logger.info(
                         f"Signal BLOCKED by TP path quality: {result.signal} {symbol} {timeframe} — "
                         f"{tp_eval.reject_reason}"
                     )
                     return None
-            for obs in tp_eval.obstacles:
-                result.level_warnings.append(f"⚠️ TP path: {obs.description}")
+                for obs in tp_eval.obstacles:
+                    result.level_warnings.append(f"⚠️ TP path: {obs.description}")
 
             # Шаг 2.8: Market Structure Analysis (reuses early-computed data from Task 5.1)
             try:
@@ -489,6 +521,10 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                             fvgs=fvgs,
                         )
                         if tp_eval_with_liquidity.blocked and not tp_eval.blocked:
+                            await _notify_blocked(
+                                blocked_callback, result, symbol, timeframe,
+                                f"liquidity obstacles: {tp_eval_with_liquidity.reject_reason}"
+                            )
                             logger.info(
                                 f"Signal BLOCKED by liquidity obstacles: {result.signal} {symbol} {timeframe} — "
                                 f"{tp_eval_with_liquidity.reject_reason}"
@@ -512,6 +548,10 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                         exchange_client=exchange_client,
                     )
                     if not mtf_result.aligned:
+                        await _notify_blocked(
+                            blocked_callback, result, symbol, timeframe,
+                            f"MTF alignment failed (state={mtf_result.alignment_state})"
+                        )
                         logger.info(
                             f"Signal BLOCKED by MTF alignment: {result.signal} {symbol} {timeframe} — "
                             f"state={mtf_result.alignment_state}, not enough HTFs aligned"
@@ -533,12 +573,21 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     _btc_ctx = await fetch_btc_context()
                     if _btc_ctx is not None:
                         if is_buy and not _btc_ctx.allows_long():
+                            await _notify_blocked(
+                                blocked_callback, result, symbol, timeframe,
+                                f"BTC correlation: LONG not allowed "
+                                f"(above_ema200={_btc_ctx.above_ema200}, structure={_btc_ctx.structure})"
+                            )
                             logger.info(
                                 f"Signal BLOCKED by BTC correlation: LONG not allowed "
                                 f"(above_ema200={_btc_ctx.above_ema200}, structure={_btc_ctx.structure})"
                             )
                             return None
                         if not is_buy and not _btc_ctx.allows_short():
+                            await _notify_blocked(
+                                blocked_callback, result, symbol, timeframe,
+                                "BTC correlation: SHORT not allowed (bullish breakout detected)"
+                            )
                             logger.info(
                                 f"Signal BLOCKED by BTC correlation: SHORT not allowed "
                                 f"(bullish breakout detected)"
@@ -560,12 +609,22 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     _eth_ctx = await fetch_eth_context()
                     if _eth_ctx is not None:
                         if is_buy and not _eth_ctx.allows_long(symbol):
+                            await _notify_blocked(
+                                blocked_callback, result, symbol, timeframe,
+                                f"ETH correlation: LONG not allowed for {symbol} "
+                                f"(ETH structure={_eth_ctx.structure}, momentum={_eth_ctx.momentum:+.1f}%)"
+                            )
                             logger.info(
                                 f"Signal BLOCKED by ETH correlation: LONG not allowed "
                                 f"for {symbol} (ETH structure={_eth_ctx.structure}, momentum={_eth_ctx.momentum:+.1f}%)"
                             )
                             return None
                         if not is_buy and not _eth_ctx.allows_short(symbol):
+                            await _notify_blocked(
+                                blocked_callback, result, symbol, timeframe,
+                                f"ETH correlation: SHORT not allowed for {symbol} "
+                                f"(ETH impulsive up, momentum={_eth_ctx.momentum:+.1f}%)"
+                            )
                             logger.info(
                                 f"Signal BLOCKED by ETH correlation: SHORT not allowed "
                                 f"for {symbol} (ETH impulsive up, momentum={_eth_ctx.momentum:+.1f}%)"
@@ -587,6 +646,10 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         )
 
         if config.risk.volatility_filter_enabled and not vol_regime.allow_breakout:
+            await _notify_blocked(
+                blocked_callback, result, symbol, timeframe,
+                f"volatility regime: low volatility (ATR%={vol_regime.atr_pct:.2f}), breakout trades disabled"
+            )
             logger.info(
                 f"Signal BLOCKED by volatility regime: {result.signal} {symbol} {timeframe} — "
                 f"low volatility (ATR%={vol_regime.atr_pct:.2f}), breakout trades disabled"
@@ -650,6 +713,11 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     result._context_items = ctx_items
 
                 if config.context_block_on_blocked and context_verdict.verdict == "BLOCKED":
+                    await _notify_blocked(
+                        blocked_callback, result, symbol, timeframe,
+                        f"context verdict BLOCKED (score={context_verdict.score:.2f})",
+                        context_verdict,
+                    )
                     logger.info(
                         f"Signal BLOCKED by context: {result.signal} {symbol} {timeframe} "
                         f"(score={context_verdict.score:.2f})"
@@ -657,6 +725,12 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
                     return None
 
                 if not _verdict_passes_min(context_verdict.verdict):
+                    await _notify_blocked(
+                        blocked_callback, result, symbol, timeframe,
+                        f"CONTEXT_MIN_VERDICT={config.context_min_verdict}, "
+                        f"actual verdict={context_verdict.verdict} (score={context_verdict.score:.2f})",
+                        context_verdict,
+                    )
                     logger.info(
                         f"Signal rejected by CONTEXT_MIN_VERDICT={config.context_min_verdict}: "
                         f"actual={context_verdict.verdict} for {result.signal} {symbol} {timeframe}"
@@ -738,6 +812,10 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
             )
 
             if no_trade.blocked:
+                await _notify_blocked(
+                    blocked_callback, result, symbol, timeframe,
+                    f"no-trade zones: {'; '.join(no_trade.reasons)}"
+                )
                 logger.info(
                     f"Signal BLOCKED by no-trade zones: {result.signal} {symbol} {timeframe} — "
                     f"{'; '.join(no_trade.reasons)}"
@@ -759,6 +837,10 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         )
 
         if config.risk.dynamic_risk_enabled and not risk_params.should_trade:
+            await _notify_blocked(
+                blocked_callback, result, symbol, timeframe,
+                "dynamic risk: weak setup, trading disabled",
+            )
             logger.info(
                 f"Signal BLOCKED by dynamic risk: {result.signal} {symbol} {timeframe} — "
                 f"weak setup, trading disabled"
@@ -897,7 +979,7 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback) -> Optional[
         return result
 
 
-async def run_scan_cycle(notify_callback, timeframes: Optional[list[str]] = None):
+async def run_scan_cycle(notify_callback, blocked_callback=None, timeframes: Optional[list[str]] = None):
     """
     Один цикл сканирования — обходим все символы и таймфреймы параллельно.
 
@@ -922,7 +1004,7 @@ async def run_scan_cycle(notify_callback, timeframes: Optional[list[str]] = None
     tasks = []
     for symbol in symbols:
         for tf in tfs:
-            tasks.append(scan_symbol(symbol, tf, notify_callback))
+            tasks.append(scan_symbol(symbol, tf, notify_callback, blocked_callback))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 

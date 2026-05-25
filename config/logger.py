@@ -10,6 +10,10 @@ from config.settings import config
 def setup_logger():
     os.makedirs(os.path.dirname(config.log_file), exist_ok=True)
 
+    # Создаём logs.txt для уведомлений о блокировке (простой файл, без rotation)
+    logs_dir = "logs"
+    os.makedirs(logs_dir, exist_ok=True)
+
     logger.remove()
 
     # Консоль
@@ -20,7 +24,7 @@ def setup_logger():
         colorize=True,
     )
 
-    # Файл
+    # Файл bot.log (технические логи)
     logger.add(
         config.log_file,
         level=config.log_level,
@@ -28,6 +32,17 @@ def setup_logger():
         retention="14 days",
         compression="zip",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} - {message}",
+    )
+
+    # Файл logs.txt для уведомлений о блокировке сигналов
+    logger.add(
+        os.path.join(logs_dir, "logs.txt"),
+        level="INFO",
+        rotation="1 day",
+        retention="7 days",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
+        filter=lambda record: "BLOCKED" in record["extra"].get("tags", "") or
+                              "signal_block" in record["extra"].get("tags", ""),
     )
 
     return logger

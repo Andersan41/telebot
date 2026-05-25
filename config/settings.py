@@ -243,6 +243,8 @@ class MarketStructureConfig:
     mtf_enabled: bool = os.getenv("MTF_ENABLED", "true").lower() == "true"
     # Distance filter (blocks if too close to S/R)
     distance_filter_enabled: bool = os.getenv("DISTANCE_FILTER_ENABLED", "true").lower() == "true"
+    # Расчёт уровней поддержки/сопротивления
+    sr_levels_enabled: bool = os.getenv("SR_LEVELS_ENABLED", "true").lower() == "true"
     # TP path quality filter
     tp_path_enabled: bool = os.getenv("TP_PATH_ENABLED", "true").lower() == "true"
     # Lookback для swing point detection
@@ -512,6 +514,9 @@ class AppConfig:
     context_enabled: bool = os.getenv("CONTEXT_ENABLED", "true").lower() == "true"
     context_min_verdict: str = os.getenv("CONTEXT_MIN_VERDICT", "WEAK")
     context_block_on_blocked: bool = os.getenv("CONTEXT_BLOCK_ON_BLOCKED", "true").lower() == "true"
+
+    # Уведомления о заблокированных сигналах
+    signal_block_notify: bool = os.getenv("SIGNAL_BLOCK_NOTIFY", "true").lower() == "true"
     cryptopanic_api_key: str = os.getenv("CRYPTOPANIC_API_KEY", "")
     coingecko_symbol_map_str: str = os.getenv("COINGECKO_SYMBOL_MAP", "BTC/USDT:bitcoin,ETH/USDT:ethereum")
 
@@ -602,6 +607,7 @@ FILTER_TOGGLE_KEYS: dict[str, tuple[str, type]] = {
     "ema_slope": ("trading.ema_slope_check", bool),
     "mtf": ("market_structure.mtf_enabled", bool),
     "distance_filter": ("market_structure.distance_filter_enabled", bool),
+    "sr_levels": ("market_structure.sr_levels_enabled", bool),
     "tp_path": ("market_structure.tp_path_enabled", bool),
     "btc_corr": ("derivatives.btc_correlation_enabled", bool),
     "eth_corr": ("derivatives.eth_correlation_enabled", bool),
@@ -610,6 +616,7 @@ FILTER_TOGGLE_KEYS: dict[str, tuple[str, type]] = {
     "dynamic_risk": ("risk.dynamic_risk_enabled", bool),
     "context": ("context_enabled", bool),
     "confidence_v2": ("scoring.confidence_v2_enabled", bool),
+    "signal_block": ("signal_block_notify", bool),
 }
 
 FILTER_PARAM_KEYS: dict[str, tuple[str, type]] = {

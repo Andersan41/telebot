@@ -22,6 +22,8 @@ WAITING: dict[int, str] = {}
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
+    block_icon = "🔇" if config.signal_block_notify else "🔇"
+    block_status = "ВКЛ" if config.signal_block_notify else "ВЫКЛ"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔍 Анализ токена", callback_data="m:analyze"),
@@ -29,6 +31,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📡 Авто-скан всех", callback_data="m:scan_all"),
+            InlineKeyboardButton(f"{block_icon} Signal block", callback_data="m:signal_block"),
+        ],
+        [
             InlineKeyboardButton("⚙️ Настройки", callback_data="m:settings"),
         ],
     ])
@@ -151,6 +156,51 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔧 Фильтры сигналов", callback_data="m:sf")],
                 [InlineKeyboardButton("📐 Параметры индикаторов", callback_data="m:sf_params_list")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")],
+            ])
+            await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+
+        if data == "m:signal_block":
+            block_status = "🟢 ВКЛ" if config.signal_block_notify else "🔴 ВЫКЛ"
+            text = (
+                f"🔇 <b>Signal block</b>\n\n"
+                f"Уведомления о заблокированных сигналах: {block_status}\n\n"
+                f"При включении бот отправляет в канал краткий анализ, "
+                f"когда сигнал проходит часть условий, "
+                f"но блокируется на одном из финальных этапов "
+                f"(MTF, BTC/ETH корреляция, контекст, риск-фильтры и т.д.)."
+            )
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        f"{'🔴 Выключить' if config.signal_block_notify else '🟢 Включить'}",
+                        callback_data="m:signal_block_toggle",
+                    ),
+                ],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")],
+            ])
+            await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+
+        if data == "m:signal_block_toggle":
+            from storage.database import db
+            from config.settings import reload_filter_toggles
+            new_val = not config.signal_block_notify
+            await db.set_setting("filter:toggle:signal_block", str(new_val).lower())
+            await reload_filter_toggles()
+            block_status = "🟢 ВКЛ" if config.signal_block_notify else "🔴 ВЫКЛ"
+            text = (
+                f"🔇 <b>Signal block</b>\n\n"
+                f"Уведомления о заблокированных сигналах: {block_status}\n"
+            )
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        f"{'🔴 Выключить' if config.signal_block_notify else '🟢 Включить'}",
+                        callback_data="m:signal_block_toggle",
+                    ),
+                ],
                 [InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")],
             ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -380,6 +430,7 @@ FILTER_META: dict[str, dict] = {
     "confirm_tf":      {"label": "Подтверждение ТФ",   "group": "signal_engine"},
     "mtf":             {"label": "MTF alignment",      "group": "scanner"},
     "distance_filter": {"label": "Distance filter",    "group": "scanner"},
+    "sr_levels":       {"label": "Уровни S/R",          "group": "scanner"},
     "tp_path":         {"label": "TP path",            "group": "scanner"},
     "btc_corr":        {"label": "BTC correlation",    "group": "scanner"},
     "eth_corr":        {"label": "ETH correlation",    "group": "scanner"},

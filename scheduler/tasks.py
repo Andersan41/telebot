@@ -48,7 +48,12 @@ class TaskScheduler:
     async def _scan_job(self, timeframes: list[str] | None = None):
         logger.info(f"Scheduler triggered: starting scan (tfs={timeframes})")
         try:
-            await run_scan_cycle(self._notify_callback, timeframes=timeframes)
+            from bot.notifier import send_signal_blocked
+            await run_scan_cycle(
+                self._notify_callback,
+                blocked_callback=send_signal_blocked,
+                timeframes=timeframes,
+            )
         except Exception as e:
             logger.error(f"Scan job error: {e}", exc_info=True)
 

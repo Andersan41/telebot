@@ -113,6 +113,56 @@ async def send_signal(result: SignalResult, context_verdict: ContextVerdict = No
             return
 
 
+async def send_signal_blocked(
+    result: 'SignalResult',
+    symbol: str,
+    timeframe: str,
+    reason: str,
+    context_verdict: ContextVerdict = None,
+    retries: int = 3,
+):
+    """Отправляет в канал уведомление о заблокированном сигнале."""
+    if not config.signal_block_notify:
+        return
+    if not config.telegram.channel_id:
+        return
+
+    bot = get_bot()
+    text = _format_blocked_message(result, symbol, timeframe, reason, context_verdict)
+
+    for attempt in range(retries):
+        try:
+            await bot.send_message(
+                chat_id=config.telegram.channel_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except TelegramError as e:
+            if attempt < retries - 1:
+                delay = 2 ** attempt
+                logger.warning(
+                    f"Block notification send failed (attempt {attempt + 1}/{retries}), "
+                    f"retrying in {delay}s: {e}"
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"Failed to send block notification after {retries} attempts: {e}")
+
+
+def _format_blocked_message(result: 'SignalResult', symbol: str, timeframe: str, reason: str, context_verdict: ContextVerdict = None) -> str:
+    signal_emoji = "🟢" if result.signal.value == "BUY" else "🔴"
+    lines = [
+        "🚫 <b>Сигнал заблокирован</b>\n",
+        f"{signal_emoji} {result.signal.value} {symbol} {timeframe}",
+        f"Причина: {reason}",
+    ]
+    if context_verdict is not None:
+        lines.append("")
+        lines.append(format_context_block(context_verdict))
+    return "\n".join(lines)
+
+
 async def send_error_alert(message: str, retries: int = 3):
     """Отправляем уведомление об ошибке администраторам с повторными попытками."""
     if not config.telegram.admin_ids:

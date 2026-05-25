@@ -106,11 +106,11 @@ async def cmd_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ручной запуск сканирования"""
     from scheduler.scanner import run_scan_cycle
-    from bot.notifier import send_signal
+    from bot.notifier import send_signal, send_signal_blocked
 
     await update.message.reply_text("🔍 Запускаю сканирование...")
     try:
-        await run_scan_cycle(send_signal)
+        await run_scan_cycle(send_signal, blocked_callback=send_signal_blocked)
         await update.message.reply_text("✅ Сканирование завершено.")
     except Exception as e:
         logger.error(f"Manual scan error: {e}", exc_info=True)
