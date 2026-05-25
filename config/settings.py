@@ -69,9 +69,9 @@ class TradingConfig:
     # Период трендовой EMA
     ema_trend: int = int(os.getenv("EMA_TREND", "200"))
     # Минимальный % разницы между EMA fast/slow (фильтр)
-    min_ema_spread_pct: float = float(os.getenv("MIN_EMA_SPREAD_PCT", "0.15"))
+    min_ema_spread_pct: float = float(os.getenv("MIN_EMA_SPREAD_PCT", "0.45"))
     # Включить проверку наклона EMA fast
-    ema_slope_check: bool = os.getenv("EMA_SLOPE_CHECK", "true").lower() == "true"
+    ema_slope_check: bool = os.getenv("EMA_SLOPE_CHECK", "false").lower() == "true"
     # Коэффициент нормализации EMA spread strength (1.0 = max strength при spread >= 1%)
     ema_strength_cap: float = float(os.getenv("EMA_STRENGTH_CAP", "1.0"))
 
@@ -234,7 +234,7 @@ class MarketStructureConfig:
     """Параметры рыночной структуры: swing points, BOS/CHoCH, MTF."""
 
     # Минимальный % distance filter для уровней структуры
-    distance_filter_min_pct: float = float(os.getenv("DISTANCE_FILTER_MIN_PCT", "1.5"))
+    distance_filter_min_pct: float = float(os.getenv("DISTANCE_FILTER_MIN_PCT", "0.5"))
     # Требуемое число совпадающих таймфреймов для MTF alignment
     mtf_required_alignment: int = int(os.getenv("MTF_REQUIRED_ALIGNMENT", "2"))
     # Таймфреймы для MTF анализа (через запятую)
@@ -246,7 +246,7 @@ class MarketStructureConfig:
     # Расчёт уровней поддержки/сопротивления
     sr_levels_enabled: bool = os.getenv("SR_LEVELS_ENABLED", "true").lower() == "true"
     # TP path quality filter
-    tp_path_enabled: bool = os.getenv("TP_PATH_ENABLED", "true").lower() == "true"
+    tp_path_enabled: bool = os.getenv("TP_PATH_ENABLED", "false").lower() == "true"
     # Lookback для swing point detection
     structure_lookback: int = int(os.getenv("STRUCTURE_LOOKBACK", "50"))
     # Окно для swing point detection
@@ -361,11 +361,11 @@ class ScoringConfig:
     """Параметры скоринга и verdict."""
 
     # Порог confidence для STRONG verdict
-    confidence_strong_threshold: float = float(os.getenv("CONFIDENCE_STRONG_THRESHOLD", "60"))
+    confidence_strong_threshold: float = float(os.getenv("CONFIDENCE_STRONG_THRESHOLD", "70"))
     # Порог confidence для MODERATE verdict
-    confidence_moderate_threshold: float = float(os.getenv("CONFIDENCE_MODERATE_THRESHOLD", "30"))
+    confidence_moderate_threshold: float = float(os.getenv("CONFIDENCE_MODERATE_THRESHOLD", "40"))
     # Минимальное число условий для сигнала
-    min_score_for_signal: int = int(os.getenv("MIN_SCORE_FOR_SIGNAL", "4"))
+    min_score_for_signal: int = int(os.getenv("MIN_SCORE_FOR_SIGNAL", "35"))
 
     # ─── Weighted Factor Model (signal_engine) ───────────────────────────
     # TREND weights

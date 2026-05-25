@@ -1,0 +1,13 @@
+import sqlite3
+conn = sqlite3.connect('data/signals.db')
+c = conn.cursor()
+c.execute("SELECT COUNT(*) FROM signals WHERE symbol = 'UNI/USDT'")
+print('UNI signals:', c.fetchone()[0])
+c.execute("SELECT value FROM bot_settings WHERE key = 'dynamic_symbols'")
+row = c.fetchone()
+print('dynamic_symbols:', row[0] if row else 'None')
+c.execute("SELECT COUNT(*) FROM signal_outcomes so JOIN signals s ON so.signal_id = s.id WHERE s.symbol = 'UNI/USDT' AND so.status = 'OPEN'")
+print('Open UNI outcomes:', c.fetchone()[0])
+c.execute("SELECT symbol FROM signals WHERE symbol LIKE '%UNI%' OR symbol LIKE '%DOGE%' GROUP BY symbol")
+print('Symbols:', [r[0] for r in c.fetchall()])
+conn.close()
