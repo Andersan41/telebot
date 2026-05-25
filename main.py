@@ -22,7 +22,7 @@ def acquire_lock():
                 os.kill(int(old_pid), 0)  # сигнал 0 = проверка существования процесса
                 print(f"Bot already running (PID {old_pid}). Exiting.")
                 sys.exit(1)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 pass  # процесс мёртв — можно удалить lock
         os.remove(LOCK_FILE)
     with open(LOCK_FILE, "w") as f:
