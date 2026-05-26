@@ -214,14 +214,15 @@ class SignalEngine:
         else:
             _gate_log["regime"] = True
 
-        # --- ADX flat filter ---
-        if cfg.adx_filter_enabled and ind.adx < cfg.adx_min:
+        # --- ADX flat filter (dynamic: 18 for compression, 24 otherwise) ---
+        effective_adx_min = 18 if regime_name == "compression" else cfg.adx_min
+        if cfg.adx_filter_enabled and ind.adx < effective_adx_min:
             _gate_log["adx"] = False
             _log_gates(_gate_log, ind)
             return SignalResult(
                 signal=SignalType.NO_SIGNAL,
                 symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
-                reasons=[f"ADX={ind.adx:.1f} < {cfg.adx_min} (флэт, сигналы игнорируются)"],
+                reasons=[f"ADX={ind.adx:.1f} < {effective_adx_min} (флэт, сигналы игнорируются)"],
                 _regime=regime_name,
             )
         _gate_log["adx"] = True
@@ -562,7 +563,18 @@ class SignalEngine:
         signal_type = SignalType.BUY if direction == "buy" else SignalType.SELL
 
         # FIX S3: candle close confirmation — reject wick breakouts
-        if cfg.candle_close_enabled:
+        # Conditional: skip for sweep setups (sweep/reclaim entries need wick acceptance)
+        is_sweep_setup = False
+        if sweeps:
+            for sw in sweeps:
+                if getattr(sw, "is_valid", False) and (
+                    (direction == "buy" and getattr(sw, "type", "").lower() == "bullish") or
+                    (direction == "sell" and getattr(sw, "type", "").lower() == "bearish")
+                ):
+                    is_sweep_setup = True
+                    break
+
+        if cfg.candle_close_enabled and not is_sweep_setup:
             candle_range = ind.high - ind.low
             if candle_range > 0:
                 close_position = (ind.close - ind.low) / candle_range
@@ -710,6 +722,13 @@ def _strength_macd(ind: IndicatorValues, direction: str) -> float:
     norm = abs(ind.macd_hist / ind.close) * 100
     if norm < config.trading.min_macd_pct:
         return 0.0
+
+    if config.trading.macd_slope_check:
+        if direction == "buy" and ind.macd_hist < ind.macd_hist_prev:
+            return 0.0
+        if direction == "sell" and ind.macd_hist > ind.macd_hist_prev:
+            return 0.0
+
     raw = (ind.macd_hist / ind.close * 100) * config.trading.macd_score_multiplier
     if direction == "sell":
         raw = -raw
@@ -718,17 +737,29 @@ def _strength_macd(ind: IndicatorValues, direction: str) -> float:
 
 def _strength_rsi(ind: IndicatorValues, direction: str) -> float:
     rsi = ind.rsi
-    if rsi < 30:
-        base = 1.0
-    elif rsi < 50:
-        base = 0.5
-    elif rsi < 65:
-        base = 0.0
-    elif rsi < 70:
-        base = -0.5
+    os_ = config.trading.rsi_oversold
+    ob_ = config.trading.rsi_overbought
+    bull_min_ = config.trading.rsi_bull_min
+    bear_max_ = config.trading.rsi_bear_max
+
+    if direction == "buy":
+        if rsi <= os_:
+            return 1.0
+        elif rsi < bull_min_:
+            return 0.5
+        elif rsi < ob_:
+            return 0.0
+        else:
+            return -1.0
     else:
-        base = -1.0
-    return base if direction == "buy" else -base
+        if rsi >= ob_:
+            return 1.0
+        elif rsi > bear_max_:
+            return 0.5
+        elif rsi > os_:
+            return 0.0
+        else:
+            return -1.0
 
 
 def _strength_volume(ind: IndicatorValues, direction: str) -> float:

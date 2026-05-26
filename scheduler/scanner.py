@@ -538,14 +538,23 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
             except Exception as e:
                 logger.warning(f"Liquidity analysis failed for {symbol} {timeframe}: {e}")
 
-            # Шаг 2.9: Multi-Timeframe Alignment
+            # Шаг 2.9: Multi-Timeframe Alignment (strategy-aware: 1 for reversal, 2 otherwise)
             if config.market_structure.mtf_enabled and result.tp:
                 try:
+                    is_reversal = False
+                    if _structure and getattr(_structure, "last_choch", None):
+                        choch = _structure.last_choch
+                        is_reversal = (
+                            (is_buy and getattr(choch, "type", "").lower() == "bullish") or
+                            (not is_buy and getattr(choch, "type", "").lower() == "bearish")
+                        )
+                    mtf_required = 1 if is_reversal else config.market_structure.mtf_required_alignment
                     mtf_result = await check_mtf_alignment(
                         symbol=symbol,
                         direction="bullish" if is_buy else "bearish",
                         primary_tf=timeframe,
                         exchange_client=exchange_client,
+                        required_alignment=mtf_required,
                     )
                     if not mtf_result.aligned:
                         await _notify_blocked(
