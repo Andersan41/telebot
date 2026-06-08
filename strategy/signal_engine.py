@@ -360,7 +360,7 @@ class SignalEngine:
                 (direction == "buy" and ind.supertrend_direction == 1)
                 or (direction == "sell" and ind.supertrend_direction == -1)
             )
-            adx_breakout = ind.adx >= 25
+            adx_breakout = ind.adx >= cfg.adx_strong
 
             if has_strong_trigger and vol_strong and supertrend_ok and adx_breakout:
                 breakout_reasons.append(
@@ -407,7 +407,7 @@ class SignalEngine:
             if (
                 supertrend_aligned
                 and ema_aligned_check
-                and ind.adx >= 25
+                and ind.adx >= cfg.adx_strong
                 and vol_above_avg
             ):
                 has_trigger = True

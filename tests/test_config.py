@@ -230,12 +230,13 @@ class TestScoringConfig:
         importlib.reload(settings)
         assert settings.config.scoring.min_score_for_signal == 4
 
-    def test_quality_thresholds(self):
+    def test_confidence_v2_quality_derived_from_confidence_thresholds(self):
         import config.settings as settings
         importlib.reload(settings)
         s = settings.config.scoring
-        assert s.quality_strong_threshold == 35
-        assert s.quality_moderate_threshold == 20
+        # Quality label uses confidence thresholds in confidence_v2._quality_label()
+        assert s.confidence_strong_threshold == 70
+        assert s.confidence_moderate_threshold == 40
 
     def test_blend_ratios(self):
         import config.settings as settings

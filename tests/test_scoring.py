@@ -86,8 +86,8 @@ class TestConfidenceEngineV2:
         result = engine.compute(
             "BUY",
             htf_trend_score=0.4,
-            structure_score=0.5,
-            liquidity_score=0.3,
+            structure_score=0.6,
+            liquidity_score=0.5,
             volume_score=0.4,
             btc_corr_score=0.4,
             funding_score=0.2,

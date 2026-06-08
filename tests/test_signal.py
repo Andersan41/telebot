@@ -53,7 +53,7 @@ class TestSignalCriteria:
         assert result.score == 0
 
     def test_adx_filter_passes_at_min_threshold(self, engine):
-        ind = make_ind(adx=20.0, rsi=40.0, macd_hist=50.0, macd_hist_prev=-10.0, volume_delta_pct=20.0, volume=1300.0)
+        ind = make_ind(adx=26.0, rsi=40.0, macd_hist=50.0, macd_hist_prev=-10.0, volume_delta_pct=20.0, volume=1600.0)
         result = engine.evaluate(ind)
         assert result.signal != SignalType.NO_SIGNAL
 
@@ -329,9 +329,9 @@ class TestScoreFormulaA6:
         dmi_reasons = [r for r in result.reasons if "DMI-" in r]
         assert len(dmi_reasons) >= 1
 
-    def test_adx_between_min_and_25_no_adx_bonus(self, engine):
+    def test_adx_just_above_min_no_bonus(self, engine):
         ind = make_ind(
-            adx=22.0,
+            adx=26.0,
             close=50800.0,
             ema_fast=48000.0,
             ema_slow=47000.0,
@@ -342,7 +342,7 @@ class TestScoreFormulaA6:
             supertrend=45000.0,
             macd_hist=50.0,
             macd_hist_prev=-10.0,
-            volume_sma=900.0,
+            volume_sma=700.0,
             volume=1200.0,
             volume_delta_pct=20.0,
         )
@@ -2088,7 +2088,7 @@ class TestLeadingSignals:
         """NO_SIGNAL with leading trigger detected but insufficient confirmation."""
         ind = make_ind(
             rsi=50.0,
-            adx=22.0,
+            adx=26.0,
             close=49500.0,
             ema_fast=49300.0,
             ema_slow=49350.0,
@@ -2097,10 +2097,10 @@ class TestLeadingSignals:
             ema_slow_prev=49370.0,
             supertrend_direction=-1,
             supertrend=49000.0,
-            macd_hist=0.0,
-            macd_hist_prev=0.0,
+            macd_hist=10.0,
+            macd_hist_prev=5.0,
             volume_sma=900.0,
-            volume=1200.0,
+            volume=1400.0,
             dmi_plus=18.0,
             dmi_minus=17.0,
             volume_delta_pct=20.0,

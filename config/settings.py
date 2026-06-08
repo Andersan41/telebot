@@ -105,7 +105,7 @@ class TradingConfig:
     # Период ADX
     adx_period: int = int(os.getenv("ADX_PERIOD", "14"))
     # Минимальный ADX для тренда (фильтр флэта)
-    adx_min: float = float(os.getenv("ADX_MIN", "24"))
+    adx_min: float = float(os.getenv("ADX_MIN", "25"))
     # Порог ADX для strong trend
     adx_strong: float = float(os.getenv("ADX_STRONG", "25"))
     # Диапазон нормализации ADX strength (ADX_MIN → 0, ADX_MIN+30 → 1)
@@ -365,11 +365,11 @@ class ScoringConfig:
     # Порог confidence для MODERATE verdict
     confidence_moderate_threshold: float = float(os.getenv("CONFIDENCE_MODERATE_THRESHOLD", "40"))
     # Минимальное число условий для сигнала
-    min_score_for_signal: int = int(os.getenv("MIN_SCORE_FOR_SIGNAL", "0"))
+    min_score_for_signal: int = int(os.getenv("MIN_SCORE_FOR_SIGNAL", "4"))
 
     # ─── Weighted Factor Model (signal_engine) ───────────────────────────
     # TREND weights
-    w_supertrend: int = int(os.getenv("W_SUPERTREND", "0"))
+    w_supertrend: int = int(os.getenv("W_SUPERTREND", "5"))
     w_ema: int = int(os.getenv("W_EMA", "10"))
     # MOMENTUM weights
     w_macd: int = int(os.getenv("W_MACD", "10"))
@@ -410,11 +410,9 @@ class ScoringConfig:
     # Confidence V2 scoring (10-factor weighted)
     confidence_v2_enabled: bool = os.getenv("CONFIDENCE_V2_ENABLED", "true").lower() == "true"
 
-    # ─── Quality thresholds ──────────────────────────────────────────────
-    # Порог weighted confidence для strong quality
-    quality_strong_threshold: float = float(os.getenv("QUALITY_STRONG_THRESHOLD", "35"))
-    # Порог weighted confidence для moderate quality
-    quality_moderate_threshold: float = float(os.getenv("QUALITY_MODERATE_THRESHOLD", "20"))
+    # Качество (strong/moderate/weak) определяется confidence_strong_threshold (70)
+    # и confidence_moderate_threshold (40) в confidence_v2._quality_label().
+    # Отдельные QUALITY_* пороги удалены как дублирующие dead code.
 
     @property
     def max_signal_score(self) -> int:

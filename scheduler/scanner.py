@@ -115,7 +115,7 @@ def _build_factor_fingerprint(
 
     # ADX
     adx_val = float(ind.adx) if ind.adx is not None else 0
-    if adx_val >= 25:
+    if adx_val >= config.trading.adx_strong:
         flags.append("adx_strong")
 
     # MTF
