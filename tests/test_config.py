@@ -251,20 +251,10 @@ class TestScoringConfig:
 class TestSchedulerConfig:
     """Tests for centralized scheduler config (Task 9.2)."""
 
-    def test_hourly_scan_minute(self):
+    def test_scan_minutes_default(self):
         import config.settings as settings
         importlib.reload(settings)
-        assert settings.config.scheduler.hourly_scan_minute == 2
-
-    def test_four_hour_scan_hours(self):
-        import config.settings as settings
-        importlib.reload(settings)
-        assert settings.config.scheduler.four_hour_scan_hours == "0,4,8,12,16,20"
-
-    def test_four_hour_scan_minute(self):
-        import config.settings as settings
-        importlib.reload(settings)
-        assert settings.config.scheduler.four_hour_scan_minute == 5
+        assert settings.config.scheduler.scan_minutes == "2,17,32,47"
 
 
 class TestRateLimitConfig:

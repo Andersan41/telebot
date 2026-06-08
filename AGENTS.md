@@ -42,8 +42,9 @@ when behavior changes, not this one.
 
 ## Scheduler
 
-- `hourly_scan` (cron `:02`) → `run_scan_cycle(timeframes=["1h"])`.
-- `4h_scan` (cron `0,4,8,12,16,20 :05`) → `run_scan_cycle(timeframes=["4h"])`.
+- `scan_all_tfs` (cron `:02, :17, :32, :47`) → `run_scan_cycle()` over all `primary_timeframes`.
+- Каждые 15 минут сканируются все таймфреймы (1h, 4h).
+- Cooldown 45 мин защищает от дублей.
 - `cmd_scan` (admin `/scan`) → `run_scan_cycle()` over all `primary_timeframes`.
 
 ## Project-specific gotchas

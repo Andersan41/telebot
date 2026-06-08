@@ -18,32 +18,19 @@ class TaskScheduler:
     def setup(self):
         """Настраиваем расписание.
 
-        - 1H таймфрейм: каждый час в `:02` минуты (после закрытия часовой свечи)
-        - 4H таймфрейм: каждые 4 часа в `:05` (после закрытия 4-часовой свечи)
-
-        Каждый джоб запускает `run_scan_cycle` только для своего таймфрейма,
-        чтобы не дублировать работу.
+        Единый джоб запускается каждые 15 минут (`scan_minutes` из конфига)
+        и сканирует все primary_timeframes. Cooldown 45 мин защищает от дублей.
         """
         sc = config.scheduler
         self._scheduler.add_job(
             self._scan_job,
-            CronTrigger(minute=sc.hourly_scan_minute),
-            id="hourly_scan",
-            name="Hourly market scan (1H)",
+            CronTrigger(minute=sc.scan_minutes),
+            id="scan_all_tfs",
+            name="Scan all primary timeframes",
             max_instances=1,
             coalesce=True,
-            kwargs={"timeframes": ["1h"]},
         )
-        self._scheduler.add_job(
-            self._scan_job,
-            CronTrigger(hour=sc.four_hour_scan_hours, minute=sc.four_hour_scan_minute),
-            id="4h_scan",
-            name="4H market scan",
-            max_instances=1,
-            coalesce=True,
-            kwargs={"timeframes": ["4h"]},
-        )
-        logger.info("Scheduler jobs configured")
+        logger.info("Scheduler configured: scanning all TFs every 15 min")
 
     async def _scan_job(self, timeframes: list[str] | None = None):
         logger.info(f"Scheduler triggered: starting scan (tfs={timeframes})")

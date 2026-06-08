@@ -434,12 +434,8 @@ class ScoringConfig:
 class SchedulerConfig:
     """Параметры расписания сканирования."""
 
-    # Минута для hourly scan (cron)
-    hourly_scan_minute: int = int(os.getenv("HOURLY_SCAN_MINUTE", "2"))
-    # Часы для 4h scan (cron, через запятую)
-    four_hour_scan_hours: str = os.getenv("FOUR_HOUR_SCAN_HOURS", "0,4,8,12,16,20")
-    # Минута для 4h scan (cron)
-    four_hour_scan_minute: int = int(os.getenv("FOUR_HOUR_SCAN_MINUTE", "5"))
+    # Минуты для сканирования всех primary_tf (cron, через запятую)
+    scan_minutes: str = os.getenv("SCAN_MINUTES", "2,17,32,47")
 
 
 @dataclass
