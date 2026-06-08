@@ -360,11 +360,14 @@ class SignalEngine:
                 (direction == "buy" and ind.supertrend_direction == 1)
                 or (direction == "sell" and ind.supertrend_direction == -1)
             )
-            adx_breakout = ind.adx >= cfg.adx_strong
+            # Use ATR expansion instead of ADX for compression breakout detection.
+            # Compression = low ATR percentile; breakout = volatility returning.
+            atr_pct = (ind.atr / ind.close * 100) if ind.close > 0 else 0
+            atr_expanding = atr_pct >= 0.3
 
-            if has_strong_trigger and vol_strong and supertrend_ok and adx_breakout:
+            if has_strong_trigger and vol_strong and supertrend_ok and atr_expanding:
                 breakout_reasons.append(
-                    f"Breakout mode: strong trigger + ADX={ind.adx:.1f} + "
+                    f"Breakout mode: strong trigger + ATR={atr_pct:.2f}% + "
                     f"vol={ind.volume / ind.volume_sma:.1f}x + Supertrend aligned"
                 )
                 _gate_log["regime_breakout"] = True
@@ -378,7 +381,7 @@ class SignalEngine:
                 return SignalResult(
                     signal=SignalType.NO_SIGNAL,
                     symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
-                    reasons=["Compression regime — breakout conditions not met (need strong trigger + ADX>=25 + high volume)"],
+                    reasons=["Compression regime — breakout conditions not met (need strong trigger + ATR expansion + high volume)"],
                     _regime=regime_name, _regime_blocked=True,
                 )
 

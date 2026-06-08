@@ -1561,13 +1561,14 @@ class TestRegimeSwitching:
 
     def test_compression_regime_breakout_mode_allows_signal(self, engine):
         """Compression regime allows signals with breakout conditions:
-        strong trigger (BOS/sweep) + ADX>=25 + volume>=2.0x + supertrend aligned."""
+        strong trigger (sweep) + ATR expansion + volume>=2.0x + supertrend aligned."""
         from liquidity.sweep import SweepEvent
         from datetime import datetime, timezone
         ind = make_ind(
             rsi=40.0,
             adx=30.0,
             close=50800.0,
+            atr=300.0,  # 0.59% — meets ATR expansion threshold (>0.3%)
             ema_fast=48000.0,
             ema_slow=47000.0,
             ema_trend=46000.0,

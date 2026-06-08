@@ -228,15 +228,16 @@ class TestScoringConfig:
     def test_min_score_for_signal(self):
         import config.settings as settings
         importlib.reload(settings)
-        assert settings.config.scoring.min_score_for_signal == 4
+        assert settings.config.scoring.min_score_for_signal == 2
 
-    def test_confidence_v2_quality_derived_from_confidence_thresholds(self):
+    def test_confidence_v2_thresholds(self):
         import config.settings as settings
         importlib.reload(settings)
         s = settings.config.scoring
-        # Quality label uses confidence thresholds in confidence_v2._quality_label()
-        assert s.confidence_strong_threshold == 70
+        assert s.confidence_strong_threshold == 65
         assert s.confidence_moderate_threshold == 40
+        assert s.quality_strong_threshold == 65
+        assert s.quality_moderate_threshold == 40
 
     def test_blend_ratios(self):
         import config.settings as settings
@@ -314,9 +315,16 @@ class TestRiskConfig:
         import config.settings as settings
         importlib.reload(settings)
         r = settings.config.risk
-        assert r.regime_trend_adx == 25
+        assert r.regime_trend_adx == 22
         assert r.regime_range_adx == 18
         assert r.regime_compression_atr_pct == 20
+
+    def test_risk_weak_trade_and_pct(self):
+        import config.settings as settings
+        importlib.reload(settings)
+        r = settings.config.risk
+        assert r.risk_weak_trade is True
+        assert r.risk_weak_pct == 0.25
 
     def test_regime_detection_params(self):
         import config.settings as settings
@@ -335,7 +343,7 @@ class TestTradingConfigExtended:
     def test_adx_strong_threshold(self):
         import config.settings as settings
         importlib.reload(settings)
-        assert settings.config.trading.adx_strong == 25
+        assert settings.config.trading.adx_strong == 22
 
     def test_atr_fallback_pct(self):
         import config.settings as settings

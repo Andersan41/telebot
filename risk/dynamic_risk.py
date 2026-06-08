@@ -62,6 +62,8 @@ def _base_risk_for_quality(quality: str) -> float:
         return settings.config.risk.risk_strong_pct
     elif quality == "moderate":
         return settings.config.risk.risk_moderate_pct
+    elif quality == "weak":
+        return settings.config.risk.risk_weak_pct
     return 0.0
 
 

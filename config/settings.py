@@ -105,9 +105,9 @@ class TradingConfig:
     # Период ADX
     adx_period: int = int(os.getenv("ADX_PERIOD", "14"))
     # Минимальный ADX для тренда (фильтр флэта)
-    adx_min: float = float(os.getenv("ADX_MIN", "25"))
+    adx_min: float = float(os.getenv("ADX_MIN", "20"))
     # Порог ADX для strong trend
-    adx_strong: float = float(os.getenv("ADX_STRONG", "25"))
+    adx_strong: float = float(os.getenv("ADX_STRONG", "22"))
     # Диапазон нормализации ADX strength (ADX_MIN → 0, ADX_MIN+30 → 1)
     adx_strength_range: float = float(os.getenv("ADX_STRENGTH_RANGE", "30"))
     # Делитель нормализации DMI diff
@@ -279,7 +279,9 @@ class RiskConfig:
     # Риск на сделку для moderate сигнала (%)
     risk_moderate_pct: float = float(os.getenv("RISK_MODERATE_PCT", "0.5"))
     # Разрешить торговлю weak сигналов
-    risk_weak_trade: bool = os.getenv("RISK_WEAK_TRADE", "false").lower() == "true"
+    risk_weak_trade: bool = os.getenv("RISK_WEAK_TRADE", "true").lower() == "true"
+    # Размер позиции для weak сигнала (%)
+    risk_weak_pct: float = float(os.getenv("RISK_WEAK_PCT", "0.25"))
     # Минимальный ATR % для торговли (иначе no-trade zone)
     no_trade_min_atr_pct: float = float(os.getenv("NO_TRADE_MIN_ATR_PCT", "0.6"))
 
@@ -297,7 +299,7 @@ class RiskConfig:
 
     # ─── Market Regime ───────────────────────────────────────────────────
     # Порог ADX для трендового режима
-    regime_trend_adx: float = float(os.getenv("REGIME_TREND_ADX", "25"))
+    regime_trend_adx: float = float(os.getenv("REGIME_TREND_ADX", "22"))
     # Порог ADX для range режима
     regime_range_adx: float = float(os.getenv("REGIME_RANGE_ADX", "18"))
     # Порог ATR percentile для compression режима
@@ -361,11 +363,15 @@ class ScoringConfig:
     """Параметры скоринга и verdict."""
 
     # Порог confidence для STRONG verdict
-    confidence_strong_threshold: float = float(os.getenv("CONFIDENCE_STRONG_THRESHOLD", "70"))
+    confidence_strong_threshold: float = float(os.getenv("CONFIDENCE_STRONG_THRESHOLD", "65"))
     # Порог confidence для MODERATE verdict
     confidence_moderate_threshold: float = float(os.getenv("CONFIDENCE_MODERATE_THRESHOLD", "40"))
+    # Порог quality для STRONG (унифицирован с confidence)
+    quality_strong_threshold: float = float(os.getenv("QUALITY_STRONG_THRESHOLD", "65"))
+    # Порог quality для MODERATE (унифицирован с confidence)
+    quality_moderate_threshold: float = float(os.getenv("QUALITY_MODERATE_THRESHOLD", "40"))
     # Минимальное число условий для сигнала
-    min_score_for_signal: int = int(os.getenv("MIN_SCORE_FOR_SIGNAL", "4"))
+    min_score_for_signal: int = int(os.getenv("MIN_SCORE_FOR_SIGNAL", "2"))
 
     # ─── Weighted Factor Model (signal_engine) ───────────────────────────
     # TREND weights
@@ -410,9 +416,8 @@ class ScoringConfig:
     # Confidence V2 scoring (10-factor weighted)
     confidence_v2_enabled: bool = os.getenv("CONFIDENCE_V2_ENABLED", "true").lower() == "true"
 
-    # Качество (strong/moderate/weak) определяется confidence_strong_threshold (70)
-    # и confidence_moderate_threshold (40) в confidence_v2._quality_label().
-    # Отдельные QUALITY_* пороги удалены как дублирующие dead code.
+    # Качество (strong/moderate/weak) определяется quality_* порогами в confidence_v2._quality_label().
+    # По умолчанию 65/40 — унифицировано с confidence порогами.
 
     @property
     def max_signal_score(self) -> int:

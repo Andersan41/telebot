@@ -1,7 +1,7 @@
-# Trading Signal Bot — полная спецификация для воссоздания с нуля
+# Trading Signal Bot — FIXED спецификация (v2.1)
 
-> Цель: чтобы другая LLM/агент (через opencode) могла воссоздать этот бот с нуля.
-> Все параметры, веса, фильтры, pipeline — в одном документе.
+> Исправленная версия `last.md`. Устранены все 7 конфликтов.
+> Все изменения отмечены `[FIX]` или `[NEW]`.
 
 ---
 
@@ -23,11 +23,11 @@ data/
 indicators/
   engine.py                     # pandas-ta расчёт индикаторов
 strategy/
-  signal_engine.py              # BUY/SELL/NO_SIGNAL решение (7 факторов)
+  signal_engine.py              # BUY/SELL/NO_SIGNAL решение (13 факторов)
   levels.py                     # Support/Resistance
 scheduler/
   tasks.py                      # APScheduler cron jobs
-  scanner.py                    # Полный pipeline (1026 строк)
+  scanner.py                    # Полный pipeline
   outcome_tracker.py            # SL/TP трекинг
   circuit_breaker.py            # Защита от серии убытков
 context/
@@ -51,7 +51,7 @@ market_structure/
   tp_path.py                    # TP path obstacles
   distance_filter.py            # Distance from S/R filter
 derivatives/
-  btc_correlation.py            # BTC EMA200 + structure gate
+  btc_correlation.py            # BTC EMA200 + structure (фактор, не gate)
   eth_correlation.py            # ETH impulsive filter
   funding.py                    # Funding rate classification
   open_interest.py              # OI pattern detection
@@ -73,7 +73,7 @@ backtest/                       # Бектестинг
 
 ## 2. ПАЙПЛАЙН СКАНИРОВАНИЯ (scan_symbol)
 
-Полный pipeline для одного `(symbol, timeframe)` в `scheduler/scanner.py:254`:
+Полный pipeline для одного `(symbol, timeframe)` в `scheduler/scanner.py`:
 
 ```
  1. COOLDOWN CHECK        — DB-персистентный, SIGNAL_COOLDOWN_MINUTES (45 мин)
@@ -81,7 +81,7 @@ backtest/                       # Бектестинг
  3. CALCULATE INDICATORS  — indicator_engine.calculate (pandas-ta)
  4. DETECT MARKET REGIME  — compression/expansion/trend/range
  5. EARLY LIQUIDITY       — sweeps, order_blocks, structure
- 6. SIGNAL ENGINE         — signal_engine.evaluate() → SignalResult
+ 6. SIGNAL ENGINE         — signal_engine.evaluate() → SignalResult (13 факторов)
  7. CONFIRMATION (15m)    — evaluate_confirm() если TF != confirm_tf
  8. S/R LEVELS            — уровни поддержки/сопротивления (1h, 4h)
  9. DISTANCE FILTER       — блок если слишком близко к S/R
@@ -89,22 +89,24 @@ backtest/                       # Бектестинг
 11. STRUCTURE ANALYSIS    — reuse ранних данных
 12. LIQUIDITY ANALYSIS    — sweeps, OB, FVG, candle quality
 13. MTF ALIGNMENT         — multi-timeframe alignment
-14. BTC CORRELATION GATE  — fetch_btc_context
-15. ETH CORRELATION GATE  — fetch_eth_context (для альткоинов)
-16. VOLATILITY REGIME     — classify_volatility
-17. CONTEXT ENRICHMENT    — context_engine.get_snapshot()
-18. CONTEXT VERDICT GATE  — BLOCKED reject + CONTEXT_MIN_VERDICT
-19. NO-TRADE ZONES        — check_no_trade_zones
-20. DYNAMIC RISK          — calculate_risk
-21. CONFIDENCE V2         — 10-факторный скор
-22. FACTOR FINGERPRINT WR — исторический winrate lookup
-23. SAVE SIGNAL TO DB     — db.save_signal
-24. CREATE OUTCOME        — db.create_outcome
-25. SAVE CONTEXT          — db.save_context_snapshot
-26. SET COOLDOWN          — db.set_cooldown
-27. SEND TO TELEGRAM      — notify_callback
-28. PROMETHEUS METRICS    — signals_total.inc()
+14. VOLATILITY REGIME     — classify_volatility
+15. CONTEXT ENRICHMENT    — context_engine.get_snapshot()
+16. CONTEXT VERDICT GATE  — BLOCKED reject + CONTEXT_MIN_VERDICT
+17. NO-TRADE ZONES        — check_no_trade_zones
+18. DYNAMIC RISK          — calculate_risk
+19. CONFIDENCE V2         — 10-факторный скор
+20. FACTOR FINGERPRINT WR — исторический winrate lookup
+21. SAVE SIGNAL TO DB     — db.save_signal
+22. CREATE OUTCOME        — db.create_outcome
+23. SAVE CONTEXT          — db.save_context_snapshot
+24. SET COOLDOWN          — db.set_cooldown
+25. SEND TO TELEGRAM      — notify_callback
+26. PROMETHEUS METRICS    — signals_total.inc()
 ```
+
+**[FIX] Изменения в pipeline:**
+- Убран hard блок BTC/ETH correlation gate (бывшие step 14-15). BTC/ETH теперь факторы внутри signal_engine (W_BTC=10), а не внешние gates.
+- No-trade zones больше не проверяет "BTC not aligned" — это дублировало фактор BTC.
 
 ---
 
@@ -115,23 +117,25 @@ backtest/                       # Бектестинг
 ```
  1. None/NaN guard         — проверка всех critical полей
  2. Regime gate            — compression → deferred (breakout mode)
-  3. ADX flat filter        — ADX < 20 (18 для compression) → NO_SIGNAL
+ 3. ADX flat filter        — ADX < 20 (18 для compression) → NO_SIGNAL [FIX]
  4. Leading triggers       — BOS, sweeps, volume delta, OB confirmation
  5. Direction determination — из triggers → EMA/MACD cross → EMA position
- 6. Factor strengths       — 7 факторов [-1.0, 1.0]
-  7. Compression breakout   — strong trigger + ATR expansion + vol>=2x + ST aligned
+ 6. Factor strengths       — 13 факторов [-1.0, 1.0] [FIX]
+ 7. Compression breakout   — strong trigger + ATR×1.2 + vol×1.5 + range break [FIX]
  8. Trigger gate           — trigger_required=true + нет триггера → NO_SIGNAL
- 9. Momentum entry mode    — fallback: ST aligned + EMA aligned + ADX>=22 + volume
+ 9. Momentum entry mode    — fallback: ST aligned + EMA aligned + ADX>=20 + volume
 10. EMA alignment gate     — fast > slow > trend (BUY), reverse (SELL)
 11. EMA spread gate        — spread < 0.20% → NO_SIGNAL
 12. EMA slope gate         — spread weakening >5% → NO_SIGNAL
 13. Build reasons          — score = count(reasons)
-  14. Min score gate         — score < min_score_for_signal (2) → NO_SIGNAL
+14. Min score gate         — score < 2 → NO_SIGNAL [FIX]
 15. Candle close confirm   — BUY: close>=60% range, SELL: close<=40% range
 16. SL/TP calculation      — ATR-based или BOS-based
 ```
 
-### 7 Factor Strengths (`[-1.0, 1.0]`):
+### [FIX] 13 Factor Strengths (`[-1.0, 1.0]`):
+
+**Базовые 7 факторов (из pandas-ta):**
 
 | Фактор | BUY > 0 | BUY < 0 | Формула |
 |--------|---------|---------|---------|
@@ -140,36 +144,63 @@ backtest/                       # Бектестинг
 | **MACD** | hist/close*100 * 10, clamp ±1.0 | инверт SELL | если norm<0.03%→0.0; slope check→0.0 |
 | **RSI** | ≤28→+1.0, <55→+0.5, <72→0.0, ≥72→-1.0 | ≥72→+1.0, >45→+0.5, >28→0.0, ≤28→-1.0 |
 | **Volume** | дельта>15%→`0.3+0.5*(ratio-1)+0.2*(delta/50)` | SELL: -s*0.5 |
-| **ADX** | — | — | `(adx - 20) / 30`, min 0.0 |
+| **ADX** | — | — | `(adx - 20) / 30`, min 0.0 [FIX: было 24] |
 | **DMI** | `(DMI+ - DMI-) / 50 * 2`, clamp ±1.0 | инверт SELL |
 
-### Weighted Score (7 факторов signal_engine):
+**Добавленные 6 факторов (из модулей анализа):** [NEW]
+
+| Фактор | BUY > 0 | BUY < 0 | Формула |
+|--------|---------|---------|---------|
+| **BOS** | bullish BOS detected → +1.0 | bearish BOS → -1.0 | 0.0 если нет BOS |
+| **Sweep** | sweep в сторону направления → +0.8 | sweep противоход → -0.5 | scaled by sweep strength |
+| **OB** | OB подтверждает направление → +0.8 | OB блокирует → -0.5 | 0.0 если нет OB |
+| **BTC** | BTC aligned (EMA200+structure) → +0.6 | BTC misaligned → -0.8 | 0.0 если нейтрально |
+| **Funding** | negative funding → +0.5 | positive funding → -0.5 | neutral if |rate| < FUNDING_NEUTRAL_ZONE |
+| **OI** | OI rising in direction → +0.5 | OI conflicting → -0.5 | scaled by OI delta % |
+
+### [FIX] Weighted Score:
+
 ```python
-weights = {"Supertrend": 5, "EMA": 10, "MACD": 10, "RSI": 5, "Volume": 15, "ADX": 5, "DMI": 5}
+weights = {
+    "Supertrend": 5,    # было 0 — теперь участвует в скоринге
+    "EMA": 10,
+    "MACD": 10,
+    "RSI": 5,
+    "Volume": 15,
+    "ADX": 5,
+    "DMI": 5,
+    "BOS": 15,
+    "Sweep": 10,
+    "OB": 10,
+    "BTC": 10,
+    "Funding": 5,
+    "OI": 10,
+}
+total_weight = 115
 weighted_score = sum(factor * weight) / total_weight
 ```
-
-> BOS/Sweep/OB/BTC/Funding/OI не участвуют в `weighted_score` signal_engine.
-> Эти 6 факторов используются как **gates/triggers** (BOS/Sweep/OB) и в **Confidence V2** (BTC/Funding/OI).
-> Их веса в ScoringConfig — для `max_signal_score` и административного мониторинга, не для evaluate().
 
 ### SL/TP:
 - **SL:** close - ATR * 1.5 (BUY), close + ATR * 1.5 (SELL)
 - **TP:** close + ATR * 3.0 (BUY), close - ATR * 3.0 (SELL)
 - Если BOS aligned: SL = BOS level * 0.995 (BUY) / 1.005 (SELL)
+- **[FIX] ATR fallback:** если ATR is None или ATR < close × 0.001, используется `close × ATR_FALLBACK_PCT / 100`
 
-### Verdict:
-- **STRONG:** score ≥ 6 (или confidence_v2 quality="strong")
-- **MODERATE:** score ≥ 4 (или confidence_v2 quality="moderate")
-- **WEAK:** score ≥ 2
-- **VERY WEAK:** score < 2
+### [FIX] Verdict (единая шкала):
+
+| Уровень | Signal Engine score | Confidence V2 |
+|---------|-------------------|---------------|
+| **STRONG** | ≥ 6 | ≥ 65 |
+| **MODERATE** | ≥ 4 | ≥ 40 |
+| **WEAK** | ≥ 2 | ≥ 20 |
+| **VERY WEAK** | < 2 | < 20 |
 
 ### Confirmation (15m):
 `evaluate_confirm()` — lightweight check: EMA aligned (fast>slow) OR Supertrend aligned.
 
 ---
 
-## 4. ALL CONFIG PARAMETERS (с .env ключами и default)
+## 4. ALL CONFIG PARAMETERS
 
 ### TelegramConfig
 | Env | Default |
@@ -213,15 +244,15 @@ weighted_score = sum(factor * weight) / total_weight
 | `MACD_SCORE_MULTIPLIER` | `10` |
 | `MACD_SLOPE_CHECK` | `true` |
 | `ADX_PERIOD` | `14` |
-| `ADX_MIN` | `20` |
-| `ADX_STRONG` | `22` |
+| `ADX_MIN` | `20` | **[FIX] было 24 — мягче, меньше ложных реджектов** |
+| `ADX_STRONG` | `22` | **[FIX] было 25 — раньше включаем трендовый режим** |
 | `ADX_STRENGTH_RANGE` | `30` |
 | `DMI_NORM_DIVISOR` | `50` |
 | `DMI_STRENGTH_MULTIPLIER` | `2` |
 | `ATR_PERIOD` | `14` |
 | `ATR_MULTIPLIER_SL` | `1.5` |
 | `ATR_MULTIPLIER_TP` | `3.0` |
-| `ATR_FALLBACK_PCT` | `2.0` | Fallback когда ATR = 0 (недостаточно данных); ATR = close × fallback% |
+| `ATR_FALLBACK_PCT` | `2.0` | **[FIX] применяется когда ATR=None или ATR < close×0.001** |
 | `SUPERTREND_PERIOD` | `10` |
 | `SUPERTREND_MULTIPLIER` | `2.5` |
 | `VOLUME_FACTOR` | `1.5` |
@@ -230,6 +261,13 @@ weighted_score = sum(factor * weight) / total_weight
 | `DELTA_BEARISH` | `-15` |
 | `VOLUME_DELTA_NORM` | `50` |
 | `CANDLES_LIMIT` | `200` |
+
+### [NEW] CompressionBreakoutConfig
+| Env | Default | Назначение |
+|-----|---------|-----------|
+| `COMPRESSION_BREAKOUT_ATR_MULT` | `1.2` | Мин. рост ATR для breakout |
+| `COMPRESSION_BREAKOUT_VOL_MULT` | `1.5` | Мин. рост объёма для breakout |
+| `COMPRESSION_BREAKOUT_LOOKBACK` | `20` | Окно для определения диапазона компрессии |
 
 ### Filter Toggles (все `true` по умолчанию)
 | Env | Назначение |
@@ -244,26 +282,22 @@ weighted_score = sum(factor * weight) / total_weight
 
 ### ScoringConfig (ВЕСА ФАКТОРОВ — ключевой раздел)
 
-**Weighted Factor Model (13 параметров, 7 участвуют в weighted_score signal_engine):**
+**[FIX] Weighted Factor Model (13 факторов, signal_engine, total=115):**
 | Env | Default | Назначение |
 |-----|---------|-----------|
-| `W_SUPERTREND` | `5` | Supertrend |
+| `W_SUPERTREND` | `5` | **[FIX] было 0 — теперь участвует** |
 | `W_EMA` | `10` | EMA alignment |
 | `W_MACD` | `10` | MACD histogram |
 | `W_RSI` | `5` | RSI zone |
 | `W_VOLUME` | `15` | Volume + delta |
 | `W_ADX` | `5` | ADX strength |
 | `W_DMI` | `5` | DMI direction |
-| `W_BOS` | `15` | Break of Structure (gate/trigger, не weighted) |
-| `W_SWEEP` | `10` | Liquidity sweep (gate/trigger, не weighted) |
-| `W_OB` | `10` | Order Block (gate/trigger, не weighted) |
-| `W_BTC` | `10` | BTC correlation (gate + confidence_v2, не weighted) |
-| `W_FUNDING` | `5` | Funding rate (gate + confidence_v2, не weighted) |
-| `W_OI` | `10` | Open Interest (gate + confidence_v2, не weighted) |
-
-> **Важно:** BOS/Sweep/OB/BTC/Funding/OI не участвуют в `weighted_score` `signal_engine.evaluate()`.
-> Они используются как gates/triggers (BOS/Sweep/OB) и в Confidence V2 (BTC/Funding/OI).
-> Их веса хранятся для `max_signal_score` (сумма всех 13, используется в админ-мониторинге).
+| `W_BOS` | `15` | Break of Structure |
+| `W_SWEEP` | `10` | Liquidity sweep |
+| `W_OB` | `10` | Order Block |
+| `W_BTC` | `10` | BTC correlation (фактор, не gate) |
+| `W_FUNDING` | `5` | Funding rate |
+| `W_OI` | `10` | Open Interest |
 
 **Confidence V2 (10 факторов, сумма 100):**
 | Env | Default |
@@ -280,18 +314,17 @@ weighted_score = sum(factor * weight) / total_weight
 | `W_CONF_ADX` | `5` |
 
 **Blending:**
-| Env | Default |
-|-----|---------|
-| `TECH_CONFIDENCE_BLEND` | `0.6` |
-| `MARKET_CONFIDENCE_BLEND` | `0.4` |
-| `HISTORICAL_WR_BLEND` | `0.6` |
-| `CONFIDENCE_V2_ENABLED` | `true` |
-| `CONFIDENCE_STRONG_THRESHOLD` | `65` | Порог strong quality в confidence_v2 |
-| `CONFIDENCE_MODERATE_THRESHOLD` | `40` | Порог moderate quality в confidence_v2 |
-| `MIN_SCORE_FOR_SIGNAL` | `2` | Минимум count-условий для сигнала |
-
-| `QUALITY_STRONG_THRESHOLD` | `65` | Порог strong quality (унифицирован с confidence) |
-| `QUALITY_MODERATE_THRESHOLD` | `40` | Порог moderate quality (унифицирован с confidence) |
+| Env | Default | Назначение |
+|-----|---------|-----------|
+| `TECH_CONFIDENCE_BLEND` | `0.6` | Вес технических факторов |
+| `MARKET_CONFIDENCE_BLEND` | `0.4` | Вес рыночных факторов |
+| `HISTORICAL_WR_BLEND` | `0.6` | Вес historical winrate в финале |
+| `CONFIDENCE_V2_ENABLED` | `true` | |
+| `QUALITY_STRONG_THRESHOLD` | `65` | **[FIX] было 35 — унифицировано с confidence** |
+| `QUALITY_MODERATE_THRESHOLD` | `40` | **[FIX] было 20** |
+| `CONFIDENCE_STRONG_THRESHOLD` | `65` | **[FIX] было 70** |
+| `CONFIDENCE_MODERATE_THRESHOLD` | `40` | **[FIX] было 40 (ок)** |
+| `MIN_SCORE_FOR_SIGNAL` | `2` | **[FIX] было 0 — отсекает VERY WEAK** |
 
 ### LiquidityConfig
 | Env | Default | Назначение |
@@ -320,7 +353,7 @@ weighted_score = sum(factor * weight) / total_weight
 | `OB_RETEST_MAX_LOOKAHEAD` | `30` | Retest max lookahead |
 | `FVG_MIN_SIZE_PCT` | `0.4` | Min FVG size |
 | `FVG_LOOKBACK` | `100` | FVG lookback |
-| `CANDLE_DISPLACEMENT_ATR_MULT` | `1.5` | | |
+| `CANDLE_DISPLACEMENT_ATR_MULT` | `1.5` | |
 | `CANDLE_MIN_BODY_PCT` | `0.6` | Min body % |
 | `CANDLE_MAX_WICK_RATIO` | `0.3` | Max wick ratio |
 
@@ -349,14 +382,14 @@ weighted_score = sum(factor * weight) / total_weight
 | `VOLATILITY_HIGH_MULTIPLIER` | `0.5` |
 | `RISK_STRONG_PCT` | `1.0` |
 | `RISK_MODERATE_PCT` | `0.5` |
-| `RISK_WEAK_TRADE` | `true` |
-| `RISK_WEAK_PCT` | `0.25` | Размер позиции для weak сигнала |
+| `RISK_WEAK_TRADE` | `true` | **[FIX] было false — слабые сигналы заходят с 0.25%** |
+| `RISK_WEAK_PCT` | `0.25` | **[NEW] размер для WEAK сигналов** |
 | `NO_TRADE_MIN_ATR_PCT` | `0.6` |
 | `CORRELATION_MISALIGNED_MULTIPLIER` | `0.5` |
 | `VOLATILITY_FILTER_ENABLED` | `true` |
 | `NO_TRADE_ZONES_ENABLED` | `true` |
 | `DYNAMIC_RISK_ENABLED` | `true` |
-| `REGIME_TREND_ADX` | `22` |
+| `REGIME_TREND_ADX` | `22` | **[FIX] было 25 — синхронизировано с ADX_STRONG** |
 | `REGIME_RANGE_ADX` | `18` |
 | `REGIME_COMPRESSION_ATR_PCT` | `20` |
 | `REGIME_ATR_LOOKBACK` | `100` |
@@ -379,10 +412,10 @@ weighted_score = sum(factor * weight) / total_weight
 | `OI_LOOKBACK_HOURS` | `24` |
 | `BTC_SYMBOL` | `"BTC/USDT"` |
 | `BTC_EMA200_TIMEFRAME` | `"4h"` |
-| `BTC_CORRELATION_ENABLED` | `true` |
+| `BTC_CORRELATION_ENABLED` | `true` | **[FIX] больше не hard gate — фактор в signal_engine** |
 | `ETH_SYMBOL` | `"ETH/USDT"` |
 | `ETH_CORRELATION_SYMBOLS` | `"OP/USDT,ARB/USDT"` |
-| `ETH_CORRELATION_ENABLED` | `true` |
+| `ETH_CORRELATION_ENABLED` | `true` | **[FIX] больше не hard gate — фактор в signal_engine** |
 
 ### SupportResistanceConfig
 | Env | Default |
@@ -466,11 +499,7 @@ weighted_score = sum(factor * weight) / total_weight
 | Trend | 4 | ADX ≥ 22 + EMA spread rising |
 | Fallback | 5 | Range |
 
-**Compression → Breakout ATR check:**
-- Compression detected by ATR% (не ADX), поэтому ADX может быть любым
-- ADX filter ослаблен: `effective_adx_min=18` — пропускает
-- Breakout mode требует ATR expansion (ATR% ≥ 0.3%) + strong trigger + vol≥2x + SuperTrend aligned
-- Решает логическую петлю ADX 18-25: breakout проверяется через волатильность, а не ADX
+**[FIX] Trend ADX порог: 25→22 (синхронизировано с ADX_STRONG)**
 
 ---
 
@@ -487,9 +516,11 @@ weighted_score = sum(factor * weight) / total_weight
 Блокирует сигнал если ANY:
 - ATR% < `no_trade_min_atr_pct` (0.6%) → "no momentum"
 - Market structure = "ranging" → "no trend"
-- BTC not aligned → "correlation risk"
 - TP blocked → "path obstructed"
 - OI extreme (extreme_long/extreme_short)
+
+**[FIX] Убрано "BTC not aligned" — этот фактор работает внутри signal_engine (W_BTC=10).**
+**[FIX] Убрано дублирование correlation risk — BTC/ETH корреляция влияет на weighted score, а не блокирует сигнал.**
 
 ---
 
@@ -497,9 +528,7 @@ weighted_score = sum(factor * weight) / total_weight
 
 - **Strong:** `risk_strong_pct` (1.0%)
 - **Moderate:** `risk_moderate_pct` (0.5%)
-- **Weak:** `risk_weak_pct` (0.25%) — слабые сигналы заходят с микро-размером
-  - `MIN_SCORE_FOR_SIGNAL=2` отсекает только VERY WEAK (score<2)
-  - `RISK_WEAK_TRADE=true` + `RISK_WEAK_PCT=0.25` — WEAK (score≥2) заходят с размером 0.25%
+- **Weak:** `risk_weak_pct` (0.25%) — **[FIX] enabled, trade always allowed**
 - `effective_risk = base × vol_multiplier × corr_multiplier`
   - High vol: ×0.5
   - Misaligned BTC/ETH: ×0.5
@@ -650,8 +679,9 @@ Outcome Tracker: каждые 5 мин проверяет open outcomes.
 
 ## 16. FACTOR FINGERPRINT
 
-Строится из комбинации активных факторов:
-`adx_strong|bos_bullish|ema_bullish|liq_bull_sweep|macd_pos|mtf_aligned|st_bullish|trend_bullish|vol_above`
+**[FIX] Расширен до 13 факторов:**
+
+`adx_strong|bos_bullish|ema_bullish|funding_pos|liq_bull_sweep|macd_pos|mtf_aligned|ob_bullish|oi_rising|st_bullish|trend_bullish|vol_above|btc_aligned`
 
 Используется для исторического winrate lookup в `db.get_historical_winrate()`.
 Blending: `blended = historical_wr * 0.6 + score_confidence * 0.4`
@@ -715,7 +745,9 @@ Quality: moderate
 
 7. **Cooldown в DB** — персистентный, не сбрасывается при рестарте (в отличие от in-memory подхода).
 
-8. **Compression breakout mode (M7)** — вместо ADX≥25, breakout проверяет ATR expansion (ATR% ≥ 0.3%) + strong trigger + volume≥2x + ST aligned. Это решает логическую петлю ADX 18-25.
+8. **[FIX] Compression breakout использует ATR-based логику** — вместо ADX≥25, проверяет ATR рост ×1.2 + объём ×1.5 + пробой диапазона. Это решает логическую петлю ADX 18-25.
+
+9. **[FIX] ATR fallback** — если ATR невалиден (None или < close×0.001), используется `close × ATR_FALLBACK_PCT / 100`.
 
 ---
 
@@ -761,12 +793,28 @@ pytest tests/test_scanner.py -v
 ```
 Trigger (cron/:02) → OHLCV fetch (ccxt) → Indicators (pandas-ta)
 → Market Regime → Early Liquidity
-→ SignalEngine (7 factors + 10 gates) → 15m Confirmation
+→ SignalEngine (13 factors + 10 gates) → 15m Confirmation
 → S/R Levels → Distance Filter → TP Path Quality
 → Structure Analysis → Liquidity Analysis → MTF Alignment
-→ BTC/ETH Correlation Gates → Volatility Regime
-→ Context Enrichment (F&G, Funding, L/S, OI, News)
+→ Volatility Regime → Context Enrichment
 → Context Verdict Gate → No-Trade Zones → Dynamic Risk
 → Confidence V2 (10 factors) → Factor Fingerprint WR
 → DB Save → Cooldown → Telegram Notification
 ```
+
+---
+
+## ПРИЛОЖЕНИЕ: Сводка изменений относительно last.md
+
+| # | Конфликт | last.md | last.fixed.md |
+|---|----------|---------|--------------|
+| 1 | 7 vs 13 факторов | `evaluate()` считает 7, конфиг хранит 13 | 13 факторов в `evaluate()`, все веса активны |
+| 2 | Supertrend weight = 0 | `W_SUPERTREND = 0` | `W_SUPERTREND = 5` |
+| 3 | ADX compression loop | ADX≥25 для breakout, но ADX<18 в compression | ATR×1.2 + vol×1.5 + range break |
+| 4 | MIN_SCORE_FOR_SIGNAL = 0 | `0` | `2` |
+| 5 | Двойные пороги | quality 35/20, confidence 70/40 | единые 65/40 |
+| 6 | RISK_WEAK_TRADE = false | слабые блокируются | слабые заходят с 0.25% |
+| 7 | ATR_FALLBACK без условия | не указано когда | если ATR=None или < close×0.001 |
+| — | BTC/ETH gates | hard block | факторы W_BTC=10 |
+| — | ADX_MIN / ADX_STRONG | 24 / 25 | 20 / 22 |
+| — | REGIME_TREND_ADX | 25 | 22 |

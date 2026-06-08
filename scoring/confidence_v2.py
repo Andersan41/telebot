@@ -102,8 +102,8 @@ class ConfidenceEngineV2:
         # Clamp to [-100, 100]
         total = max(-100.0, min(100.0, total))
 
-        strong_thr = config.scoring.confidence_strong_threshold
-        moderate_thr = config.scoring.confidence_moderate_threshold
+        strong_thr = config.scoring.quality_strong_threshold
+        moderate_thr = config.scoring.quality_moderate_threshold
 
         # Task 6.1: blend historical winrate with score-based confidence
         score_confidence = abs(total)
