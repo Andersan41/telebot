@@ -16,7 +16,8 @@ from strategy.signal_engine import signal_engine, SignalType, SignalResult
 from strategy.levels import get_support_resistance, validate_levels_vs_trade
 from data.exchange_client import exchange_client
 from context.analyzer import context_engine
-from context.scorer import context_scorer
+from context.scorer import context_scorer, ContextVerdict
+from risk.market_regime import RegimeDetector, MarketRegime
 
 WAITING: dict[int, str] = {}
 
@@ -562,15 +563,58 @@ async def _get_indicators(symbol: str, timeframe: str) -> Optional[IndicatorValu
     return indicator_engine.calculate(df, symbol, timeframe)
 
 
+def _detect_regime(ind: IndicatorValues, df) -> Optional[MarketRegime]:
+    try:
+        adx = float(ind.adx) if ind.adx is not None else 20.0
+        current_atr = float(ind.atr) if ind.atr is not None else 0.0
+        current_volume = float(ind.volume) if ind.volume is not None else 0.0
+
+        if len(df) >= 10:
+            atr_history = []
+            for _, row in df.tail(config.risk.regime_atr_lookback).iterrows():
+                atr_history.append(float(row['high'] - row['low']))
+        else:
+            atr_history = [current_atr] * 10
+
+        ema_fast = float(ind.ema_fast) if ind.ema_fast is not None else 0.0
+        ema_slow = float(ind.ema_slow) if ind.ema_slow is not None else 0.0
+        current_spread = abs(ema_fast - ema_slow) if ema_slow > 0 else 0.0
+        ema_spread_history = [current_spread] * 5
+
+        if len(df) >= 10:
+            volume_history = [float(row['volume']) for _, row in df.tail(20).iterrows()]
+        else:
+            volume_history = [current_volume] * 10
+
+        detector = RegimeDetector(
+            adx=adx,
+            atr_history=atr_history,
+            ema_spread_history=ema_spread_history,
+            volume_history=volume_history,
+            current_atr=current_atr,
+            current_volume=current_volume,
+        )
+        return detector.detect()
+    except Exception as e:
+        logger.warning(f"Regime detection failed for {symbol}: {e}")
+        return None
+
+
 async def _do_full_analysis(symbol: str) -> str:
     try:
         cfg = config.trading
         primary_tf = cfg.primary_timeframes[0]
-        ind = await _get_indicators(symbol, primary_tf)
-        if ind is None:
+
+        df = await exchange_client.fetch_ohlcv(symbol, primary_tf, limit=config.trading.candles_limit)
+        if df is None:
             return f"❌ Не удалось получить данные для <b>{html.escape(symbol)}</b>\n\nПроверьте тикер (пример: BTC/USDT)"
 
-        result = signal_engine.evaluate(ind)
+        ind = indicator_engine.calculate(df, symbol, primary_tf)
+        if ind is None:
+            return f"❌ Ошибка расчёта индикаторов для <b>{html.escape(symbol)}</b>"
+
+        regime = _detect_regime(ind, df)
+        result = signal_engine.evaluate(ind, regime=regime)
 
         # --- Подтверждение на confirm_tf ---
         confirm_tf = cfg.confirm_timeframe
@@ -614,6 +658,7 @@ async def _do_full_analysis(symbol: str) -> str:
             )
 
         # --- Рыночный контекст ---
+        context_verdict = None
         if config.context_enabled:
             try:
                 snapshot = await asyncio.wait_for(
@@ -624,6 +669,13 @@ async def _do_full_analysis(symbol: str) -> str:
                 if result.is_actionable:
                     context_verdict = context_scorer.score(result.signal.value, snapshot)
                     result._context_score = context_verdict.score
+                else:
+                    context_verdict = ContextVerdict(
+                        verdict="NEUTRAL",
+                        confidence=0.0,
+                        score=0.0,
+                        snapshot=snapshot,
+                    )
 
                 snap = snapshot
                 dir_for_emoji = result.signal.value if result.is_actionable else None
@@ -681,6 +733,11 @@ async def _do_full_analysis(symbol: str) -> str:
 
         # --- Формируем сообщение через format_message() ---
         text = result.format_message()
+
+        # --- Добавляем блок контекста рынка ---
+        if context_verdict is not None:
+            from bot.notifier import format_context_block
+            text += format_context_block(context_verdict)
 
         # --- Добавляем ссылку на TradingView ---
         chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{ind.symbol.replace('/', '')}"

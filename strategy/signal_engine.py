@@ -97,9 +97,15 @@ class SignalResult:
     def format_message(self) -> str:
         from strategy.levels import format_levels_message
 
-        signal_word = "ПОКУПКА" if self.signal == SignalType.BUY else "ПРОДАЖА"
+        if self.signal == SignalType.BUY:
+            signal_word = "ПОКУПКА"
+        elif self.signal == SignalType.SELL:
+            signal_word = "ПРОДАЖА"
+        else:
+            signal_word = ""
+        header = f"{self.signal.value} — {signal_word}" if signal_word else self.signal.value
         lines = [
-            f"{self.signal.value} — {signal_word}",
+            header,
             f"Инструмент: {self.symbol}",
         ]
 
