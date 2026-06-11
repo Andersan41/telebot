@@ -1,0 +1,452 @@
+// =====================================================
+// Trading Signal Bot — Dashboard Frontend
+// =====================================================
+
+const WS_URL = `ws://${location.host}/ws`;
+let socket = null;
+let priceChart = null;
+let reconnectTimer = null;
+
+// ── Init ────────────────────────────────────────────
+function connect() {
+  socket = new WebSocket(WS_URL);
+
+  socket.onopen = () => {
+    updateStatus('Анализ активен');
+    clearTimeout(reconnectTimer);
+    hideLoader();
+  };
+
+  socket.onclose = () => {
+    updateStatus('Переподключение...');
+    showLoader('Переподключение к серверу...');
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+
+  socket.onerror = () => updateStatus('Ошибка соединения');
+
+  socket.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'update') renderDashboard(data);
+    } catch (err) {
+      console.error('Parse error:', err);
+    }
+  };
+}
+
+// ── Render ──────────────────────────────────────────
+function renderDashboard(data) {
+  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error } = data;
+
+  if (error) {
+    updateStatus(`Ошибка: ${error}`);
+    return;
+  }
+
+  const sym = (symbol || '').replace('/USDT', '');
+  updateStatus(`Анализ активен · ${sym} $${Number(price || 0).toLocaleString()}`);
+
+  if (indicators) renderIndicators(indicators);
+  if (signal) renderSignal(signal);
+  if (levels) renderLevelsData(levels);
+  if (structure) renderSMC(structure, liquidity);
+  if (priceHistory) updatePriceChart(priceHistory);
+
+  renderVerdictFromSignal(signal, indicators);
+}
+
+// ── Indicators ──────────────────────────────────────
+function renderIndicators(ind) {
+  // RSI
+  const rsiSignal = ind.rsi > 70 ? 'bearish' : ind.rsi > 55 ? 'bullish' : ind.rsi > 45 ? 'neutral' : ind.rsi > 30 ? 'bearish' : 'bullish';
+  renderCard('rsi', ind.rsi?.toFixed(1) || '—', rsiLabel(ind.rsi), rsiSignal, ind.rsi);
+
+  // MACD
+  const macdSig = ind.macd_bullish_cross ? 'bullish_cross' : ind.macd_bearish_cross ? 'bearish_cross' : ind.macd_hist > 0 ? 'bullish' : 'bearish';
+  const macdLabel = ind.macd_bullish_cross ? 'Бычье пересечение' : ind.macd_bearish_cross ? 'Медвежье пересечение' : ind.macd_hist > 0 ? 'Выше нуля' : 'Ниже нуля';
+  renderCard('macd', ind.macd_hist?.toFixed(2) || '—', macdLabel, macdSig, 50 + (ind.macd_hist || 0) * 10);
+
+  // EMA
+  const emaSig = ind.ema_bullish_alignment ? 'bullish' : ind.ema_bearish_alignment ? 'bearish' : 'neutral';
+  const emaLabel = ind.ema_bullish_cross ? 'Бычье пересечение' : ind.ema_bearish_cross ? 'Медвежье пересечение' :
+    ind.ema_bullish_alignment ? 'Aligned ↑' : ind.ema_bearish_alignment ? 'Aligned ↓' : 'Neutr.';
+  renderCard('ema', ind.ema_fast?.toFixed(0) || '—', emaLabel, emaSig, 50);
+
+  // ADX
+  const adxSig = ind.trend_is_strong ? (ind.dmi_plus > ind.dmi_minus ? 'bullish' : 'bearish') : 'neutral';
+  const adxLabel = ind.trend_is_strong ? `Trend (${ind.dmi_plus?.toFixed(1)} / ${ind.dmi_minus?.toFixed(1)})` : `Flat (${ind.adx?.toFixed(1)})`;
+  renderCard('adx', ind.adx?.toFixed(1) || '—', adxLabel, adxSig, Math.min(100, (ind.adx || 0) * 2.5));
+
+  // Supertrend
+  const stSig = ind.supertrend_bullish ? 'bullish' : 'bearish';
+  const stLabel = ind.supertrend_bullish ? 'Bullish trend' : 'Bearish trend';
+  renderCard('st', ind.supertrend?.toFixed(0) || '—', stLabel, stSig, ind.supertrend_bullish ? 70 : 30);
+
+  // Volume
+  const volSig = ind.volume_above_avg ? 'bullish' : 'bearish';
+  const volLabel = ind.volume_above_avg ? `Above SMA (${((ind.volume / ind.volume_sma) * 100).toFixed(0)}%)` : 'Below average';
+  const volPct = ind.volume_sma > 0 ? Math.min(100, (ind.volume / ind.volume_sma) * 50) : 50;
+  renderCard('vol', ind.volume?.toFixed(0) || '—', volLabel, volSig, volPct);
+}
+
+function rsiLabel(rsi) {
+  if (!rsi) return '—';
+  if (rsi >= 70) return 'Перекупленность';
+  if (rsi >= 55) return 'Зона роста';
+  if (rsi >= 45) return 'Нейтрально';
+  if (rsi >= 30) return 'Зона снижения';
+  return 'Перепроданность';
+}
+
+function renderCard(id, value, sub, signal, barWidth) {
+  setText(`val-${id}`, value);
+  setText(`sub-${id}`, sub);
+
+  const signalMap = {
+    bullish:       { text: 'Рост',       cls: 'badge-bull', bar: 'bar-green'  },
+    bullish_cross: { text: 'Рост',       cls: 'badge-bull', bar: 'bar-green'  },
+    bearish:       { text: 'Падение',    cls: 'badge-bear', bar: 'bar-red'    },
+    bearish_cross: { text: 'Падение',    cls: 'badge-bear', bar: 'bar-red'    },
+    neutral:       { text: 'Нейтрально', cls: 'badge-neu',  bar: 'bar-orange' }
+  };
+  const s = signalMap[signal] || signalMap.neutral;
+
+  const badge = document.getElementById(`badge-${id}`);
+  if (badge) { badge.textContent = s.text; badge.className = `badge ${s.cls}`; }
+
+  const bar = document.getElementById(`bar-${id}`);
+  if (bar) {
+    bar.className = `bar-fill ${s.bar}`;
+    bar.style.width = clamp(barWidth ?? 50, 0, 100) + '%';
+  }
+}
+
+// ── Signal ──────────────────────────────────────────
+function renderSignal(sig) {
+  const card = document.getElementById('signalCard');
+  const typeEl = document.getElementById('signalType');
+  const scoreEl = document.getElementById('signalScore');
+
+  const signal = sig.signal || 'NO_SIGNAL';
+  const isBuy = signal === 'BUY';
+  const isSell = signal === 'SELL';
+
+  card.className = `signal-card ${isBuy ? 'buy' : isSell ? 'sell' : 'no'}`;
+  typeEl.className = `signal-type ${isBuy ? 'buy' : isSell ? 'sell' : 'no'}`;
+  typeEl.textContent = signal === 'BUY' ? 'BUY — ПОКУПКА' : signal === 'SELL' ? 'SELL — ПРОДАЖА' : 'НЕТ СИГНАЛА';
+  scoreEl.textContent = `Score: ${sig.score || 0} | ${sig.verdict || ''}`;
+
+  setText('signalEntry', sig.entry ? `$${sig.entry.toLocaleString()}` : '—');
+  setText('signalSL', sig.sl ? `$${sig.sl.toLocaleString()}` : '—');
+  setText('signalTP', sig.tp ? `$${sig.tp.toLocaleString()}` : '—');
+
+  const reasonsEl = document.getElementById('signalReasons');
+  if (sig.reasons && sig.reasons.length > 0) {
+    reasonsEl.innerHTML = '<ul>' + sig.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('') + '</ul>';
+  } else {
+    reasonsEl.innerHTML = '';
+  }
+}
+
+// ── Levels ──────────────────────────────────────────
+function renderLevelsData(levels) {
+  renderLevels(levels.resistance || [], 'resistance-list', false);
+  renderLevels(levels.support || [], 'support-list', true);
+}
+
+function renderLevels(items, containerId, isSupport) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const strCls = { strong: 'str-strong', medium: 'str-medium', weak: 'str-weak' };
+  const strRu = { strong: 'Сильный', medium: 'Средний', weak: 'Слабый' };
+
+  container.innerHTML = items.map(lvl => `
+    <div class="level-row">
+      <span class="${isSupport ? 'level-dot-g' : 'level-dot-r'}"></span>
+      <span class="level-price">$${Number(lvl.price || 0).toLocaleString(undefined, {minimumFractionDigits: 4, maximumFractionDigits: 4})}</span>
+      <span class="str-pill ${strCls[lvl.strength] || 'str-medium'}">${strRu[lvl.strength] || 'Средний'}</span>
+    </div>
+  `).join('') || '<div style="font-size:11px;color:#444;padding:4px 0;">Нет данных</div>';
+}
+
+// ── Verdict ─────────────────────────────────────────
+function renderVerdictFromSignal(signal, indicators) {
+  const verdictMain = document.getElementById('verdict-main');
+  const verdictConf = document.getElementById('verdict-conf');
+  const verdictRegime = document.getElementById('verdict-regime');
+  const verdictTrend = document.getElementById('verdict-trend');
+  const confBar = document.getElementById('conf-bar');
+
+  if (!signal || !verdictMain) return;
+
+  const conf = signal.confidence || 0;
+  const verdict = signal.verdict || '—';
+  const isBull = signal.signal === 'BUY';
+  const isBear = signal.signal === 'SELL';
+
+  verdictMain.textContent = verdict;
+  verdictMain.style.color = isBull ? '#a3e635' : isBear ? '#f87171' : '#facc15';
+  verdictConf.textContent = `Confidence: ${conf.toFixed(1)}%`;
+  confBar.style.width = clamp(conf, 0, 100) + '%';
+
+  setText('verdict-regime', signal.regime || '—');
+  setText('verdict-trend', indicators?.trend_is_strong ? 'Strong' : 'Weak');
+}
+
+// ── SMC ─────────────────────────────────────────────
+function renderSMC(structure, liquidity) {
+  const container = document.getElementById('smc-list');
+  if (!container) return;
+
+  const items = [];
+
+  // BOS
+  if (structure?.bos && structure.bos.type !== 'none') {
+    items.push({
+      iconCls: structure.bos.type === 'bullish' ? 'smc-icon-green' : 'smc-icon-red',
+      icon: structure.bos.type === 'bullish' ? '↗' : '↘',
+      name: 'Break of Structure',
+      desc: `${structure.bos.type} @ $${(structure.bos.level || 0).toLocaleString()}`,
+      badgeCls: structure.bos.type === 'bullish' ? 'smc-bull' : 'smc-target',
+      badge: structure.bos.type === 'bullish' ? '+Bull' : '-Bear'
+    });
+  }
+
+  // Order Blocks
+  if (liquidity?.order_blocks) {
+    liquidity.order_blocks.slice(0, 2).forEach(ob => {
+      items.push({
+        iconCls: 'smc-icon-blue', icon: '▣',
+        name: 'Order Block',
+        desc: `${ob.type} @ $${(ob.price || 0).toLocaleString()}`,
+        badgeCls: 'smc-support', badge: 'Поддержка'
+      });
+    });
+  }
+
+  // FVG
+  if (liquidity?.fvg) {
+    liquidity.fvg.slice(0, 1).forEach(f => {
+      items.push({
+        iconCls: 'smc-icon-yellow', icon: '═',
+        name: 'Fair Value Gap',
+        desc: `$${(f.bottom || 0).toLocaleString()} — $${(f.top || 0).toLocaleString()}`,
+        badgeCls: 'smc-magnet', badge: 'Магнит'
+      });
+    });
+  }
+
+  // Sweep
+  if (liquidity?.sweep?.detected) {
+    items.push({
+      iconCls: 'smc-icon-red', icon: '⚠',
+      name: 'Liquidity Sweep',
+      desc: `${liquidity.sweep.type} sweep detected`,
+      badgeCls: 'smc-target', badge: 'Цель'
+    });
+  }
+
+  // Trend
+  if (structure?.trend) {
+    items.push({
+      iconCls: structure.trend === 'bullish' ? 'smc-icon-green' : structure.trend === 'bearish' ? 'smc-icon-red' : 'smc-icon-yellow',
+      icon: '◈',
+      name: 'Market Trend',
+      desc: structure.trend,
+      badgeCls: structure.trend === 'bullish' ? 'smc-bull' : structure.trend === 'bearish' ? 'smc-target' : 'smc-magnet',
+      badge: structure.trend
+    });
+  }
+
+  container.innerHTML = items.map(it => `
+    <div class="smc-item">
+      <div class="smc-icon ${it.iconCls}">${it.icon}</div>
+      <div>
+        <div class="smc-name">${it.name}</div>
+        <div class="smc-desc">${it.desc}</div>
+      </div>
+      <span class="smc-badge ${it.badgeCls}">${it.badge}</span>
+    </div>
+  `).join('') || '<div style="font-size:11px;color:#444;padding:4px 0;">Нет данных SMC</div>';
+}
+
+// ── Chart ───────────────────────────────────────────
+function updatePriceChart(history) {
+  const canvas = document.getElementById('priceChart');
+  if (!canvas || !history || history.length === 0) return;
+
+  const labels = history.map((_, i) => `H${i + 1}`);
+  const prices = history.map(h => h.close);
+
+  if (!priceChart) {
+    const ctx = canvas.getContext('2d');
+    priceChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          data: prices,
+          borderColor: '#a3e635',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.4,
+          fill: true,
+          backgroundColor: (ctx) => {
+            const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 110);
+            g.addColorStop(0, 'rgba(163,230,53,0.15)');
+            g.addColorStop(1, 'rgba(163,230,53,0)');
+            return g;
+          }
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 200 },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: { label: c => '$' + c.raw.toLocaleString() },
+            backgroundColor: '#1a1a1a', titleColor: '#888',
+            bodyColor: '#e0e0e0', borderColor: '#2a2a2a', borderWidth: 1
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#555', font: { size: 9 } }, grid: { color: '#1a1a1a' } },
+          y: {
+            ticks: { color: '#555', font: { size: 9 }, callback: v => '$' + (v/1000).toFixed(1) + 'k' },
+            grid: { color: '#1e1e1e' }
+          }
+        }
+      }
+    });
+  } else {
+    priceChart.data.labels = labels;
+    priceChart.data.datasets[0].data = prices;
+    priceChart.update('none');
+  }
+}
+
+// ── Token picker ────────────────────────────────────
+document.getElementById('tokenBtn')?.addEventListener('click', () => {
+  const raw = document.getElementById('tokenInput')?.value.trim().toUpperCase();
+  if (raw) subscribeToToken(raw);
+});
+
+document.querySelectorAll('.qtok').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.qtok').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    subscribeToToken(btn.dataset.symbol);
+  });
+});
+
+function subscribeToToken(symbol) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'subscribe', symbol }));
+    showLoader(`Загрузка ${symbol}...`);
+    setTimeout(hideLoader, 2000);
+  }
+}
+
+// ── Utils ───────────────────────────────────────────
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value ?? '—';
+}
+
+function clamp(v, min, max) {
+  return Math.min(max, Math.max(min, v || 0));
+}
+
+function updateStatus(text) {
+  const el = document.getElementById('statusText');
+  if (el) el.textContent = text;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function showLoader(msg) {
+  let overlay = document.getElementById('loadingOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'loadingOverlay';
+    overlay.className = 'loading-overlay';
+    overlay.innerHTML = `<div class="spinner"></div><span id="loaderMsg"></span>`;
+    document.body.appendChild(overlay);
+  }
+  document.getElementById('loaderMsg').textContent = msg || 'Загрузка...';
+  overlay.classList.add('visible');
+}
+
+function hideLoader() {
+  document.getElementById('loadingOverlay')?.classList.remove('visible');
+}
+
+// ── Filters ─────────────────────────────────────────
+async function loadFilters() {
+  try {
+    const res = await fetch('/api/filters');
+    const data = await res.json();
+    renderFilters(data.filters || []);
+  } catch (err) {
+    console.error('Failed to load filters:', err);
+  }
+}
+
+function renderFilters(filters) {
+  const container = document.getElementById('filterList');
+  if (!container) return;
+
+  container.innerHTML = filters.map(f => `
+    <div class="filter-item">
+      <span class="filter-label">${escapeHtml(f.label)}</span>
+      <label class="filter-switch">
+        <input type="checkbox" data-filter-key="${f.key}" ${f.enabled ? 'checked' : ''} />
+        <span class="slider"></span>
+      </label>
+      <span class="state ${f.enabled ? 'on' : 'off'}">${f.enabled ? 'ON' : 'OFF'}</span>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('input[type="checkbox"]').forEach(input => {
+    input.addEventListener('change', (e) => {
+      const key = e.target.dataset.filterKey;
+      const enabled = e.target.checked;
+      toggleFilter(key, enabled, e.target);
+    });
+  });
+}
+
+async function toggleFilter(key, enabled, inputEl) {
+  const stateEl = inputEl.closest('.filter-item')?.querySelector('.state');
+  if (stateEl) {
+    stateEl.textContent = enabled ? 'ON' : 'OFF';
+    stateEl.className = `state ${enabled ? 'on' : 'off'}`;
+  }
+
+  try {
+    await fetch('/api/filters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, enabled }),
+    });
+  } catch (err) {
+    console.error('Failed to toggle filter:', err);
+    inputEl.checked = !enabled;
+    if (stateEl) {
+      stateEl.textContent = !enabled ? 'ON' : 'OFF';
+      stateEl.className = `state ${!enabled ? 'on' : 'off'}`;
+    }
+  }
+}
+
+// ── Start ──────────────────────────────────────────
+connect();
+loadFilters();

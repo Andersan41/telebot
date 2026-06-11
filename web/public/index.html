@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trading Signal Bot — Dashboard</title>
+  <link rel="stylesheet" href="/css/dashboard.css">
+</head>
+<body>
+  <div class="dash">
+    <!-- Header -->
+    <div class="header">
+      <span class="logo">Trading <span class="accent">Signal</span> Bot</span>
+      <span class="tagline">AI-АНАЛИЗ РЫНКА • MULTI-FACTOR • LIVE</span>
+    </div>
+    <div class="status-bar">
+      <span class="dot-live"></span>
+      <span id="statusText">Подключение...</span>
+    </div>
+
+    <!-- Token picker -->
+    <div class="token-search">
+      <input type="text" id="tokenInput" placeholder="Введите символ (BTC, ETH, SOL...)" />
+      <button id="tokenBtn">Анализировать</button>
+      <div class="quick-tokens">
+        <button class="qtok active" data-symbol="BTC">BTC</button>
+        <button class="qtok" data-symbol="ETH">ETH</button>
+        <button class="qtok" data-symbol="SOL">SOL</button>
+        <button class="qtok" data-symbol="BNB">BNB</button>
+        <button class="qtok" data-symbol="XRP">XRP</button>
+      </div>
+    </div>
+
+    <!-- Signal card -->
+    <div class="signal-card no" id="signalCard">
+      <div class="signal-header">
+        <span class="signal-type no" id="signalType">ОЖИДАНИЕ...</span>
+        <span id="signalScore" style="font-size:12px;color:#555;">Score: —</span>
+      </div>
+      <div class="signal-details">
+        <div class="signal-detail">
+          <div class="signal-detail-label">Вход</div>
+          <div class="signal-detail-value" id="signalEntry">—</div>
+        </div>
+        <div class="signal-detail">
+          <div class="signal-detail-label">Stop Loss</div>
+          <div class="signal-detail-value" id="signalSL">—</div>
+        </div>
+        <div class="signal-detail">
+          <div class="signal-detail-label">Take Profit</div>
+          <div class="signal-detail-value" id="signalTP">—</div>
+        </div>
+      </div>
+      <div class="signal-reasons" id="signalReasons"></div>
+    </div>
+
+    <!-- Indicators: 6 cards -->
+    <div class="grid-3">
+      <div class="card" id="card-rsi">
+        <div class="card-label">RSI <span class="badge" id="badge-rsi">—</span></div>
+        <div class="card-value" id="val-rsi">—</div>
+        <div class="card-sub" id="sub-rsi">Загрузка...</div>
+        <div class="bar-track"><div class="bar-fill" id="bar-rsi" style="width:0%"></div></div>
+      </div>
+      <div class="card" id="card-macd">
+        <div class="card-label">MACD <span class="badge" id="badge-macd">—</span></div>
+        <div class="card-value" id="val-macd">—</div>
+        <div class="card-sub" id="sub-macd">Загрузка...</div>
+        <div class="bar-track"><div class="bar-fill" id="bar-macd" style="width:0%"></div></div>
+      </div>
+      <div class="card" id="card-ema">
+        <div class="card-label">EMA <span class="badge" id="badge-ema">—</span></div>
+        <div class="card-value" id="val-ema">—</div>
+        <div class="card-sub" id="sub-ema">Загрузка...</div>
+        <div class="bar-track"><div class="bar-fill" id="bar-ema" style="width:0%"></div></div>
+      </div>
+      <div class="card" id="card-adx">
+        <div class="card-label">ADX <span class="badge" id="badge-adx">—</span></div>
+        <div class="card-value" id="val-adx">—</div>
+        <div class="card-sub" id="sub-adx">Загрузка...</div>
+        <div class="bar-track"><div class="bar-fill" id="bar-adx" style="width:0%"></div></div>
+      </div>
+      <div class="card" id="card-st">
+        <div class="card-label">Supertrend <span class="badge" id="badge-st">—</span></div>
+        <div class="card-value" id="val-st">—</div>
+        <div class="card-sub" id="sub-st">Загрузка...</div>
+        <div class="bar-track"><div class="bar-fill" id="bar-st" style="width:0%"></div></div>
+      </div>
+      <div class="card" id="card-vol">
+        <div class="card-label">Volume <span class="badge" id="badge-vol">—</span></div>
+        <div class="card-value" id="val-vol">—</div>
+        <div class="card-sub" id="sub-vol">Загрузка...</div>
+        <div class="bar-track"><div class="bar-fill" id="bar-vol" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <!-- Main row: Levels + Market Mind -->
+    <div class="main-row">
+      <div class="levels-col">
+        <div class="card levels-card" id="resistance-card">
+          <div class="levels-title resistance">Сопротивление</div>
+          <div id="resistance-list"></div>
+        </div>
+        <div class="card levels-card" id="support-card">
+          <div class="levels-title support">Поддержка</div>
+          <div id="support-list"></div>
+        </div>
+      </div>
+
+      <div class="card market-mind">
+        <div class="mm-header">
+          <div class="mm-icon">AI</div>
+          <div>
+            <div class="mm-title">Market Analysis</div>
+            <div class="mm-sub" id="mmSub">TA + Smart Money + Structure</div>
+          </div>
+        </div>
+
+        <!-- Verdict -->
+        <div class="verdict-row">
+          <div class="vcard">
+            <div class="vcard-label">Вердикт</div>
+            <div class="vcard-main" id="verdict-main">—</div>
+            <div class="vcard-sub" id="verdict-conf">Confidence: —</div>
+            <div class="bar-track"><div class="bar-fill" id="conf-bar" style="width:0%"></div></div>
+          </div>
+          <div class="vcard">
+            <div class="vcard-label">Режим</div>
+            <div class="vcard-main" id="verdict-regime" style="font-size:14px;">—</div>
+            <div class="vcard-sub">рыночный режим</div>
+          </div>
+          <div class="vcard">
+            <div class="vcard-label">Сила тренда</div>
+            <div class="vcard-main" id="verdict-trend" style="font-size:14px;">—</div>
+            <div class="vcard-sub">ADX / Supertrend</div>
+          </div>
+        </div>
+
+        <!-- Chart + SMC -->
+        <div class="bottom-row">
+          <div class="chart-col">
+            <div class="chart-label">Цена · 1H</div>
+            <canvas id="priceChart" role="img" aria-label="График цены"></canvas>
+          </div>
+          <div class="smc-col">
+            <div class="chart-label">Smart Money</div>
+            <div id="smc-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter toggles -->
+    <div class="filter-bar" id="filterBar">
+      <div class="filter-bar-label">Фильтры</div>
+      <div class="filter-bar-list" id="filterList"></div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
