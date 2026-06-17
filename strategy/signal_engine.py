@@ -236,20 +236,24 @@ class SignalEngine:
         # --- Leading triggers ---
         has_leading_trigger = False
         leading_reasons: List[str] = []
+        leading_trigger_direction: Optional[str] = None  # "bullish" / "bearish" from structured data
 
         if _structure_provided and structure and structure.last_bos:
             bos = structure.last_bos
             if bos.type == "bullish":
                 has_leading_trigger = True
+                leading_trigger_direction = "bullish"
                 leading_reasons.append(f"BOS бычий (leading trigger) уровень {bos.level}")
             elif bos.type == "bearish":
                 has_leading_trigger = True
+                leading_trigger_direction = "bearish"
                 leading_reasons.append(f"BOS медвежий (leading trigger) уровень {bos.level}")
 
         if sweeps:
             for sw in sweeps:
                 if getattr(sw, "is_valid", False):
                     has_leading_trigger = True
+                    leading_trigger_direction = sw.type
                     leading_reasons.append(f"Sweep {sw.type} (leading trigger) уровень {sw.swept_level}")
                     break
 
@@ -258,9 +262,11 @@ class SignalEngine:
             delta = ind.volume_delta_pct
             if delta > cfg.delta_bullish:
                 has_leading_trigger = True
+                leading_trigger_direction = "bullish"
                 leading_reasons.append(f"Delta: +{delta:.0f}% (покупки доминируют, leading trigger)")
             elif delta < cfg.delta_bearish:
                 has_leading_trigger = True
+                leading_trigger_direction = "bearish"
                 leading_reasons.append(f"Delta: {delta:.0f}% (продажи доминируют, leading trigger)")
 
         # FIX P2: предварительное direction для OB confirmation (до основного определения direction)
@@ -309,13 +315,18 @@ class SignalEngine:
         # --- Determine direction (before trigger gate, for factor strengths) ---
         direction = None
         if has_leading_trigger:
-            for r in leading_reasons:
-                if "бычий" in r.lower() or "покупки" in r.lower():
-                    direction = "buy"
-                    break
-                elif "медвежий" in r.lower() or "продажи" in r.lower():
-                    direction = "sell"
-                    break
+            # Prefer structured direction from the trigger object (reliable)
+            if leading_trigger_direction:
+                direction = "buy" if leading_trigger_direction == "bullish" else "sell"
+            else:
+                # Fallback: parse reason text (legacy BOS/delta reasons in Russian)
+                for r in leading_reasons:
+                    if "бычий" in r.lower() or "покупки" in r.lower():
+                        direction = "buy"
+                        break
+                    elif "медвежий" in r.lower() or "продажи" in r.lower():
+                        direction = "sell"
+                        break
         if direction is None:
             if ema_cross_type == "bullish" or macd_cross_type == "bullish":
                 direction = "buy"
@@ -361,7 +372,7 @@ class SignalEngine:
                         has_strong_trigger = True
                         break
 
-            vol_strong = ind.volume > ind.volume_sma * 2.0
+            vol_strong = ind.volume > ind.volume_sma * cfg.compression_volume_factor
             supertrend_ok = (
                 (direction == "buy" and ind.supertrend_direction == 1)
                 or (direction == "sell" and ind.supertrend_direction == -1)
@@ -642,7 +653,7 @@ class SignalEngine:
             signal=signal_type,
             symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
             sl=sl, tp=tp, reasons=reasons, score=score,
-            entry_price=sl if signal_type == SignalType.BUY else tp,
+            entry_price=ind.close,
             _factor_strengths=factor_strengths, _weighted_score=weighted_score,
             _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
             _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
@@ -772,19 +783,20 @@ def _strength_rsi(ind: IndicatorValues, direction: str) -> float:
 
 
 def _strength_volume(ind: IndicatorValues, direction: str) -> float:
+    """Score volume strength. Simplified normalization for consistency."""
     vol_above = ind.volume > ind.volume_sma * config.trading.volume_factor
     if not vol_above:
         return -0.3
+    vol_ratio = ind.volume / ind.volume_sma if ind.volume_sma > 0 else 1.0
     if ind.volume_delta_pct is not None:
         delta = ind.volume_delta_pct
-        vol_ratio = ind.volume / ind.volume_sma if ind.volume_sma > 0 else 1.0
-        if delta > config.trading.delta_bullish:
-            s = min(1.0, 0.3 + 0.5 * (vol_ratio - 1.0) + 0.2 * (delta / config.trading.volume_delta_norm))
-            return s if direction == "buy" else -s * 0.5
-        elif delta < config.trading.delta_bearish:
-            s = min(1.0, 0.3 + 0.5 * (vol_ratio - 1.0) + 0.2 * (abs(delta) / config.trading.volume_delta_norm))
-            return s if direction == "sell" else -s * 0.5
-    return 0.3
+        # Direct delta-based strength: stronger delta = stronger signal
+        delta_factor = min(1.0, abs(delta) / 30.0)  # 30% delta = max strength
+        # Combine volume ratio and delta factor
+        s = min(1.0, 0.3 + 0.4 * (vol_ratio - 1.0) + 0.3 * delta_factor)
+        return s if ((direction == "buy" and delta > 0) or (direction == "sell" and delta < 0)) else -s * 0.5
+    # No delta data — use volume ratio only
+    return min(1.0, 0.3 + 0.4 * (vol_ratio - 1.0))
 
 
 def _strength_adx(ind: IndicatorValues) -> float:
