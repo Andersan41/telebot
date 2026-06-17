@@ -19,6 +19,30 @@ class ExchangeClient:
         self._markets_loaded = False
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._available_symbols: set[str] = set()
+        # Маппинг: bot symbol (BTC/USDT) -> ccxt unified symbol (BTC/USDT:USDT)
+        self._symbol_map: dict[str, str] = {}
+
+    def _build_symbol_map(self):
+        """Строим маппинг bot symbol -> ccxt symbol для swap рынков.
+
+        BingX swap markets используют формат BTC/USDT:USDT (с settle currency),
+        а бот работает с BTC/USDT. Маппинг нужен для прозрачной конвертации.
+        """
+        self._symbol_map = {}
+        if config.exchange.market_type != "swap":
+            return
+        for sym, m in self._exchange.markets.items():
+            if m.get("swap") and m.get("active", True):
+                # BTC/USDT:USDT -> ищем matching bot symbol "BTC/USDT"
+                bot_sym = sym.split(":")[0]
+                if bot_sym not in self._symbol_map:
+                    self._symbol_map[bot_sym] = sym
+        if self._symbol_map:
+            logger.info(f"Symbol map: {len(self._symbol_map)} swap pairs mapped")
+
+    def _resolve_symbol(self, symbol: str) -> str:
+        """Конвертируем bot symbol в ccxt symbol (если есть маппинг)."""
+        return self._symbol_map.get(symbol, symbol)
 
     async def connect(self):
         """Создаём подключение к бирже (sync exchange для Windows compatibility)"""
@@ -48,6 +72,7 @@ class ExchangeClient:
                     if m.get("active", True) and m.get(config.exchange.market_type, False):
                         active.add(sym)
                 self._available_symbols = active
+                self._build_symbol_map()
                 break
             except Exception as e:
                 if attempt < max_retries:
@@ -85,6 +110,7 @@ class ExchangeClient:
                     if m.get("active", True) and m.get(config.exchange.market_type, False):
                         active.add(sym)
                 self._available_symbols = active
+                self._build_symbol_map()
                 logger.info(
                     f"Markets reloaded: {len(self._exchange.markets)} loaded, "
                     f"{len(active)} active {config.exchange.market_type} symbols"
@@ -106,16 +132,18 @@ class ExchangeClient:
         RateLimitExceeded/DDoSProtection получают больше попыток.
         BadSymbol/BadRequest не ретраятся.
         """
-        if symbol not in self._available_symbols:
+        ccxt_symbol = self._resolve_symbol(symbol)
+        if ccxt_symbol not in self._available_symbols:
             logger.warning(
-                f"Symbol {symbol} not available on {config.exchange.market_type}, skipping"
+                f"Symbol {symbol} (ccxt: {ccxt_symbol}) not available on "
+                f"{config.exchange.market_type}, skipping"
             )
             return None
 
         last_error = None
         for attempt in range(max_retries):
             try:
-                return self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                return self._exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
             except (ccxt_sync.BadSymbol, ccxt_sync.BadRequest) as e:
                 logger.warning(
                     f"Invalid symbol/request for {symbol} {timeframe}: {e}"
@@ -167,8 +195,14 @@ class ExchangeClient:
         timeframe: str,
         limit: int = 200,
     ) -> Optional[list]:
-        """Fetch taker buy base asset volume from Binance futures API."""
-        if config.exchange.market_type != "future":
+        """Fetch taker buy base asset volume.
+
+        Binance-specific: uses fapiPublicGetKlines index 9.
+        BingX и другие биржи не поддерживают этот эндпоинт — возвращаем None.
+        """
+        if config.exchange.name != "binance":
+            return None
+        if config.exchange.market_type not in ("future", "swap"):
             return None
 
         try:

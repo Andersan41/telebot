@@ -148,110 +148,131 @@ class ContextFetcher:
             logger.warning(f"Error fetching CoinGecko trending: {e}")
             return []
 
-    # --- 4. Binance Funding Rate ---
+    # --- 4. Funding Rate ---
 
     async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
-        """Binance USDT-margined futures funding rate via direct HTTP.
-
-        ccxt-spot не поддерживает futures funding, а futures-инстанс отдельно
-        не создаётся — берём публичный premiumIndex с fapi.binance.com тем же
-        способом, что и open interest / long-short ratio.
-        """
+        """Funding rate через ccxt unified API (поддерживает Binance, BingX, Bybit)."""
         try:
-            session = await self._get_session()
-            binance_symbol = symbol.replace("/", "")
-            url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={binance_symbol}"
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Funding rate API returned status {resp.status} for {symbol}")
-                    return None
-                data = await resp.json()
-                if "lastFundingRate" not in data:
-                    return None
-                result = float(data["lastFundingRate"])
+            from data.exchange_client import exchange_client
+            if not exchange_client._exchange:
+                return None
+            exchange = exchange_client._exchange
+
+            if not exchange.has.get("fetchFundingRate"):
+                logger.debug(f"fetchFundingRate not supported by {config.exchange.name}")
+                return None
+
+            ccxt_symbol = exchange_client._resolve_symbol(symbol)
+            funding = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: exchange.fetch_funding_rate(ccxt_symbol)
+            )
+            if funding and funding.get("fundingRate") is not None:
+                result = float(funding["fundingRate"])
                 logger.debug(f"Funding rate {symbol}: {result:.6f}")
                 return result
+            return None
         except Exception as e:
             logger.warning(f"Error fetching funding rate for {symbol}: {e}")
             return None
 
-    # --- 5. Binance Open Interest ---
+    # --- 5. Open Interest ---
 
     async def fetch_open_interest(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Binance Open Interest via direct HTTP.
+        """Open Interest через ccxt unified API.
 
         Возвращает текущее абсолютное значение и % изменение относительно
-        предыдущего вызова для того же символа. При первом вызове для символа
-        предыдущее значение подтягивается из исторического эндпоинта Binance,
-        чтобы delta уже на первом скане была осмысленной.
+        предыдущего вызова для того же символа.
         """
         try:
-            session = await self._get_session()
-            binance_symbol = symbol.replace("/", "")
-            url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={binance_symbol}"
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Open Interest API returned status {resp.status}")
-                    return None
-                data = await resp.json()
-                # Warm-up: при первом запросе для символа подтянем предыдущее значение
-                # из исторического эндпоинта, чтобы delta уже на первом скане была осмысленной.
-                if symbol not in self._last_oi:
-                    try:
-                        hist_url = (
-                            f"https://fapi.binance.com/futures/data/openInterestHist"
-                            f"?symbol={binance_symbol}&period=5m&limit=2"
+            from data.exchange_client import exchange_client
+            if not exchange_client._exchange:
+                return None
+            exchange = exchange_client._exchange
+
+            if not exchange.has.get("fetchOpenInterest"):
+                logger.debug(f"fetchOpenInterest not supported by {config.exchange.name}")
+                return None
+
+            ccxt_symbol = exchange_client._resolve_symbol(symbol)
+            oi_data = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: exchange.fetch_open_interest(ccxt_symbol)
+            )
+            if oi_data:
+                current = float(
+                    oi_data.get("openInterestAmount")
+                    or oi_data.get("openInterestValue")
+                    or oi_data.get("info", {}).get("openInterest", 0)
+                    or 0
+                )
+
+            # Warm-up: при первом запросе для символа подтянем предыдущее значение
+            # из historиical эндпоинта, чтобы delta уже на первом скане была осмысленной.
+            if symbol not in self._last_oi:
+                try:
+                    if exchange.has.get("fetchOpenInterestHistory"):
+                        hist = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: exchange.fetch_open_interest_history(
+                                ccxt_symbol, timeframe="5m", limit=2
+                            )
                         )
-                        async with session.get(hist_url) as hist_resp:
-                            if hist_resp.status == 200:
-                                hist = await hist_resp.json()
-                                if isinstance(hist, list) and len(hist) >= 2:
-                                    self._last_oi[symbol] = float(hist[-2]["sumOpenInterest"])
-                                    logger.debug(f"OI warm-up {symbol}: prev={self._last_oi[symbol]}")
-                    except Exception as e:
-                        logger.warning(f"OI warm-up failed for {symbol}: {e}")
-                current = float(data.get("openInterest", 0))
-                previous = self._last_oi.get(symbol)
-                if previous and previous > 0:
-                    delta_pct = (current - previous) / previous * 100.0
-                else:
-                    delta_pct = 0.0
-                self._last_oi[symbol] = current
-                result = {
-                    "open_interest": current,
-                    "open_interest_delta": delta_pct,
-                    "is_warmup": previous is None or previous == 0,
-                    "timestamp": datetime.fromtimestamp(
-                        data.get("time", 0) / 1000, tz=timezone.utc
-                    ),
-                }
-                logger.debug(f"OI {symbol}: {current} (Δ {delta_pct:+.2f}%)")
-                return result
+                        if isinstance(hist, list) and len(hist) >= 2:
+                            prev_oi = hist[-2].get("openInterestAmount") or hist[-2].get("openInterest", 0)
+                            if prev_oi:
+                                self._last_oi[symbol] = float(prev_oi)
+                                logger.debug(f"OI warm-up {symbol}: prev={self._last_oi[symbol]}")
+                except Exception as e:
+                    logger.warning(f"OI warm-up failed for {symbol}: {e}")
+
+            previous = self._last_oi.get(symbol)
+            if previous and previous > 0:
+                delta_pct = (current - previous) / previous * 100.0
+            else:
+                delta_pct = 0.0
+            self._last_oi[symbol] = current
+            result = {
+                "open_interest": current,
+                "open_interest_delta": delta_pct,
+                "is_warmup": previous is None or previous == 0,
+                "timestamp": datetime.now(timezone.utc),
+            }
+            logger.debug(f"OI {symbol}: {current} (Δ {delta_pct:+.2f}%)")
+            return result
         except Exception as e:
             logger.warning(f"Error fetching OI for {symbol}: {e}")
             return None
 
-    # --- 6. Binance Long/Short Ratio ---
+    # --- 6. Long/Short Ratio ---
 
     async def fetch_long_short_ratio(self, symbol: str) -> Optional[float]:
-        """Binance global Long/Short Account Ratio."""
+        """Long/Short Account Ratio.
+
+        BingX: эндпоинт topLongShortRatio был удалён из API — возвращаем None.
+        Binance: прямой HTTP к fapi.binance.com/futures/data/globalLongShortAccountRatio
+        """
         try:
             session = await self._get_session()
-            binance_symbol = symbol.replace("/", "")
-            url = (
-                f"https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
-                f"?symbol={binance_symbol}&period=1h&limit=1"
-            )
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Long/Short Ratio API returned status {resp.status}")
-                    return None
-                data = await resp.json()
-                if data:
-                    ratio = float(data[0].get("longShortRatio", 0))
-                    logger.debug(f"Long/Short ratio {symbol}: {ratio}")
-                    return ratio
+            exchange_name = config.exchange.name
+
+            if exchange_name == "bingx":
+                # BingX deprecated this endpoint — no data available
                 return None
+            else:
+                # Binance fallback
+                binance_symbol = symbol.replace("/", "")
+                url = (
+                    f"https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
+                    f"?symbol={binance_symbol}&period=1h&limit=1"
+                )
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Long/Short Ratio API returned status {resp.status}")
+                        return None
+                    data = await resp.json()
+                    if data:
+                        ratio = float(data[0].get("longShortRatio", 0))
+                        logger.debug(f"Long/Short ratio {symbol}: {ratio}")
+                        return ratio
+                    return None
         except Exception as e:
             logger.warning(f"Error fetching long/short ratio for {symbol}: {e}")
             return None

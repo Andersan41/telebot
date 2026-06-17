@@ -38,11 +38,11 @@ class TestTelegramConfig:
 class TestExchangeConfig:
     def test_reads_from_env(self):
         cfg = ExchangeConfig()
-        assert cfg.name == "binance"
+        assert cfg.name in ("binance", "bingx")
         assert len(cfg.api_key) > 0
         assert len(cfg.api_secret) > 0
         assert cfg.testnet is False
-        assert cfg.market_type == "spot"
+        assert cfg.market_type in ("spot", "swap", "future")
 
     def test_market_type_from_env(self, monkeypatch):
         monkeypatch.setenv("MARKET_TYPE", "future")
@@ -128,8 +128,6 @@ class TestEnvFile:
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_CHANNEL_ID",
         "EXCHANGE",
-        "BINANCE_API_KEY",
-        "BINANCE_API_SECRET",
         "MARKET_TYPE",
         "SYMBOLS",
         "PRIMARY_TIMEFRAMES",

@@ -16,6 +16,8 @@ def client():
     return ExchangeClient()
 
 
+import ccxt as ccxt_real
+
 @pytest.fixture
 def mock_ccxt():
     with patch("data.exchange_client.ccxt_sync") as mock:
@@ -24,11 +26,19 @@ def mock_ccxt():
         mock_exchange.close = MagicMock()
         mock_exchange.load_markets = MagicMock()
         mock_exchange.load_markets.return_value = {"BTC/USDT": {"id": "BTCUSDT"}, "ETH/USDT": {"id": "ETHUSDT"}}
-        mock_exchange.markets = {"BTC/USDT": {}, "ETH/USDT": {}}
+        mock_exchange.markets = {
+            "BTC/USDT": {"spot": True, "swap": True, "future": True, "active": True},
+            "ETH/USDT": {"spot": True, "swap": True, "future": True, "active": True},
+        }
         mock_class = MagicMock(return_value=mock_exchange)
         setattr(mock, "binance", mock_class)
-        mock.NetworkError = Exception
-        mock.ExchangeError = Exception
+        setattr(mock, "bingx", mock_class)
+        mock.BadSymbol = ccxt_real.BadSymbol
+        mock.BadRequest = ccxt_real.BadRequest
+        mock.RateLimitExceeded = ccxt_real.RateLimitExceeded
+        mock.DDoSProtection = ccxt_real.DDoSProtection
+        mock.NetworkError = ccxt_real.NetworkError
+        mock.ExchangeError = ccxt_real.ExchangeError
         yield mock, mock_exchange
 
 
@@ -43,7 +53,9 @@ class TestExchangeClient:
     async def test_connect_creates_exchange(self, client, mock_ccxt):
         mock, _ = mock_ccxt
         await client.connect()
-        mock.binance.assert_called_once()
+        # Exchange name comes from config (.env) — could be binance or bingx
+        exchange_name = config.exchange.name
+        getattr(mock, exchange_name).assert_called_once()
 
     @pytest.mark.asyncio
     async def test_fetch_ohlcv_returns_dataframe(self, client, mock_ccxt):
@@ -101,18 +113,21 @@ class TestExchangeClient:
         assert isinstance(exchange_client, ExchangeClient)
 
     @pytest.mark.asyncio
-    async def test_connect_passes_defaultType_from_config(self, client, mock_ccxt):
+    async def test_connect_passes_defaultType_from_config(self, client, mock_ccxt, monkeypatch):
+        monkeypatch.setattr(config.exchange, "market_type", "swap")
         mock, _ = mock_ccxt
         await client.connect()
-        call_kwargs = mock.binance.call_args[0][0]
-        assert call_kwargs["options"]["defaultType"] == "spot"
+        exchange_name = config.exchange.name
+        call_kwargs = getattr(mock, exchange_name).call_args[0][0]
+        assert call_kwargs["options"]["defaultType"] == "swap"
 
     @pytest.mark.asyncio
     async def test_connect_defaultType_future(self, client, mock_ccxt, monkeypatch):
         monkeypatch.setattr(config.exchange, "market_type", "future")
         mock, _ = mock_ccxt
         await client.connect()
-        call_kwargs = mock.binance.call_args[0][0]
+        exchange_name = config.exchange.name
+        call_kwargs = getattr(mock, exchange_name).call_args[0][0]
         assert call_kwargs["options"]["defaultType"] == "future"
 
     @pytest.mark.asyncio

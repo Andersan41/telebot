@@ -25,10 +25,14 @@ from config.settings import config
 from backtest.engine import BacktestEngine, BacktestResult
 
 
-async def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 500) -> pd.DataFrame:
+async def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 500) -> pd.DataFrame | None:
     """Fetch OHLCV data from exchange."""
     from data.exchange_client import exchange_client
-    return await exchange_client.fetch_ohlcv(symbol, timeframe, limit=limit)
+    await exchange_client.connect()
+    try:
+        return await exchange_client.fetch_ohlcv(symbol, timeframe, limit=limit)
+    finally:
+        await exchange_client.close()
 
 
 def run_backtest(df: pd.DataFrame, symbol: str, timeframe: str, ema_trend: int) -> BacktestResult:
@@ -151,8 +155,13 @@ def print_comparison(r50: BacktestResult, r200: BacktestResult):
 
 
 async def main():
-    symbol = sys.argv[1] if len(sys.argv) > 1 else "BTC/USDT"
-    timeframe = sys.argv[2] if len(sys.argv) > 2 else "1h"
+    raw_symbol = sys.argv[1] if len(sys.argv) > 1 else "BTC/USDT"
+    timeframe = (sys.argv[2] if len(sys.argv) > 2 else "1h").lower()
+    symbol = raw_symbol.upper()
+    if "/" not in symbol and symbol.endswith("USDT"):
+        symbol = symbol[:-4] + "/USDT"
+    elif "/" not in symbol:
+        symbol = symbol + "/USDT"
 
     print(f"Fetching {symbol} {timeframe} OHLCV...")
     df = await fetch_ohlcv(symbol, timeframe, limit=500)

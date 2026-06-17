@@ -52,6 +52,7 @@ from bot.handlers import register_handlers
 from bot.notifier import send_signal, send_error_alert
 from scheduler.tasks import TaskScheduler
 from context.fetcher import context_fetcher
+from web.server import start_web_server
 
 
 async def main():
@@ -74,6 +75,14 @@ async def main():
 
     # Подключаемся к бирже
     await exchange_client.connect()
+
+    # Запускаем веб-сервер (дашборд)
+    web_runner = None
+    if config.web.enabled:
+        try:
+            web_runner = await start_web_server()
+        except Exception as e:
+            logger.warning(f"Web server failed to start: {e}")
 
     # Создаём Telegram Application с устойчивой к сетевым ошибкам конфигурацией
     from telegram.request import HTTPXRequest
@@ -113,6 +122,8 @@ async def main():
     logger.info(f"  Timeframes: {', '.join(config.trading.primary_timeframes)}")
     logger.info(f"  Confirmation TF: {config.trading.confirm_timeframe}")
     logger.info(f"  Channel: {config.telegram.channel_id}")
+    if config.web.enabled:
+        logger.info(f"  Web Dashboard: http://{config.web.host}:{config.web.port}")
 
     # F1: запустить фоновый трекинг outcome'ов
     from scheduler.outcome_tracker import outcome_tracker_loop
@@ -141,6 +152,8 @@ async def main():
         scheduler.stop()
         await exchange_client.close()
         await context_fetcher.close()
+        if web_runner:
+            await web_runner.cleanup()
         if app.updater and app.updater.running:
             await app.updater.stop()
         if app.running:

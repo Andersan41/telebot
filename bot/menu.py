@@ -740,7 +740,8 @@ async def _do_full_analysis(symbol: str) -> str:
             text += format_context_block(context_verdict)
 
         # --- Добавляем ссылку на TradingView ---
-        chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{ind.symbol.replace('/', '')}"
+        tv_exchange = config.exchange.name.upper()
+        chart_url = f"https://www.tradingview.com/chart/?symbol={tv_exchange}:{ind.symbol.replace('/', '')}"
         text += f"\n\n📈 <a href='{chart_url}'>Открыть график</a>"
 
         logger.debug(f"Do_full_analysis output for {symbol}:\n{text}")
@@ -869,7 +870,8 @@ async def _indicator_view(symbol: str) -> str:
 
         text = result.format_message()
 
-        chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{ind.symbol.replace('/', '')}"
+        tv_exchange = config.exchange.name.upper()
+        chart_url = f"https://www.tradingview.com/chart/?symbol={tv_exchange}:{ind.symbol.replace('/', '')}"
         text += f"\n\n📈 <a href='{chart_url}'>Открыть график</a>"
 
         return text

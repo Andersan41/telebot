@@ -325,10 +325,18 @@ FILTER_LABELS: dict[str, str] = {
 }
 
 
+_HIDDEN_FILTERS: set[str] = {"ema_slope", "macd_slope", "tp_path"}
+
+
 async def api_filters_get(request):
-    """GET /api/filters — вернуть текущее состояние всех фильтров."""
+    """GET /api/filters — вернуть текущее состояние всех фильтров.
+
+    Скрытые (отключённые по умолчанию) фильтры не отдаются в UI.
+    """
     filters = []
     for key, (attr_path, _) in FILTER_TOGGLE_KEYS.items():
+        if key in _HIDDEN_FILTERS:
+            continue
         try:
             current = _get_nested_config(config, attr_path)
         except AttributeError:

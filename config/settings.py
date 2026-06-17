@@ -32,16 +32,16 @@ class TelegramConfig:
 class ExchangeConfig:
     """Параметры подключения к бирже."""
 
-    # Название биржи (по умолчанию binance)
-    name: str = os.getenv("EXCHANGE", "binance")
-    # API-ключ биржи
-    api_key: str = os.getenv("BINANCE_API_KEY", "")
+    # Название биржи (по умолчанию bingx)
+    name: str = os.getenv("EXCHANGE", "bingx")
+    # API-ключ биржи (читаем из универсального EXCHANGE_API_KEY или бирже-специфичного)
+    api_key: str = os.getenv("EXCHANGE_API_KEY", "") or os.getenv("BINANCE_API_KEY", "")
     # API-секрет биржи
-    api_secret: str = os.getenv("BINANCE_API_SECRET", "")
+    api_secret: str = os.getenv("EXCHANGE_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")
     # Использовать ли тестнет
     testnet: bool = os.getenv("USE_TESTNET", "false").lower() == "true"
-    # Тип рынка: spot или future
-    market_type: str = os.getenv("MARKET_TYPE", "spot")
+    # Тип рынка: spot / future / swap (swap = perpetual futures для BingX/Bybit)
+    market_type: str = os.getenv("MARKET_TYPE", "swap")
 
 
 @dataclass

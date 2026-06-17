@@ -118,7 +118,7 @@ class TestContextScorer:
     def test_weak_buy(self, scorer):
         snap = make_snapshot(
             fear_greed_value=50,
-            funding_rate=0.001,
+            funding_rate=0.00005,
         )
         verdict = scorer.score("BUY", snap)
         assert verdict.verdict in ("WEAK", "CONFIRMED", "CONFLICTED")
@@ -126,7 +126,7 @@ class TestContextScorer:
     def test_conflicted_buy(self, scorer):
         snap = make_snapshot(
             fear_greed_value=50,
-            funding_rate=0.001,
+            funding_rate=0.00005,
             news_sentiment_score=-0.05,
         )
         verdict = scorer.score("BUY", snap)
@@ -238,13 +238,13 @@ class TestContextScorer:
         assert any("OI" in o for o in verdict.opposing)
 
     def test_oi_delta_small_buy(self, scorer):
-        snap = make_snapshot(open_interest_delta=1.0)
-        score = scorer._score_oi(1.0, "BUY")
+        snap = make_snapshot(open_interest_delta=0.3)
+        score = scorer._score_oi(0.3, "BUY")
         assert score == 0.2
 
     def test_oi_delta_small_sell(self, scorer):
-        snap = make_snapshot(open_interest_delta=-1.0)
-        score = scorer._score_oi(-1.0, "SELL")
+        snap = make_snapshot(open_interest_delta=-0.3)
+        score = scorer._score_oi(-0.3, "SELL")
         assert score == 0.2
 
     def test_oi_delta_strong_buy(self, scorer):
@@ -373,19 +373,12 @@ class TestContextFetcher:
 
     @pytest.mark.asyncio
     async def test_fetch_long_short_ratio_success(self, fetcher, aioresponses):
-        aioresponses.get(
-            "https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=1",
-            payload=[{"longShortRatio": "0.68"}],
-        )
+        # BingX deprecated this endpoint — returns None gracefully
         result = await fetcher.fetch_long_short_ratio("BTC/USDT")
-        assert result == 0.68
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_fetch_long_short_ratio_error(self, fetcher, aioresponses):
-        aioresponses.get(
-            "https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=1",
-            status=500,
-        )
         result = await fetcher.fetch_long_short_ratio("BTC/USDT")
         assert result is None
 
@@ -473,19 +466,16 @@ class TestContextFetcher:
 
     @pytest.mark.asyncio
     async def test_oi_warmup_uses_historical(self, fetcher, aioresponses):
-        aioresponses.get(
-            "https://fapi.binance.com/futures/data/openInterestHist"
-            "?symbol=BTCUSDT&period=5m&limit=2",
-            payload=[
-                {"symbol": "BTCUSDT", "sumOpenInterest": "100.0", "timestamp": 1},
-                {"symbol": "BTCUSDT", "sumOpenInterest": "120.0", "timestamp": 2},
-            ],
-        )
-        aioresponses.get(
-            "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT",
-            payload={"openInterest": "110.0", "symbol": "BTCUSDT", "time": 3000},
-        )
-        result = await fetcher.fetch_open_interest("BTC/USDT")
+        mock_exchange = MagicMock()
+        mock_exchange.has = {"fetchOpenInterest": True, "fetchOpenInterestHistory": True}
+        mock_exchange.fetch_open_interest.return_value = {"openInterestAmount": 110.0}
+        mock_exchange.fetch_open_interest_history.return_value = [
+            {"openInterestAmount": 100.0},
+            {"openInterestAmount": 120.0},
+        ]
+        with patch("data.exchange_client.exchange_client") as mock_ec:
+            mock_ec._exchange = mock_exchange
+            result = await fetcher.fetch_open_interest("BTC/USDT")
         await fetcher.close()
         assert result is not None
         assert result["open_interest"] == 110.0
@@ -493,20 +483,20 @@ class TestContextFetcher:
 
     @pytest.mark.asyncio
     async def test_oi_delta_between_calls(self, fetcher, aioresponses):
-        hist_url = (
-            "https://fapi.binance.com/futures/data/openInterestHist"
-            "?symbol=BTCUSDT&period=5m&limit=2"
-        )
-        oi_url = "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
-        aioresponses.get(hist_url, payload=[
-            {"sumOpenInterest": "100.0", "timestamp": 1},
-            {"sumOpenInterest": "100.0", "timestamp": 2},
-        ])
-        aioresponses.get(oi_url, payload={"openInterest": "100.0", "time": 1000})
-        aioresponses.get(oi_url, payload={"openInterest": "120.0", "time": 2000})
-
-        first = await fetcher.fetch_open_interest("BTC/USDT")
-        second = await fetcher.fetch_open_interest("BTC/USDT")
+        mock_exchange = MagicMock()
+        mock_exchange.has = {"fetchOpenInterest": True, "fetchOpenInterestHistory": True}
+        mock_exchange.fetch_open_interest.side_effect = [
+            {"openInterestAmount": 100.0},
+            {"openInterestAmount": 120.0},
+        ]
+        mock_exchange.fetch_open_interest_history.return_value = [
+            {"openInterestAmount": 100.0},
+            {"openInterestAmount": 100.0},
+        ]
+        with patch("data.exchange_client.exchange_client") as mock_ec:
+            mock_ec._exchange = mock_exchange
+            first = await fetcher.fetch_open_interest("BTC/USDT")
+            second = await fetcher.fetch_open_interest("BTC/USDT")
         await fetcher.close()
 
         assert first["open_interest"] == 100.0
@@ -515,24 +505,24 @@ class TestContextFetcher:
 
     @pytest.mark.asyncio
     async def test_funding_rate_parses_negative(self, fetcher, aioresponses):
-        url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
-        aioresponses.get(url, payload={"lastFundingRate": "-0.0042"})
-        result = await fetcher.fetch_funding_rate("BTC/USDT")
+        mock_exchange = MagicMock()
+        mock_exchange.has = {"fetchFundingRate": True}
+        mock_exchange.fetch_funding_rate.return_value = {"fundingRate": -0.0042}
+        with patch("data.exchange_client.exchange_client") as mock_ec:
+            mock_ec._exchange = mock_exchange
+            result = await fetcher.fetch_funding_rate("BTC/USDT")
         await fetcher.close()
         assert result == pytest.approx(-0.0042)
 
     @pytest.mark.asyncio
     async def test_oi_warmup_flag_set_on_first_call_no_history(self, fetcher, aioresponses):
-        aioresponses.get(
-            "https://fapi.binance.com/futures/data/openInterestHist"
-            "?symbol=BTCUSDT&period=5m&limit=2",
-            status=500,
-        )
-        aioresponses.get(
-            "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT",
-            payload={"openInterest": "110.0", "symbol": "BTCUSDT", "time": 3000},
-        )
-        result = await fetcher.fetch_open_interest("BTC/USDT")
+        mock_exchange = MagicMock()
+        mock_exchange.has = {"fetchOpenInterest": True, "fetchOpenInterestHistory": True}
+        mock_exchange.fetch_open_interest.return_value = {"openInterestAmount": 110.0}
+        mock_exchange.fetch_open_interest_history.side_effect = Exception("API error")
+        with patch("data.exchange_client.exchange_client") as mock_ec:
+            mock_ec._exchange = mock_exchange
+            result = await fetcher.fetch_open_interest("BTC/USDT")
         await fetcher.close()
         assert result is not None
         assert result["is_warmup"] is True
@@ -540,20 +530,20 @@ class TestContextFetcher:
 
     @pytest.mark.asyncio
     async def test_oi_warmup_flag_false_on_second_call(self, fetcher, aioresponses):
-        hist_url = (
-            "https://fapi.binance.com/futures/data/openInterestHist"
-            "?symbol=BTCUSDT&period=5m&limit=2"
-        )
-        oi_url = "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
-        aioresponses.get(hist_url, payload=[
-            {"sumOpenInterest": "100.0", "timestamp": 1},
-            {"sumOpenInterest": "100.0", "timestamp": 2},
-        ])
-        aioresponses.get(oi_url, payload={"openInterest": "100.0", "time": 1000})
-        aioresponses.get(oi_url, payload={"openInterest": "120.0", "time": 2000})
-
-        first = await fetcher.fetch_open_interest("BTC/USDT")
-        second = await fetcher.fetch_open_interest("BTC/USDT")
+        mock_exchange = MagicMock()
+        mock_exchange.has = {"fetchOpenInterest": True, "fetchOpenInterestHistory": True}
+        mock_exchange.fetch_open_interest.side_effect = [
+            {"openInterestAmount": 100.0},
+            {"openInterestAmount": 120.0},
+        ]
+        mock_exchange.fetch_open_interest_history.return_value = [
+            {"openInterestAmount": 100.0},
+            {"openInterestAmount": 100.0},
+        ]
+        with patch("data.exchange_client.exchange_client") as mock_ec:
+            mock_ec._exchange = mock_exchange
+            first = await fetcher.fetch_open_interest("BTC/USDT")
+            second = await fetcher.fetch_open_interest("BTC/USDT")
         await fetcher.close()
 
         assert first["is_warmup"] is False
@@ -561,9 +551,12 @@ class TestContextFetcher:
 
     @pytest.mark.asyncio
     async def test_funding_rate_parses_positive(self, fetcher, aioresponses):
-        url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
-        aioresponses.get(url, payload={"lastFundingRate": "0.0001"})
-        result = await fetcher.fetch_funding_rate("BTC/USDT")
+        mock_exchange = MagicMock()
+        mock_exchange.has = {"fetchFundingRate": True}
+        mock_exchange.fetch_funding_rate.return_value = {"fundingRate": 0.0001}
+        with patch("data.exchange_client.exchange_client") as mock_ec:
+            mock_ec._exchange = mock_exchange
+            result = await fetcher.fetch_funding_rate("BTC/USDT")
         await fetcher.close()
         assert result == pytest.approx(0.0001)
 
@@ -595,24 +588,20 @@ class TestContextEngine:
             payload={"coins": [{"item": {"symbol": "BTC"}}]},
         )
         aioresponses.get(
-            "https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=1",
-            payload=[{"longShortRatio": "0.72"}],
-        )
-        aioresponses.get(
-            "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT",
-            payload={"openInterest": "50000", "time": 1715000000000},
-        )
-        aioresponses.get(
             "https://www.coindesk.com/arc/outboundfeeds/rss/",
             body="<?xml version='1.0'?><rss version='2.0'><channel><item><title>BTC goes up</title></item></channel></rss>",
         )
 
-        snap = await engine.get_snapshot("BTC/USDT")
+        mock_exchange = MagicMock()
+        mock_exchange.has = {"fetchOpenInterest": True, "fetchOpenInterestHistory": False}
+        mock_exchange.fetch_open_interest.return_value = {"openInterestAmount": 50000.0}
+        with patch("data.exchange_client.exchange_client") as mock_ec:
+            mock_ec._exchange = mock_exchange
+            snap = await engine.get_snapshot("BTC/USDT")
         assert snap.fear_greed_value == 45
         assert snap.fear_greed_label == "Fear"
         assert snap.price_change_24h == 1.5
         assert snap.is_trending is True
-        assert snap.long_short_ratio == 0.72
 
     @pytest.mark.asyncio
     async def test_get_snapshot_with_errors(self, engine, aioresponses):
@@ -764,8 +753,9 @@ class TestFormatContextBlock:
 class TestScannerIntegration:
     @pytest.mark.asyncio
     async def test_context_enabled_by_default(self):
-        from config.settings import config
-        assert config.context_enabled is True
+        from config.settings import AppConfig
+        cfg = AppConfig()
+        assert cfg.context_enabled is True
 
     @pytest.mark.asyncio
     async def test_context_min_verdict_default(self):

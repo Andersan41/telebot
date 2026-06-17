@@ -21,6 +21,10 @@ VERDICT_CONFIRMED_MIN = 0.4
 VERDICT_WEAK_MIN = 0.05
 VERDICT_CONFLICTED_MIN = -0.1
 
+# === Пороги OI (согласованы с derivatives/open_interest.py) ===
+OI_STRONG_THRESHOLD = 2.0
+OI_MODERATE_THRESHOLD = 0.5
+
 
 @dataclass
 class ContextVerdict:
@@ -205,24 +209,31 @@ class ContextScorer:
                 return 0.8
 
     def _score_funding_rate(self, rate: float, direction: str) -> float:
-        if direction == "BUY":
-            if rate < -0.005:
-                return 0.9
-            elif rate < 0.005:
-                return 0.1
-            elif rate < 0.02:
-                return -0.4
+        """Score funding rate using configurable thresholds from config.derivatives."""
+        from config.settings import config
+        strong = config.derivatives.funding_strong_threshold
+        neutral = config.derivatives.funding_neutral_zone
+
+        abs_rate = abs(rate)
+
+        if abs_rate <= neutral:
+            # Neutral zone — no signal
+            return 0.1
+
+        if abs_rate >= strong:
+            # Strong funding
+            if direction == "BUY":
+                # Negative funding (shorts paying longs) is bullish
+                return 0.9 if rate < 0 else -0.9
             else:
-                return -0.9
-        else:  # SELL
-            if rate < -0.005:
-                return -0.9
-            elif rate < 0.005:
-                return -0.1
-            elif rate < 0.02:
-                return 0.4
+                # Positive funding (longs paying shorts) is bearish
+                return -0.9 if rate < 0 else 0.9
+        else:
+            # Moderate funding
+            if direction == "BUY":
+                return 0.4 if rate < 0 else -0.4
             else:
-                return 0.9
+                return -0.4 if rate < 0 else 0.4
 
     def _score_long_short(self, ratio: float, direction: str) -> float:
         if direction == "BUY":
@@ -241,22 +252,35 @@ class ContextScorer:
                 return 0.7
 
     def _score_oi(self, delta: float, direction: str) -> float:
+        """Score open interest delta using configurable thresholds."""
+        from config.settings import config
+        strong = config.derivatives.oi_strong_threshold
+        moderate = config.derivatives.oi_moderate_threshold
+
         if direction == "BUY":
-            if delta > 2.0:
+            if delta > strong:
                 return 0.5
+            elif delta > moderate:
+                return 0.3
             elif delta > 0.0:
                 return 0.2
-            elif delta > -2.0:
+            elif delta > -moderate:
                 return -0.1
+            elif delta > -strong:
+                return -0.2
             else:
                 return -0.3
         else:  # SELL
-            if delta < -2.0:
+            if delta < -strong:
                 return 0.5
+            elif delta < -moderate:
+                return 0.3
             elif delta < 0.0:
                 return 0.2
-            elif delta < 2.0:
+            elif delta < moderate:
                 return -0.1
+            elif delta < strong:
+                return -0.2
             else:
                 return -0.3
 

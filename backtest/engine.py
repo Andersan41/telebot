@@ -17,6 +17,7 @@ import pandas as pd
 from config.settings import config
 from indicators.engine import IndicatorEngine, IndicatorValues
 from strategy.signal_engine import SignalEngine, SignalType
+from risk.market_regime import MarketRegime
 
 
 # ---------------------------------------------------------------------------
@@ -220,17 +221,25 @@ class BacktestEngine:
 
             # If not in a trade, check for new signal
             if not in_trade:
-                result = self._signal_engine.evaluate(ind)
+                regime_label = _detect_regime(
+                    adx=float(ind.adx),
+                    atr=float(ind.atr),
+                    close=float(ind.close),
+                    atr_history=atr_history,
+                    volume=float(ind.volume),
+                    volume_avg=float(ind.volume_sma),
+                )
+                regime_obj = MarketRegime(
+                    regime=regime_label,
+                    confidence=0.5,
+                    adx=float(ind.adx),
+                    atr_percentile=50.0,
+                    ema_spread_trend="stable",
+                )
+                result = self._signal_engine.evaluate(ind, regime=regime_obj, structure=None)
                 if result.is_actionable:
                     signals_count += 1
-                    regime = _detect_regime(
-                        adx=float(ind.adx),
-                        atr=float(ind.atr),
-                        close=float(ind.close),
-                        atr_history=atr_history,
-                        volume=float(ind.volume),
-                        volume_avg=float(ind.volume_sma),
-                    )
+                    regime = regime_label
                     current_trade = BacktestTrade(
                         symbol=self.symbol,
                         timeframe=self.timeframe,

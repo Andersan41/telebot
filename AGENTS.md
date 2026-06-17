@@ -35,10 +35,10 @@ when behavior changes, not this one.
   margin still decides the winner.
 - Confirmation on `CONFIRM_TIMEFRAME` (default `15m`) only when it differs from the primary TF;
   mismatch → reject. `Signal.confirmed` records the real outcome.
-- Cooldown per `symbol_timeframe` is `SIGNAL_COOLDOWN_MINUTES` (default 60), in-memory only —
+- Cooldown per `symbol_timeframe` is `SIGNAL_COOLDOWN_MINUTES` (default 45), in-memory only —
   resets on restart.
 - Context gate: `CONTEXT_BLOCK_ON_BLOCKED` rejects BLOCKED; `CONTEXT_MIN_VERDICT` is a rank
-  gate (`BLOCKED < CONFLICTED < WEAK < CONFIRMED`). Empty value disables the gate.
+  gate (`BLOCKED < CONFLICTED < WEAK < CONFIRMED`). Default `WEAK`. Empty value disables the gate.
 
 ## Scheduler
 
