@@ -190,8 +190,8 @@ class TestIndividualScoring:
         s = score_structure("bullish", "bullish", "SELL")
         assert s < 0
 
-    def test_structure_none_returns_zero(self):
-        assert score_structure(None, None, "BUY") == 0.0
+    def test_structure_none_returns_neutral(self):
+        assert score_structure(None, None, "BUY") == 0.2
 
     def test_liquidity_bullish_sweeps_positive(self):
         s = score_liquidity(bullish_sweeps=2)
@@ -390,7 +390,7 @@ class TestHistoricalWinrateBlending:
     """Task 6.1 — Confidence ≠ score: historical winrate blending tests."""
 
     def test_historical_winrate_blended_with_score(self, engine):
-        """When historical WR=62% and score=40, blended ≈ 62*0.6 + 40*0.4 = 53.2"""
+        """When historical WR=62% and score=40, blended ≈ 62*0.4 + 40*0.6 = 48.8"""
         result = engine.compute(
             "BUY",
             htf_trend_score=0.4,
@@ -406,7 +406,7 @@ class TestHistoricalWinrateBlending:
             historical_winrate=62.0,
         )
         # Score-based confidence ≈ 40 (abs of total)
-        # Blended = 62 * 0.6 + 40 * 0.4 = 53.2
+        # Blended = 62 * 0.4 + 40 * 0.6 = 48.8
         assert result.total_score > 40  # blended should be higher than score alone
         assert result.total_score < 62  # blended should be lower than WR alone
 
@@ -468,11 +468,11 @@ class TestHistoricalWinrateBlending:
             htf_trend_score=0.6,
             structure_score=0.6,
         )
-        # Score = 24, WR = 15 → blended = 15*0.6 + 24*0.4 = 9 + 9.6 = 18.6 < 24
+        # Score = 24, WR = 15 → blended = 15*0.4 + 24*0.6 = 6 + 14.4 = 20.4 < 24
         assert result_with_wr.total_score < result_without_wr.total_score
 
     def test_blending_formula_correct(self, engine):
-        """Verify blending formula: WR * 0.6 + score * 0.4."""
+        """Verify blending formula: WR * 0.4 + score * 0.6."""
         # Create a scenario where we can calculate expected value
         # All factors at 0.5 → total = 0.5 * 100 = 50
         result = engine.compute(
@@ -490,6 +490,6 @@ class TestHistoricalWinrateBlending:
             historical_winrate=60.0,
         )
         # Score = 50, WR = 60
-        # Blended = 60 * 0.6 + 50 * 0.4 = 36 + 20 = 56
-        expected = 60.0 * 0.6 + 50.0 * 0.4
+        # Blended = 60 * 0.4 + 50 * 0.6 = 24 + 30 = 54
+        expected = 60.0 * 0.4 + 50.0 * 0.6
         assert abs(result.total_score - expected) < 0.5

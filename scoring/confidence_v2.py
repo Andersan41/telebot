@@ -2,8 +2,8 @@
 scoring/confidence_v2.py — Confidence Engine V2 with weighted factor scoring.
 
 Weight distribution (total 100):
-  HTF Trend: 15, Structure: 25, Liquidity: 15, Volume: 10,
-  BTC correlation: 10, Funding: 5, OI: 5, RSI: 5, MACD: 5, ADX: 5.
+  HTF Trend: 20, Structure: 15, Liquidity: 20, Volume: 5,
+  BTC correlation: 15, Funding: 5, OI: 5, RSI: 5, MACD: 5, ADX: 5.
 """
 from __future__ import annotations
 
@@ -137,7 +137,7 @@ def score_htf_trend(mtf_aligned: bool, mtf_count: int, required: int = 2) -> flo
 def score_structure(trend: Optional[str], bos: Optional[str], direction: str) -> float:
     """Score market structure (trend + BOS)."""
     if trend is None:
-        return 0.0
+        return 0.2  # Range/neutral — not a penalty, structure exists but is sideways
     bullish = trend == "bullish"
     bearish = trend == "bearish"
     bos_bull = bos == "bullish"
@@ -194,7 +194,7 @@ def score_liquidity(
 def score_volume(volume_above: bool, volume_ratio: float = 1.0) -> float:
     """Score volume.  Above-average volume gives positive score."""
     if not volume_above:
-        return -0.3
+        return -0.15  # mild penalty — below average is common, not a blocker
     return min(0.8, 0.3 + 0.5 * (volume_ratio - 1.0))
 
 
@@ -204,7 +204,7 @@ def score_btc_correlation(allows: bool, strong: bool = False) -> float:
         return 0.8
     elif allows:
         return 0.4
-    return -0.8
+    return -0.3  # doesn't confirm — mild penalty, not a hard blocker
 
 
 def score_funding_from_state(state: str, strength: str, direction: str) -> float:
@@ -281,9 +281,15 @@ def score_macd(macd_hist: float, price: float, direction: str) -> float:
 
 def score_adx(adx: float, dmi_plus: float, dmi_minus: float, direction: str,
               adx_min: float = 20) -> float:
-    """Score ADX + DMI.  ADX measures trend strength, DMI direction."""
+    """Score ADX + DMI.  ADX measures trend strength, DMI direction.
+
+    Soft threshold: ADX within 3 points of adx_min is neutral (0.0),
+    not penalized — signal engine already gates on ADX, no double penalty.
+    """
+    if adx < adx_min - 3:
+        return -0.5  # clearly flat
     if adx < adx_min:
-        return -0.5  # flat market
+        return 0.0  # near threshold — neutral, not penalized
     strength = min(1.0, (adx - adx_min) / 30.0)  # 20→0, 50→1
     if direction == "BUY":
         dmi_dir = (dmi_plus - dmi_minus) / 50.0

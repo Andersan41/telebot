@@ -66,7 +66,7 @@ class TestTradingConfig:
 
     def test_indicator_params(self):
         cfg = TradingConfig()
-        assert cfg.rsi_period == 14
+        assert cfg.rsi_period == 10
         assert cfg.adx_period == 14
         assert cfg.supertrend_period == 10
         assert cfg.atr_multiplier_sl == 1.5
@@ -82,7 +82,7 @@ class TestAppConfig:
 
     def test_cooldown_default(self):
         cfg = AppConfig()
-        assert cfg.signal_cooldown_minutes == 60
+        assert cfg.signal_cooldown_minutes == 45
 
 
 class TestIndicatorEnvVars:
@@ -102,7 +102,7 @@ class TestIndicatorEnvVars:
         monkeypatch.delenv("EMA_FAST", raising=False)
         import config.settings as settings
         importlib.reload(settings)
-        assert settings.config.trading.ema_fast == 9
+        assert settings.config.trading.ema_fast == 8
 
     def test_volume_factor_from_env(self, monkeypatch):
         monkeypatch.setenv("VOLUME_FACTOR", "1.5")
@@ -219,11 +219,11 @@ class TestScoringConfig:
         import config.settings as settings
         importlib.reload(settings)
         s = settings.config.scoring
-        assert s.w_htf_trend == 15
-        assert s.w_structure == 25
-        assert s.w_liquidity == 15
-        assert s.w_conf_volume == 10
-        assert s.w_btc_corr == 10
+        assert s.w_htf_trend == 20
+        assert s.w_structure == 15
+        assert s.w_liquidity == 20
+        assert s.w_conf_volume == 5
+        assert s.w_btc_corr == 15
 
     def test_min_score_for_signal(self):
         import config.settings as settings
@@ -237,7 +237,7 @@ class TestScoringConfig:
         assert s.confidence_strong_threshold == 65
         assert s.confidence_moderate_threshold == 40
         assert s.quality_strong_threshold == 65
-        assert s.quality_moderate_threshold == 40
+        assert s.quality_moderate_threshold == 30
 
     def test_blend_ratios(self):
         import config.settings as settings
@@ -245,7 +245,7 @@ class TestScoringConfig:
         s = settings.config.scoring
         assert s.tech_confidence_blend == 0.6
         assert s.market_confidence_blend == 0.4
-        assert s.historical_wr_blend == 0.6
+        assert s.historical_wr_blend == 0.4
 
 
 class TestSchedulerConfig:
@@ -305,15 +305,15 @@ class TestRiskConfig:
         import config.settings as settings
         importlib.reload(settings)
         r = settings.config.risk
-        assert r.regime_trend_adx == 22
-        assert r.regime_range_adx == 18
+        assert r.regime_trend_adx == 25
+        assert r.regime_range_adx == 20
         assert r.regime_compression_atr_pct == 20
 
     def test_risk_weak_trade_and_pct(self):
         import config.settings as settings
         importlib.reload(settings)
         r = settings.config.risk
-        assert r.risk_weak_trade is True
+        assert r.risk_weak_trade is False
         assert r.risk_weak_pct == 0.25
 
     def test_regime_detection_params(self):

@@ -70,8 +70,8 @@ class TradingConfig:
     ema_trend: int = int(os.getenv("EMA_TREND", "55"))
     # Минимальный % разницы между EMA fast/slow (фильтр)
     min_ema_spread_pct: float = float(os.getenv("MIN_EMA_SPREAD_PCT", "0.20"))
-    # Включить проверку наклона EMA fast
-    ema_slope_check: bool = os.getenv("EMA_SLOPE_CHECK", "true").lower() == "true"
+    # Включить проверку наклона EMA fast (отключена по умолчанию — слишком жёсткий фильтр)
+    ema_slope_check: bool = os.getenv("EMA_SLOPE_CHECK", "false").lower() == "true"
     # Коэффициент нормализации EMA spread strength (1.0 = max strength при spread >= 1%)
     ema_strength_cap: float = float(os.getenv("EMA_STRENGTH_CAP", "1.0"))
 
@@ -98,8 +98,8 @@ class TradingConfig:
     min_macd_pct: float = float(os.getenv("MIN_MACD_PCT", "0.03"))
     # Множитель MACD raw score
     macd_score_multiplier: float = float(os.getenv("MACD_SCORE_MULTIPLIER", "10"))
-    # Включить проверку наклона MACD гистограммы
-    macd_slope_check: bool = os.getenv("MACD_SLOPE_CHECK", "true").lower() == "true"
+    # Включить проверку наклона MACD гистограммы (отключена по умолчанию — слишком жёсткий фильтр)
+    macd_slope_check: bool = os.getenv("MACD_SLOPE_CHECK", "false").lower() == "true"
 
     # ─── ADX / DMI ───────────────────────────────────────────────────────
     # Период ADX
@@ -142,6 +142,8 @@ class TradingConfig:
     delta_bearish: float = float(os.getenv("DELTA_BEARISH", "-15"))
     # Делитель нормализации volume delta strength
     volume_delta_norm: float = float(os.getenv("VOLUME_DELTA_NORM", "50"))
+    # Множитель объёма для compression breakout (выше стандартного volume_factor)
+    compression_volume_factor: float = float(os.getenv("COMPRESSION_VOLUME_FACTOR", "2.0"))
 
     # ─── Filter toggles (signal_engine gates) ──────────────────────────
     # ADX flat filter (NO_SIGNAL if ADX < adx_min)
@@ -278,8 +280,8 @@ class RiskConfig:
     risk_strong_pct: float = float(os.getenv("RISK_STRONG_PCT", "1.0"))
     # Риск на сделку для moderate сигнала (%)
     risk_moderate_pct: float = float(os.getenv("RISK_MODERATE_PCT", "0.5"))
-    # Разрешить торговлю weak сигналов
-    risk_weak_trade: bool = os.getenv("RISK_WEAK_TRADE", "true").lower() == "true"
+    # Разрешить торговлю weak сигналов (отключена по умолчанию — двойные системы скоринга не согласованы)
+    risk_weak_trade: bool = os.getenv("RISK_WEAK_TRADE", "false").lower() == "true"
     # Размер позиции для weak сигнала (%)
     risk_weak_pct: float = float(os.getenv("RISK_WEAK_PCT", "0.25"))
     # Минимальный ATR % для торговли (иначе no-trade zone)
@@ -298,10 +300,10 @@ class RiskConfig:
     dynamic_risk_enabled: bool = os.getenv("DYNAMIC_RISK_ENABLED", "true").lower() == "true"
 
     # ─── Market Regime ───────────────────────────────────────────────────
-    # Порог ADX для трендового режима
-    regime_trend_adx: float = float(os.getenv("REGIME_TREND_ADX", "22"))
-    # Порог ADX для range режима
-    regime_range_adx: float = float(os.getenv("REGIME_RANGE_ADX", "18"))
+    # Порог ADX для трендового режима (согласован с adx_min signal_engine)
+    regime_trend_adx: float = float(os.getenv("REGIME_TREND_ADX", "25"))
+    # Порог ADX для range режима (согласован с adx_min signal_engine)
+    regime_range_adx: float = float(os.getenv("REGIME_RANGE_ADX", "20"))
     # Порог ATR percentile для compression режима
     regime_compression_atr_pct: float = float(os.getenv("REGIME_COMPRESSION_ATR_PCT", "20"))
     # Lookback для расчёта ATR percentile
@@ -369,7 +371,7 @@ class ScoringConfig:
     # Порог quality для STRONG (унифицирован с confidence)
     quality_strong_threshold: float = float(os.getenv("QUALITY_STRONG_THRESHOLD", "65"))
     # Порог quality для MODERATE (унифицирован с confidence)
-    quality_moderate_threshold: float = float(os.getenv("QUALITY_MODERATE_THRESHOLD", "40"))
+    quality_moderate_threshold: float = float(os.getenv("QUALITY_MODERATE_THRESHOLD", "30"))
     # Минимальное число условий для сигнала
     min_score_for_signal: int = int(os.getenv("MIN_SCORE_FOR_SIGNAL", "2"))
 
@@ -393,11 +395,11 @@ class ScoringConfig:
     w_oi: int = int(os.getenv("W_OI", "10"))
 
     # ─── Confidence V2 weights ───────────────────────────────────────────
-    w_htf_trend: int = int(os.getenv("W_HTF_TREND", "15"))
-    w_structure: int = int(os.getenv("W_STRUCTURE", "25"))
-    w_liquidity: int = int(os.getenv("W_LIQUIDITY", "15"))
-    w_conf_volume: int = int(os.getenv("W_CONF_VOLUME", "10"))
-    w_btc_corr: int = int(os.getenv("W_BTC_CORR", "10"))
+    w_htf_trend: int = int(os.getenv("W_HTF_TREND", "20"))
+    w_structure: int = int(os.getenv("W_STRUCTURE", "15"))
+    w_liquidity: int = int(os.getenv("W_LIQUIDITY", "20"))
+    w_conf_volume: int = int(os.getenv("W_CONF_VOLUME", "5"))
+    w_btc_corr: int = int(os.getenv("W_BTC_CORR", "15"))
     w_conf_funding: int = int(os.getenv("W_CONF_FUNDING", "5"))
     w_conf_oi: int = int(os.getenv("W_CONF_OI", "5"))
     w_conf_rsi: int = int(os.getenv("W_CONF_RSI", "5"))
@@ -410,7 +412,7 @@ class ScoringConfig:
     # Доля market confidence в итоговой confidence
     market_confidence_blend: float = float(os.getenv("MARKET_CONFIDENCE_BLEND", "0.4"))
     # Доля исторического WR в blended confidence
-    historical_wr_blend: float = float(os.getenv("HISTORICAL_WR_BLEND", "0.6"))
+    historical_wr_blend: float = float(os.getenv("HISTORICAL_WR_BLEND", "0.4"))
 
     # ─── Filter toggles ──────────────────────────────────────────────────
     # Confidence V2 scoring (10-factor weighted)
@@ -483,6 +485,20 @@ class SupportResistanceConfig:
 
 
 @dataclass
+class WebConfig:
+    """Параметры веб-сервера (дашборд)."""
+
+    # Порт веб-сервера
+    port: int = int(os.getenv("WEB_PORT", "3001"))
+    # Хост веб-сервера
+    host: str = os.getenv("WEB_HOST", "0.0.0.0")
+    # Включить веб-сервер
+    enabled: bool = os.getenv("WEB_ENABLED", "true").lower() == "true"
+    # Интервал обновлений (секунды)
+    update_interval: int = int(os.getenv("WEB_UPDATE_INTERVAL", "5"))
+
+
+@dataclass
 class AppConfig:
     """Главная конфигурация приложения."""
 
@@ -498,6 +514,7 @@ class AppConfig:
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     notifier: NotifierConfig = field(default_factory=NotifierConfig)
     support_resistance: SupportResistanceConfig = field(default_factory=SupportResistanceConfig)
+    web: WebConfig = field(default_factory=WebConfig)
 
     # URL базы данных
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/signals.db")
@@ -511,7 +528,7 @@ class AppConfig:
 
     # Контекстный модуль
     context_enabled: bool = os.getenv("CONTEXT_ENABLED", "true").lower() == "true"
-    context_min_verdict: str = os.getenv("CONTEXT_MIN_VERDICT", "MODERATE")
+    context_min_verdict: str = os.getenv("CONTEXT_MIN_VERDICT", "WEAK")
     context_block_on_blocked: bool = os.getenv("CONTEXT_BLOCK_ON_BLOCKED", "true").lower() == "true"
 
     # Уведомления о заблокированных сигналах
