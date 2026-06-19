@@ -14,25 +14,35 @@ OUTCOME_CHECK_INTERVAL_SECONDS = int(
 )
 OUTCOME_TTL_DAYS = int(os.getenv("OUTCOME_TTL_DAYS", "7"))
 
+# Per-symbol failure tracking: after SYMBOL_FETCH_FAIL_THRESHOLD consecutive
+# failures, skip the symbol for SYMBOL_FETCH_COOLDOWN_SECONDS.
+SYMBOL_FETCH_FAIL_THRESHOLD = 3
+SYMBOL_FETCH_COOLDOWN_SECONDS = 600  # 10 min cooldown
+_symbol_fail_count: dict[str, int] = {}
+_symbol_cooldown_until: dict[str, datetime] = {}
+
 
 async def check_open_outcomes() -> None:
     outcomes = await db.get_open_outcomes()
     if not outcomes:
         return
     logger.debug(f"Checking {len(outcomes)} open outcomes")
+    now = datetime.now(timezone.utc)
     for outcome in outcomes:
         signal = await db.get_signal(outcome.signal_id)
         if signal is None:
             continue
         # Просроченный сигнал → EXPIRED
-        age = datetime.now(timezone.utc) - signal.created_at.replace(
-            tzinfo=timezone.utc
-        )
+        age = now - signal.created_at.replace(tzinfo=timezone.utc)
         if age > timedelta(days=OUTCOME_TTL_DAYS):
             await db.close_outcome(
                 outcome.id, "EXPIRED",
                 close_price=signal.close_price, pnl_pct=0.0,
             )
+            continue
+        # Skip symbols on cooldown after repeated fetch failures
+        cooldown_until = _symbol_cooldown_until.get(signal.symbol)
+        if cooldown_until and now < cooldown_until:
             continue
         # Текущая цена через 1m свечу (с повторными попытками при сетевых ошибках)
         df = None
@@ -43,7 +53,16 @@ async def check_open_outcomes() -> None:
             if attempt < 2:
                 await asyncio.sleep(5 * (attempt + 1))
         if df is None or df.empty:
+            _symbol_fail_count[signal.symbol] = _symbol_fail_count.get(signal.symbol, 0) + 1
+            if _symbol_fail_count[signal.symbol] >= SYMBOL_FETCH_FAIL_THRESHOLD:
+                _symbol_cooldown_until[signal.symbol] = now + timedelta(seconds=SYMBOL_FETCH_COOLDOWN_SECONDS)
+                logger.warning(
+                    f"Symbol {signal.symbol} hit {SYMBOL_FETCH_FAIL_THRESHOLD} consecutive "
+                    f"fetch failures — skipping for {SYMBOL_FETCH_COOLDOWN_SECONDS}s"
+                )
             continue
+        # Success — reset failure tracking
+        _symbol_fail_count.pop(signal.symbol, None)
         current = float(df["close"].iloc[-1])
         hit_tp = (
             signal.signal_type == "BUY" and signal.tp and current >= signal.tp

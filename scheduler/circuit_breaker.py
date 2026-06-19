@@ -14,6 +14,7 @@ from storage.database import db
 _cb_loss_count: int = 0
 _cb_paused_until: Optional[datetime] = None
 _cb_last_check: Optional[datetime] = None
+_cb_last_activation_time: Optional[datetime] = None
 
 # Configurable thresholds
 CIRCUIT_BREAKER_LOSS_THRESHOLD = 3  # Pause after N consecutive losses
@@ -35,8 +36,12 @@ def is_circuit_breaker_active() -> bool:
 
 
 async def check_recent_losses() -> None:
-    """Check recent outcomes and update circuit breaker state."""
-    global _cb_loss_count, _cb_paused_until, _cb_last_check
+    """Check recent outcomes and update circuit breaker state.
+
+    After a pause expires, only count losses that occurred AFTER the pause
+    ended — this prevents the same old losses from immediately re-activating.
+    """
+    global _cb_loss_count, _cb_paused_until, _cb_last_check, _cb_last_activation_time
 
     now = datetime.now(timezone.utc)
     if _cb_last_check and (now - _cb_last_check).total_seconds() < 60:
@@ -44,7 +49,16 @@ async def check_recent_losses() -> None:
     _cb_last_check = now
 
     try:
-        window_start = now - timedelta(minutes=CIRCUIT_BREAKER_WINDOW_MINUTES)
+        # After a pause expires, skip losses that triggered the previous
+        # activation — only count fresh losses since the pause ended.
+        if _cb_last_activation_time and _cb_paused_until is None:
+            window_start = max(
+                _cb_last_activation_time,
+                now - timedelta(minutes=CIRCUIT_BREAKER_WINDOW_MINUTES),
+            )
+        else:
+            window_start = now - timedelta(minutes=CIRCUIT_BREAKER_WINDOW_MINUTES)
+
         recent_outcomes = await db.get_outcomes_since(window_start)
 
         if not recent_outcomes:
@@ -62,6 +76,7 @@ async def check_recent_losses() -> None:
         _cb_loss_count = consecutive_losses
 
         if consecutive_losses >= CIRCUIT_BREAKER_LOSS_THRESHOLD:
+            _cb_last_activation_time = now
             _cb_paused_until = now + timedelta(minutes=CIRCUIT_BREAKER_PAUSE_MINUTES)
             logger.warning(
                 f"Circuit breaker ACTIVATED: {consecutive_losses} consecutive losses. "
