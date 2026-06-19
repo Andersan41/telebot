@@ -103,6 +103,68 @@ class TestCooldown:
         assert await _is_cooldown_active("BTC/USDT", "4h") is False
 
 
+class TestDedup:
+    @pytest.mark.asyncio
+    async def test_dedup_skips_same_direction_recent(self, mock_signal_result, mock_exchange, mock_ind_engine):
+        from datetime import datetime, timezone, timedelta
+        from context.scorer import ContextVerdict
+        with (
+            patch("scheduler.scanner.exchange_client", mock_exchange),
+            patch("scheduler.scanner.indicator_engine", mock_ind_engine),
+            patch("scheduler.scanner.signal_engine") as mock_sig,
+            patch("scheduler.scanner.db") as mock_db,
+            patch("scheduler.scanner.context_engine") as mock_ctx_engine,
+            patch("scheduler.scanner.context_scorer") as mock_ctx_scorer,
+        ):
+            mock_sig.evaluate.return_value = mock_signal_result
+            mock_db.save_signal = AsyncMock()
+            mock_db.create_outcome = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
+            mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
+            mock_ctx_scorer.score.return_value = ContextVerdict(
+                verdict="WEAK", confidence=0.15, score=0.15,
+            )
+            last_signal = MagicMock()
+            last_signal.signal_type = "BUY"
+            last_signal.sent_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+            mock_db.get_last_signal = AsyncMock(return_value=last_signal)
+
+            result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
+            assert result is None
+            mock_db.save_signal.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dedup_allows_opposite_direction(self, mock_signal_result, mock_exchange, mock_ind_engine):
+        from datetime import datetime, timezone, timedelta
+        from context.scorer import ContextVerdict
+        with (
+            patch("scheduler.scanner.exchange_client", mock_exchange),
+            patch("scheduler.scanner.indicator_engine", mock_ind_engine),
+            patch("scheduler.scanner.signal_engine") as mock_sig,
+            patch("scheduler.scanner.db") as mock_db,
+            patch("scheduler.scanner.context_engine") as mock_ctx_engine,
+            patch("scheduler.scanner.context_scorer") as mock_ctx_scorer,
+        ):
+            mock_sig.evaluate.return_value = mock_signal_result
+            mock_db.save_signal = AsyncMock()
+            mock_db.create_outcome = AsyncMock()
+            mock_db.get_cooldown = AsyncMock(return_value=None)
+            mock_db.set_cooldown = AsyncMock()
+            mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
+            mock_ctx_scorer.score.return_value = ContextVerdict(
+                verdict="WEAK", confidence=0.15, score=0.15,
+            )
+            last_signal = MagicMock()
+            last_signal.signal_type = "SELL"
+            last_signal.sent_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+            mock_db.get_last_signal = AsyncMock(return_value=last_signal)
+
+            result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
+            assert result is not None
+            mock_db.save_signal.assert_called_once()
+
+
 class TestScanSymbol:
     @pytest.mark.asyncio
     async def test_returns_none_when_cooldown(self, mock_signal_result, mock_cooldown):
@@ -126,6 +188,7 @@ class TestScanSymbol:
             mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
+            mock_db.get_last_signal = AsyncMock(return_value=None)
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
             mock_ctx_scorer.score.return_value = ContextVerdict(
                 verdict="WEAK", confidence=0.15, score=0.15,
@@ -162,21 +225,19 @@ class TestScanSymbol:
 
     @pytest.mark.asyncio
     async def test_confirmation_rejects_mismatch(self, mock_signal_result, mock_exchange, mock_ind_engine):
-        from strategy.signal_engine import SignalResult, SignalType
-        opposite = SignalResult(
-            signal=SignalType.SELL, symbol="BTC/USDT",
-            timeframe="15m", close=50000.0, sl=51000.0, tp=48000.0, score=5, reasons=[],
-        )
         with (
             patch("scheduler.scanner.exchange_client", mock_exchange),
             patch("scheduler.scanner.indicator_engine", mock_ind_engine),
             patch("scheduler.scanner.signal_engine") as mock_sig,
             patch("scheduler.scanner.db") as mock_db,
         ):
-            mock_sig.evaluate.side_effect = [mock_signal_result, opposite]
+            mock_sig.evaluate.return_value = mock_signal_result
+            mock_sig.evaluate_confirm.return_value = False
             mock_db.save_signal = AsyncMock()
+            mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
+            mock_db.get_last_signal = AsyncMock(return_value=None)
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
             assert result is None
 
@@ -194,6 +255,7 @@ class TestScanSymbol:
             mock_sig.evaluate.return_value = mock_signal_result
             db.save_signal = AsyncMock()
             db.create_outcome = AsyncMock()
+            db.get_last_signal = AsyncMock(return_value=None)
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
             mock_ctx_scorer.score.return_value = ContextVerdict(
                 verdict="WEAK", confidence=0.15, score=0.15,
@@ -243,6 +305,7 @@ class TestEntryPrice:
             mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
+            mock_db.get_last_signal = AsyncMock(return_value=None)
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
             mock_ctx_scorer.score.return_value = ContextVerdict(
                 verdict="WEAK", confidence=0.15, score=0.15,
@@ -287,6 +350,7 @@ class TestEntryPrice:
             mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
+            mock_db.get_last_signal = AsyncMock(return_value=None)
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
             mock_ctx_scorer.score.return_value = ContextVerdict(
                 verdict="WEAK", confidence=0.15, score=0.15,
@@ -317,6 +381,7 @@ class TestEntryPrice:
             mock_db.create_outcome = AsyncMock()
             mock_db.get_cooldown = AsyncMock(return_value=None)
             mock_db.set_cooldown = AsyncMock()
+            mock_db.get_last_signal = AsyncMock(return_value=None)
             mock_ctx_engine.get_snapshot = AsyncMock(return_value=MagicMock())
             mock_ctx_scorer.score.return_value = ContextVerdict(
                 verdict="WEAK", confidence=0.15, score=0.15,

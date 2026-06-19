@@ -930,6 +930,25 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
             f"conf={conf_v2.confidence_pct:.1f}%) for {direction_v2} {symbol}"
         )
 
+        # Шаг 3.5: Дедупликация — пропускаем, если последний сигнал по этому
+        # symbol+timeframe+направлению был отправлен менее cooldown назад
+        last = await db.get_last_signal(symbol, timeframe)
+        if last is not None:
+            last_sent = last.sent_at or last.created_at
+            if last_sent is not None:
+                if last_sent.tzinfo is None:
+                    last_sent = last_sent.replace(tzinfo=timezone.utc)
+                same_direction = last.signal_type == result.signal.value
+                within_cooldown = (
+                    datetime.now(timezone.utc) - last_sent
+                ) < timedelta(minutes=config.signal_cooldown_minutes)
+                if same_direction and within_cooldown:
+                    logger.info(
+                        f"Dedup: skip {result.signal} {symbol} {timeframe} "
+                        f"— last signal {last.signal_type} sent {last_sent}"
+                    )
+                    return None
+
         # Шаг 4: Сохраняем сигнал в БД
         saved_signal = await db.save_signal(
             symbol=result.symbol,
