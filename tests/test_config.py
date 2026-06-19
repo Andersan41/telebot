@@ -74,6 +74,12 @@ class TestTradingConfig:
         assert cfg.candles_limit == 200
         assert cfg.volume_sma_period == 20
 
+    def test_sl_distance_and_rr_params(self):
+        cfg = TradingConfig()
+        assert cfg.min_sl_distance_pct == 1.0
+        assert cfg.max_sl_distance_pct == 10.0
+        assert cfg.min_rr_threshold == 1.5
+
 
 class TestAppConfig:
     def test_database_url_from_env(self):
@@ -151,6 +157,9 @@ class TestEnvFile:
         "ATR_PERIOD",
         "ATR_MULTIPLIER_SL",
         "ATR_MULTIPLIER_TP",
+        "MIN_SL_DISTANCE_PCT",
+        "MAX_SL_DISTANCE_PCT",
+        "MIN_RR_THRESHOLD",
         "SUPERTREND_PERIOD",
         "SUPERTREND_MULTIPLIER",
         "VOLUME_FACTOR",

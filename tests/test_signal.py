@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from strategy.signal_engine import SignalEngine, SignalType, SignalResult
+from strategy.signal_engine import SignalEngine, SignalType, SignalResult, _calculate_sl_tp
 from indicators.engine import IndicatorValues
 
 
@@ -154,7 +154,7 @@ class TestSignalResult:
         assert "48500" in msg
         assert "53000" in msg
         assert "5" in msg
-        assert "MODERATE" in msg
+        assert "УМЕРЕННЫЙ" in msg
         assert "Уверенность" in msg
 
     def test_sl_tp_consistency(self):
@@ -172,7 +172,7 @@ class TestSignalResult:
         assert "SELL" in msg or "ПРОДАЖА" in msg
         assert "3150" in msg
         assert "2700" in msg
-        assert "STRONG" in msg or "MODERATE" in msg
+        assert "СИЛЬНЫЙ" in msg or "УМЕРЕННЫЙ" in msg
 
     def test_is_actionable_buy(self):
         sig = SignalResult(
@@ -461,7 +461,7 @@ class TestVerdictAndConfidence:
             reasons=["reason1"],
         )
         msg = sig.format_message()
-        assert "STRONG" in msg or "MODERATE" in msg
+        assert "СИЛЬНЫЙ" in msg or "УМЕРЕННЫЙ" in msg
         assert "(7/7)" in msg
         assert "Уверенность" in msg
         assert "⭐" not in msg
@@ -1747,8 +1747,8 @@ class TestRegimeSwitching:
             _regime="trend",
         )
         msg = sig.format_message()
-        assert "Regime" in msg
-        assert "Trend" in msg
+        assert "Режим" in msg
+        assert "Тренд" in msg or "trend" in msg
 
     def test_blocked_regime_displayed_in_format_message(self):
         """Blocked regime shows BLOCKED status in formatted message."""
@@ -1763,8 +1763,8 @@ class TestRegimeSwitching:
             _regime_blocked=True,
         )
         msg = sig.format_message()
-        assert "Compression" in msg
-        assert "BLOCKED" in msg
+        assert "Компрессия" in msg or "compression" in msg
+        assert "заблокирован" in msg
 
 
 class TestLeadingSignals:
@@ -2109,3 +2109,61 @@ class TestLeadingSignals:
         result = engine.evaluate(ind)
         assert result.signal == SignalType.NO_SIGNAL
         assert result._has_leading_trigger is True
+
+
+class TestCalculateSlTpEntry:
+    """Tests for _calculate_sl_tp with entry parameter."""
+
+    def _make_ind(self, close=50000.0, atr=500.0):
+        return make_ind(close=close, atr=atr)
+
+    def test_buy_sl_tp_from_entry_not_close(self):
+        ind = self._make_ind(close=50000.0, atr=1000.0)
+        sl, tp = _calculate_sl_tp(ind, SignalType.BUY, entry=51000.0)
+        # SL = entry - atr * 1.5 = 51000 - 1500 = 49500
+        assert sl == 49500.0
+        # TP = entry + atr * 3.0 = 51000 + 3000 = 54000
+        assert tp == 54000.0
+
+    def test_sell_sl_tp_from_entry_not_close(self):
+        ind = self._make_ind(close=50000.0, atr=1000.0)
+        sl, tp = _calculate_sl_tp(ind, SignalType.SELL, entry=49000.0)
+        # SL = entry + atr * 1.5 = 49000 + 1500 = 50500
+        assert sl == 50500.0
+        # TP = entry - atr * 3.0 = 49000 - 3000 = 46000
+        assert tp == 46000.0
+
+    def test_entry_none_fallback_to_close(self):
+        ind = self._make_ind(close=50000.0, atr=1000.0)
+        sl, tp = _calculate_sl_tp(ind, SignalType.BUY, entry=None)
+        # Same as without entry param — uses ind.close
+        assert sl == 48500.0
+        assert tp == 53000.0
+
+    def test_entry_affects_sl_tp_not_ind_close(self):
+        ind = self._make_ind(close=50000.0, atr=1000.0)
+        # entry differs from close
+        sl, tp = _calculate_sl_tp(ind, SignalType.BUY, entry=52000.0)
+        # SL/TP based on 52000, not 50000
+        assert sl == 50500.0  # 52000 - 1500
+        assert tp == 55000.0  # 52000 + 3000
+
+    def test_bos_entry_used_for_tp(self):
+        """With BOS, SL comes from bos.level but TP still uses entry."""
+        from market_structure.structure import BOS
+        from datetime import datetime
+        bos = BOS(type="bullish", level=49000.0, timestamp=datetime.now(), candle_index=10)
+        structure = type('StructureState', (), {
+            'last_bos': bos,
+            'trend': 'bullish',
+            'recent_highs': [],
+            'recent_lows': [],
+            'structure_breaks': [],
+            'last_choch': None,
+        })()
+        ind = self._make_ind(close=50000.0, atr=1000.0)
+        sl, tp = _calculate_sl_tp(ind, SignalType.BUY, structure=structure, entry=51000.0)
+        # SL = bos.level * 0.995 = 49000 * 0.995 = 48755
+        assert sl == 48755.0
+        # TP = entry + atr * 3.0 = 51000 + 3000 = 54000 (uses entry, not close)
+        assert tp == 54000.0

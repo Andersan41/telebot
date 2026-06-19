@@ -10,7 +10,7 @@ from config.settings import config, get_active_symbols
 from data.exchange_client import exchange_client
 from indicators.engine import indicator_engine, IndicatorValues
 from strategy.signal_engine import signal_engine, SignalResult, SignalType
-from strategy.levels import get_support_resistance, validate_levels_vs_trade
+from strategy.levels import get_support_resistance, validate_levels_vs_trade, find_swing_levels
 from storage.database import db
 from context.analyzer import context_engine, ContextSnapshot
 from context.scorer import context_scorer, ContextVerdict
@@ -88,9 +88,9 @@ def _build_factor_fingerprint(
     # Supertrend
     st_strength = result._factor_strengths.get("Supertrend", 0)
     if st_strength > 0:
-        flags.append("st_bullish")
+        flags.append("st_aligned")
     elif st_strength < 0:
-        flags.append("st_bearish")
+        flags.append("st_against")
 
     # MACD
     macd_strength = result._factor_strengths.get("MACD", 0)
@@ -152,15 +152,16 @@ def _verdict_passes_min(verdict: str) -> bool:
 
 async def _notify_blocked(
     blocked_callback,
-    result: SignalResult,
+    result: Optional[SignalResult],
     symbol: str,
     timeframe: str,
     reason: str,
     context_verdict: ContextVerdict = None,
 ):
     """Логирует блокировку с тегом signal_block и опционально уведомляет канал."""
+    sig_str = result.signal.value if result and hasattr(result, 'signal') else "?"
     logger.bind(tags="signal_block").info(
-        f"Signal BLOCKED: {result.signal} {symbol} {timeframe} — {reason}"
+        f"Signal BLOCKED: {sig_str} {symbol} {timeframe} — {reason}"
     )
     if blocked_callback:
         try:
@@ -284,12 +285,63 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
         except Exception as e:
             logger.warning(f"Early structure/liquidity analysis failed for {symbol} {timeframe}: {e}")
 
+        # Preliminary MTF check before evaluate() — needed for momentum entry HTF gate (BUG #6)
+        _pre_mtf_aligned = False
+        _pre_mtf_direction = None
+        if config.market_structure.mtf_enabled:
+            try:
+                _pre_direction = "buy" if ind.ema_fast > ind.ema_slow else "sell"
+                _pre_mtf_result = await check_mtf_alignment(
+                    symbol=symbol,
+                    direction="bullish" if _pre_direction == "buy" else "bearish",
+                    primary_tf=timeframe,
+                    exchange_client=exchange_client,
+                    required_alignment=1,
+                )
+                if _pre_mtf_result.aligned:
+                    _pre_mtf_aligned = True
+                    _pre_mtf_direction = "bullish" if _pre_direction == "buy" else "bearish"
+            except Exception:
+                pass
+
+        # Шаг 1.5: Подтверждение на 15M (до evaluate — нужен entry_price для SL/TP)
+        confirm_tf = config.trading.confirm_timeframe
+        entry_price: Optional[float] = None
+        if config.trading.confirm_tf_enabled and confirm_tf != timeframe:
+            ind_confirm_result = await _get_indicators(symbol, confirm_tf)
+            if ind_confirm_result is not None:
+                ind_confirm, _df_confirm = ind_confirm_result
+                confirm_ok = signal_engine.evaluate_confirm(
+                    ind_confirm,
+                    direction='buy' if ind.ema_fast > ind.ema_slow else 'sell'
+                )
+                if not confirm_ok:
+                    await _notify_blocked(
+                        blocked_callback, None, symbol, timeframe,
+                        f"not confirmed on {confirm_tf} (direction mismatch)"
+                    )
+                    logger.info(
+                        f"Signal NOT confirmed on {confirm_tf}: "
+                        f"direction mismatch — {symbol}"
+                    )
+                    return None
+                entry_price = ind_confirm.close
+                logger.info(f"Signal CONFIRMED on {confirm_tf}: {symbol}")
+            else:
+                logger.warning(f"Could not get {confirm_tf} data for {symbol}, skipping confirmation")
+                entry_price = ind.close
+        else:
+            entry_price = ind.close
+
         result = signal_engine.evaluate(
             ind,
             regime=regime,
             sweeps=_sweeps,
             order_blocks=_order_blocks,
             structure=_structure,
+            mtf_aligned=_pre_mtf_aligned,
+            mtf_direction=_pre_mtf_direction,
+            entry_price=entry_price,
         )
         if not result.is_actionable:
             logger.debug(f"No signal: {symbol} {timeframe}")
@@ -300,38 +352,12 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
         # FIX M7: define is_buy once at function scope to avoid stale scope bug
         is_buy = result.signal == SignalType.BUY
 
-        # Шаг 2: Подтверждение на 15M
-        confirm_tf = config.trading.confirm_timeframe
-        entry_price: Optional[float] = None
+        # Подтверждение уже выполнено до evaluate() — добавляем причины в result
         confirmed_on_lower_tf = False
-        if config.trading.confirm_tf_enabled and confirm_tf != timeframe:
-            ind_confirm_result = await _get_indicators(symbol, confirm_tf)
-            if ind_confirm_result is not None:
-                ind_confirm, _df_confirm = ind_confirm_result
-                confirm_ok = signal_engine.evaluate_confirm(
-                    ind_confirm,
-                    direction='buy' if result.signal == SignalType.BUY else 'sell'
-                )
-                if not confirm_ok:
-                    await _notify_blocked(
-                        blocked_callback, result, symbol, timeframe,
-                        f"not confirmed on {confirm_tf} (direction mismatch)"
-                    )
-                    logger.info(
-                        f"Signal NOT confirmed on {confirm_tf}: "
-                        f"direction mismatch — {symbol}"
-                    )
-                    return None
-                entry_price = ind_confirm.close
-                confirmed_on_lower_tf = True
-                logger.info(f"Signal CONFIRMED on {confirm_tf}: {result.signal} {symbol}")
-                result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
-                result._confirmed_tf = confirm_tf
-            else:
-                logger.warning(f"Could not get {confirm_tf} data for {symbol}, skipping confirmation")
-                entry_price = result.close
-        else:
-            entry_price = result.close
+        if entry_price != ind.close and config.trading.confirm_tf_enabled:
+            result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
+            result._confirmed_tf = confirm_tf
+            confirmed_on_lower_tf = True
 
         # Шаг 2.5: Уровни поддержки/сопротивления
         sr_levels = {}
@@ -368,6 +394,16 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
             result.level_warnings = validate_levels_vs_trade(
                 sr_levels, entry_price or result.close, result.sl, result.tp, is_buy
             )
+
+        # Swing highs/lows for 1H display in signal
+        try:
+            swing_df = await exchange_client.fetch_ohlcv(symbol, '1h', limit=100)
+            if swing_df is not None and len(swing_df) > 20:
+                swing_highs, swing_lows = find_swing_levels(swing_df, window=5)
+                result._swing_highs_1h = swing_highs[:4]
+                result._swing_lows_1h = swing_lows[:4]
+        except Exception as e:
+            logger.debug(f"Swing points calculation failed for {symbol}: {e}")
 
             # Шаг 2.6: Distance Filter
             direction = "long" if is_buy else "short"
@@ -498,6 +534,33 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
                                     result.reasons.append(f"TP adjusted by FVG: {result.tp:.4f}")
                         except Exception as e:
                             logger.warning(f"TP recalculation with FVG failed for {symbol} {timeframe}: {e}")
+
+                    # Recalculate SL with structural levels
+                    if result.sl is not None:
+                        try:
+                            from risk.dynamic_risk import calculate_structural_sl as recalc_sl
+                            atr_val_sl = float(ind.atr) if ind.atr is not None else 0.0
+                            if atr_val_sl <= 0:
+                                atr_val_sl = float(ind.close) * 0.02 if ind.close else 0.02
+                            new_sl = recalc_sl(
+                                direction=result.signal.value,
+                                entry=entry_price or result.close,
+                                sweeps=_sweeps,
+                                order_blocks=_order_blocks,
+                                structure=_structure,
+                                atr=atr_val_sl,
+                                close=float(ind.close) if ind.close else 0.0,
+                            )
+                            if new_sl != result.sl:
+                                old_sl = result.sl
+                                result.sl = new_sl
+                                logger.info(
+                                    f"SL recalculated with structure for {symbol} {timeframe}: "
+                                    f"{old_sl:.4f} → {result.sl:.4f}"
+                                )
+                                result.reasons.append(f"SL adjusted by structure: {result.sl:.4f}")
+                        except Exception as e:
+                            logger.warning(f"SL recalculation with structure failed for {symbol} {timeframe}: {e}")
 
                     candle_quality = analyze_last_candle(_df_clean, atr_value=ind.atr)
                     if candle_quality:
@@ -774,6 +837,50 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
             except Exception as e:
                 logger.warning(f"Failed to save context snapshot: {e}")
 
+        # ── SL distance guard ───────────────────────────────────────────
+        if result.sl is not None and entry_price:
+            sl_dist_pct = abs(entry_price - result.sl) / entry_price * 100
+            min_dist = config.trading.min_sl_distance_pct
+            max_dist = config.trading.max_sl_distance_pct
+            if sl_dist_pct < min_dist:
+                # Shift SL outward to exactly min_dist
+                if is_buy:
+                    result.sl = round(entry_price * (1 - min_dist / 100), 8)
+                else:
+                    result.sl = round(entry_price * (1 + min_dist / 100), 8)
+                logger.info(
+                    f"SL shifted to min distance {min_dist}% for {symbol} {timeframe}: "
+                    f"new SL={result.sl:.4f}"
+                )
+                result.reasons.append(f"SL shifted to min distance {min_dist}%")
+            elif sl_dist_pct > max_dist:
+                await _notify_blocked(
+                    blocked_callback, result, symbol, timeframe,
+                    f"SL too far: {sl_dist_pct:.1f}% > {max_dist}% max"
+                )
+                logger.info(
+                    f"Signal BLOCKED by max SL distance: {result.signal} {symbol} {timeframe} — "
+                    f"SL distance {sl_dist_pct:.1f}% > {max_dist}%"
+                )
+                return None
+
+        # ── R:R guard ───────────────────────────────────────────────────
+        if result.sl is not None and result.tp is not None and entry_price:
+            risk = abs(entry_price - result.sl)
+            reward = abs(result.tp - entry_price)
+            rr = reward / risk if risk > 0 else 0
+            min_rr = config.trading.min_rr_threshold
+            if rr < min_rr:
+                await _notify_blocked(
+                    blocked_callback, result, symbol, timeframe,
+                    f"rejected: RR {rr:.2f} below threshold {min_rr}"
+                )
+                logger.info(
+                    f"Signal BLOCKED by R:R check: {result.signal} {symbol} {timeframe} — "
+                    f"RR={rr:.2f} < {min_rr}"
+                )
+                return None
+
         # No-trade zone check (reuses cached BTC/ETH contexts from correlation gates)
         btc_ok = True
         eth_ok = True
@@ -948,6 +1055,16 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
                         f"— last signal {last.signal_type} sent {last_sent}"
                     )
                     return None
+                # Cross-direction cooldown (half of normal cooldown)
+                if not same_direction and within_cooldown:
+                    cross_cooldown = timedelta(minutes=config.signal_cooldown_minutes // 2)
+                    if (datetime.now(timezone.utc) - last_sent) < cross_cooldown:
+                        logger.info(
+                            f"Dedup (cross-dir): skip {result.signal} {symbol} {timeframe} "
+                            f"— last signal {last.signal_type} sent {last_sent} "
+                            f"(cross-dir cooldown {cross_cooldown})"
+                        )
+                        return None
 
         # Шаг 4: Сохраняем сигнал в БД
         saved_signal = await db.save_signal(

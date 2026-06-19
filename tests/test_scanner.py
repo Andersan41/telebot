@@ -22,6 +22,8 @@ def _make_ind_mock(atr=600.0, close=50000.0):
     m.adx = 30.0
     m.dmi_plus = 25.0
     m.dmi_minus = 15.0
+    m.ema_fast = 50100.0
+    m.ema_slow = 49900.0
     return m
 
 
@@ -78,6 +80,8 @@ def mock_ind_engine():
     ind_mock.adx = 30.0
     ind_mock.dmi_plus = 25.0
     ind_mock.dmi_minus = 15.0
+    ind_mock.ema_fast = 50100.0
+    ind_mock.ema_slow = 49900.0
     m.calculate.return_value = ind_mock
     return m
 
@@ -157,7 +161,7 @@ class TestDedup:
             )
             last_signal = MagicMock()
             last_signal.signal_type = "SELL"
-            last_signal.sent_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+            last_signal.sent_at = datetime.now(timezone.utc) - timedelta(minutes=25)
             mock_db.get_last_signal = AsyncMock(return_value=last_signal)
 
             result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
@@ -329,6 +333,8 @@ class TestEntryPrice:
         confirm_ind.adx = 30.0
         confirm_ind.dmi_plus = 25.0
         confirm_ind.dmi_minus = 15.0
+        confirm_ind.ema_fast = 50200.0
+        confirm_ind.ema_slow = 50000.0
         from strategy.signal_engine import SignalResult, SignalType
         confirm_sig = SignalResult(
             signal=SignalType.BUY, symbol="BTC/USDT",
@@ -363,10 +369,12 @@ class TestEntryPrice:
     async def test_entry_price_from_close_when_no_confirm_data(self, mock_signal_result, mock_exchange, mock_ind_engine):
         from context.scorer import ContextVerdict
         mock_signal_result.entry_price = None
-        mock_exchange.fetch_ohlcv.side_effect = [
-            {"close": [50000.0]},  # main timeframe
-            None,                  # confirm timeframe
-        ]
+        async def flexible_fetch(*args, **kwargs):
+            tf = args[1] if len(args) > 1 else kwargs.get("timeframe", "")
+            if tf == "15m":
+                return None
+            return {"close": [50000.0]}
+        mock_exchange.fetch_ohlcv.side_effect = flexible_fetch
         with (
             patch("scheduler.scanner.exchange_client", mock_exchange),
             patch("scheduler.scanner.indicator_engine", mock_ind_engine),
@@ -470,6 +478,7 @@ class TestMinVerdictGate:
         )
         monkeypatch.setattr(sc.config, "context_min_verdict", "WEAK")
         monkeypatch.setattr(sc.config, "context_enabled", True)
+        monkeypatch.setattr(sc.config.market_structure, "mtf_enabled", False)
         monkeypatch.setattr(sc.db, "save_signal", AsyncMock())
         monkeypatch.setattr(sc.db, "create_outcome", AsyncMock())
 
@@ -497,6 +506,7 @@ class TestConfirmedFlag:
         mock_save = AsyncMock(return_value=MagicMock(id=1))
         monkeypatch.setattr(sc.db, "save_signal", mock_save)
         monkeypatch.setattr(sc.config, "context_enabled", False)
+        monkeypatch.setattr(sc.config.market_structure, "mtf_enabled", False)
 
         await sc.scan_symbol("BTC/USDT", "1h", AsyncMock())
         mock_save.assert_awaited_once()
@@ -525,6 +535,7 @@ class TestConfirmedFlag:
         mock_save = AsyncMock(return_value=MagicMock(id=1))
         monkeypatch.setattr(sc.db, "save_signal", mock_save)
         monkeypatch.setattr(sc.config, "context_enabled", False)
+        monkeypatch.setattr(sc.config.market_structure, "mtf_enabled", False)
 
         await sc.scan_symbol("BTC/USDT", "1h", AsyncMock())
         mock_save.assert_awaited_once()
@@ -565,6 +576,8 @@ class TestConfirmedFlag:
                 ind.adx = 30.0
                 ind.dmi_plus = 25.0
                 ind.dmi_minus = 15.0
+                ind.ema_fast = 50200.0
+                ind.ema_slow = 50000.0
                 return (ind, MagicMock())
             return (_make_ind_mock(), MagicMock())
 
@@ -573,6 +586,7 @@ class TestConfirmedFlag:
         mock_save = AsyncMock(return_value=MagicMock(id=1))
         monkeypatch.setattr(sc.db, "save_signal", mock_save)
         monkeypatch.setattr(sc.config, "context_enabled", False)
+        monkeypatch.setattr(sc.config.market_structure, "mtf_enabled", False)
 
         await sc.scan_symbol("BTC/USDT", "1h", AsyncMock())
         mock_save.assert_awaited_once()

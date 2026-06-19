@@ -71,7 +71,7 @@ class TradingConfig:
     # Минимальный % разницы между EMA fast/slow (фильтр)
     min_ema_spread_pct: float = float(os.getenv("MIN_EMA_SPREAD_PCT", "0.20"))
     # Включить проверку наклона EMA fast (отключена по умолчанию — слишком жёсткий фильтр)
-    ema_slope_check: bool = os.getenv("EMA_SLOPE_CHECK", "false").lower() == "true"
+    ema_slope_check: bool = os.getenv("EMA_SLOPE_CHECK", "true").lower() == "true"
     # Коэффициент нормализации EMA spread strength (1.0 = max strength при spread >= 1%)
     ema_strength_cap: float = float(os.getenv("EMA_STRENGTH_CAP", "1.0"))
 
@@ -124,6 +124,14 @@ class TradingConfig:
     atr_multiplier_tp: float = float(os.getenv("ATR_MULTIPLIER_TP", "3.0"))
     # Fallback ATR = close * atr_fallback_pct (если ATR = 0)
     atr_fallback_pct: float = float(os.getenv("ATR_FALLBACK_PCT", "2.0"))
+
+    # ─── SL Distance ────────────────────────────────────────────────────
+    # Минимальное расстояние SL от entry (%)
+    min_sl_distance_pct: float = float(os.getenv("MIN_SL_DISTANCE_PCT", "1.0"))
+    # Максимальное расстояние SL от entry (%)
+    max_sl_distance_pct: float = float(os.getenv("MAX_SL_DISTANCE_PCT", "10.0"))
+    # Минимальный R:R для финализации сигнала
+    min_rr_threshold: float = float(os.getenv("MIN_RR_THRESHOLD", "1.5"))
 
     # ─── Supertrend ──────────────────────────────────────────────────────
     # Период Supertrend

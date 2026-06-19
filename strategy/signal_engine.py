@@ -58,6 +58,8 @@ class SignalResult:
     _has_leading_trigger: bool = False
     _regime: Optional[str] = None
     _regime_blocked: bool = False
+    _swing_highs_1h: List[float] = field(default_factory=list)
+    _swing_lows_1h: List[float] = field(default_factory=list)
 
     @property
     def is_actionable(self) -> bool:
@@ -66,19 +68,19 @@ class SignalResult:
     @property
     def verdict(self) -> str:
         if self._regime_blocked:
-            return "BLOCKED"
+            return "ЗАБЛОКИРОВАН"
         if self._confidence_v2 is not None:
             q = self._confidence_v2.quality
-            return {"strong": "STRONG", "moderate": "MODERATE", "weak": "WEAK"}.get(q, "WEAK")
+            return {"strong": "СИЛЬНЫЙ", "moderate": "УМЕРЕННЫЙ", "weak": "СЛАБЫЙ"}.get(q, "СЛАБЫЙ")
         s = self.score
         if s >= 6:
-            return "STRONG"
+            return "СИЛЬНЫЙ"
         elif s >= 4:
-            return "MODERATE"
+            return "УМЕРЕННЫЙ"
         elif s >= 2:
-            return "WEAK"
+            return "СЛАБЫЙ"
         else:
-            return "VERY WEAK"
+            return "ОЧЕНЬ СЛАБЫЙ"
 
     @property
     def confidence(self) -> float:
@@ -95,7 +97,6 @@ class SignalResult:
         return round(confidence * 100, 1)
 
     def format_message(self) -> str:
-        from strategy.levels import format_levels_message
 
         if self.signal == SignalType.BUY:
             signal_word = "ПОКУПКА"
@@ -119,21 +120,31 @@ class SignalResult:
 
         if self.sl is not None:
             sl_pct = (self.sl - entry) / entry * 100 if entry else 0
-            lines.append(f"Stop Loss: {self.sl} ({sl_pct:+.2f}%)")
+            lines.append(f"\U0001f534 Stop Loss: {self.sl} ({sl_pct:+.2f}%)")
         if self.tp is not None:
             tp_pct = (self.tp - entry) / entry * 100 if entry else 0
-            lines.append(f"Take Profit: {self.tp} ({tp_pct:+.2f}%)")
+            lines.append(f"\U0001f7e2 Take Profit: {self.tp} ({tp_pct:+.2f}%)")
         if self.sl is not None and self.tp is not None and entry:
             rr = abs(self.tp - entry) / abs(entry - self.sl) if entry != self.sl else 0
             lines.append(f"R/R: 1:{rr:.1f}")
 
-        if self.sr_levels:
-            lines.append(format_levels_message(self.sr_levels))
+        if self._swing_highs_1h or self._swing_lows_1h:
+            lines.append("")
+            lines.append("\U0001f4c9 Swing highs (HH) 1H:")
+            if self._swing_highs_1h:
+                lines.append(f"  \U0001f534 {', '.join(f'{h:.4f}' for h in self._swing_highs_1h)}")
+            else:
+                lines.append("  --")
+            lines.append("\U0001f4ca Swing lows (LL) 1H:")
+            if self._swing_lows_1h:
+                lines.append(f"  \U0001f7e2 {', '.join(f'{l:.4f}' for l in self._swing_lows_1h)}")
+            else:
+                lines.append("  --")
 
         if self.reasons:
             lines.append(f"\nТехнические факторы ({self.score}/7):")
             for r in self.reasons:
-                lines.append(f"  {html.escape(r)}")
+                lines.append(f"  {r.replace('<', '&lt;')}")
 
         if self._context_items:
             lines.append(f"\nРыночный контекст:")
@@ -150,13 +161,22 @@ class SignalResult:
                 lines.append(f"  {html.escape(w)}")
 
         if self._regime is not None:
-            status = "BLOCKED" if self._regime_blocked else ""
-            regime_display = f"{self._regime.capitalize()} {status}".strip()
-            lines.append(f"\nRegime: {regime_display}")
+            regime_map = {
+                "range": "Рейндж", "Range": "Рейндж",
+                "trend": "Тренд", "Trend": "Тренд",
+                "compression": "Компрессия", "Compression": "Компрессия",
+                "volatility": "Волатильность", "Volatility": "Волатильность",
+            }
+            regime_display = regime_map.get(self._regime, self._regime)
+            if self._regime_blocked:
+                regime_display += " (заблокирован)"
+            lines.append(f"\nРежим: {regime_display}")
 
         lines.append(f"\nИтог: {self.verdict} | Уверенность: {self.confidence:.1f}%")
         if self._confidence_v2 is not None:
-            lines.append(f"Quality: {self._confidence_v2.quality}")
+            quality_map = {"strong": "высокая", "moderate": "средняя", "weak": "низкая"}
+            q = quality_map.get(self._confidence_v2.quality, self._confidence_v2.quality)
+            lines.append(f"Качество: {q}")
         return "\n".join(lines)
 
 
@@ -167,6 +187,7 @@ class SignalEngine:
         regime: Any = None,
         sweeps: Optional[list] = None,
         order_blocks: Optional[list] = None,
+        entry_price: Optional[float] = None,
         **kwargs: Any,
     ) -> SignalResult:
         # M1: gate pass rate tracking — log each gate outcome for real-world measurement
@@ -176,6 +197,8 @@ class SignalEngine:
         # structure absent (not in kwargs) means "not provided" (tests/other callers).
         _structure_provided = "structure" in kwargs
         structure = kwargs.get("structure")
+        mtf_aligned = kwargs.get("mtf_aligned", None)
+        mtf_direction = kwargs.get("mtf_direction", None)
         cfg = config.trading
         regime_name = regime.regime if regime else None
 
@@ -333,7 +356,19 @@ class SignalEngine:
             elif ema_cross_type == "bearish" or macd_cross_type == "bearish":
                 direction = "sell"
         if direction is None:
-            direction = "buy" if ind.ema_fast > ind.ema_slow else "sell"
+            ema_direction = "buy" if ind.ema_fast > ind.ema_slow else "sell"
+            if ind.adx < cfg.adx_strong:
+                spread_pct = abs(ind.ema_fast - ind.ema_slow) / ind.ema_slow * 100
+                if spread_pct < cfg.min_ema_spread_pct * 2:
+                    _log_gates(_gate_log, ind)
+                    return SignalResult(
+                        signal=SignalType.NO_SIGNAL,
+                        symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                        reasons=[f"No clear direction: ADX={ind.adx:.1f} < {cfg.adx_strong}, "
+                                 f"EMA spread={spread_pct:.2f}% too narrow"],
+                        _regime=regime_name,
+                    )
+            direction = ema_direction
 
         # --- Compute factor strengths (before trigger gate) ---
         st_str = _strength_supertrend(ind, direction)
@@ -359,6 +394,19 @@ class SignalEngine:
             "BUY": weighted_score / total_weight if total_weight else 0.0,
             "SELL": -weighted_score / total_weight if total_weight else 0.0,
         }
+
+        # Gate: Supertrend must not strongly contradict signal
+        if st_str < -0.3:
+            _gate_log["supertrend_alignment"] = False
+            _log_gates(_gate_log, ind)
+            return SignalResult(
+                signal=SignalType.NO_SIGNAL,
+                symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                reasons=[f"Supertrend misaligned (strength={st_str:.1f}, direction={direction})"],
+                _regime=regime_name,
+                _factor_strengths=factor_strengths, _weighted_score=weighted_score,
+            )
+        _gate_log["supertrend_alignment"] = True
 
         # M7: compression breakout mode check (deferred until direction is known)
         breakout_reasons: List[str] = []
@@ -430,11 +478,17 @@ class SignalEngine:
                 and ind.adx >= cfg.adx_strong
                 and vol_above_avg
             ):
-                has_trigger = True
-                leading_reasons.append(
-                    f"Momentum entry (Supertrend {'bull' if direction == 'buy' else 'bear'} + "
-                    f"EMA aligned + ADX={ind.adx:.1f} + volume)"
-                )
+                htf_ok = True
+                if mtf_aligned and mtf_direction:
+                    if (direction == "buy" and mtf_direction != "bullish") or \
+                       (direction == "sell" and mtf_direction != "bearish"):
+                        htf_ok = False
+                if htf_ok:
+                    has_trigger = True
+                    leading_reasons.append(
+                        f"Momentum entry (Supertrend {'bull' if direction == 'buy' else 'bear'} + "
+                        f"EMA aligned + ADX={ind.adx:.1f} + volume)"
+                    )
 
         if cfg.trigger_required and not has_trigger:
             _gate_log["trigger"] = False
@@ -504,19 +558,34 @@ class SignalEngine:
         if cfg.ema_slope_check:
             current_spread = ind.ema_fast - ind.ema_slow
             prev_spread = ind.ema_fast_prev - ind.ema_slow_prev
-            if abs(current_spread) < abs(prev_spread) * 0.95:
-                _gate_log["ema_slope"] = False
-                _log_gates(_gate_log, ind)
-                return SignalResult(
-                    signal=SignalType.NO_SIGNAL,
-                    symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
-                    reasons=["EMA slope weakening (>5%)"],
-                    _ema_alignment_info=f"spread={ema_spread_pct:.2f}%",
-                    _factor_strengths=factor_strengths, _weighted_score=weighted_score,
-                    _rsi_strength=rsi_str,
-                    _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
-                    _regime=regime_name,
-                )
+            if direction == "buy":
+                if current_spread > 0 and current_spread < prev_spread * 0.95:
+                    _gate_log["ema_slope"] = False
+                    _log_gates(_gate_log, ind)
+                    return SignalResult(
+                        signal=SignalType.NO_SIGNAL,
+                        symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                        reasons=["EMA slope weakening (>5%)"],
+                        _ema_alignment_info=f"spread={ema_spread_pct:.2f}%",
+                        _factor_strengths=factor_strengths, _weighted_score=weighted_score,
+                        _rsi_strength=rsi_str,
+                        _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
+                        _regime=regime_name,
+                    )
+            else:
+                if current_spread < 0 and abs(current_spread) < abs(prev_spread) * 0.95:
+                    _gate_log["ema_slope"] = False
+                    _log_gates(_gate_log, ind)
+                    return SignalResult(
+                        signal=SignalType.NO_SIGNAL,
+                        symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
+                        reasons=["EMA slope weakening (>5%)"],
+                        _ema_alignment_info=f"spread={ema_spread_pct:.2f}%",
+                        _factor_strengths=factor_strengths, _weighted_score=weighted_score,
+                        _rsi_strength=rsi_str,
+                        _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
+                        _regime=regime_name,
+                    )
         _gate_log["ema_slope"] = True
 
         ema_alignment_info = f"spread={ema_spread_pct:.2f}%"
@@ -528,7 +597,10 @@ class SignalEngine:
         reasons.extend(leading_reasons)
 
         if abs(st_str) > 0.5:
-            reasons.append(f"Supertrend {'бычий' if st_str > 0 else 'медвежий'}")
+            if st_str > 0:
+                reasons.append("Supertrend aligned")
+            else:
+                reasons.append("Supertrend NOT aligned (against signal)")
 
         if ema_aligned and ema_cross_type is not None:
             dir_word = "снизу вверх" if ema_cross_type == "bullish" else "сверху вниз"
@@ -539,14 +611,16 @@ class SignalEngine:
             dir_word = "бычий" if ind.macd_hist > 0 else "медвежий"
             reasons.append(f"MACD {dir_word} (norm={macd_norm:.2f}%)")
 
-        if ind.rsi < 30:
-            reasons.append(f"RSI={ind.rsi:.1f} — перепроданность, возможен отскок (покупки)")
-        elif 30 <= ind.rsi < 50:
-            reasons.append(f"RSI={ind.rsi:.1f} — нейтральная→бычья зона")
-        elif ind.rsi >= 70:
-            reasons.append(f"RSI={ind.rsi:.1f} — перекупленность, возможен разворот (продажи)")
-        elif ind.rsi > 65:
-            reasons.append(f"RSI={ind.rsi:.1f} — нейтральная→медвежья зона")
+        if direction == "buy":
+            if ind.rsi <= cfg.rsi_oversold:
+                reasons.append(f"RSI={ind.rsi:.1f} — перепроданность, возможен отскок")
+            elif ind.rsi < cfg.rsi_bull_min:
+                reasons.append(f"RSI={ind.rsi:.1f} — бычья зона")
+        elif direction == "sell":
+            if ind.rsi >= cfg.rsi_overbought:
+                reasons.append(f"RSI={ind.rsi:.1f} — перекупленность, возможен разворот")
+            elif ind.rsi > cfg.rsi_bear_max:
+                reasons.append(f"RSI={ind.rsi:.1f} — медвежья зона")
 
         if ind.adx >= cfg.adx_strong:
             reasons.append(f"ADX={ind.adx:.1f} (strong trend ≥ {cfg.adx_strong})")
@@ -558,12 +632,15 @@ class SignalEngine:
             elif delta < cfg.delta_bearish:
                 reasons.append(f"Delta: {delta:.0f}% (продажи доминируют)")
 
-        if ind.dmi_plus > ind.dmi_minus:
-            reasons.append(f"DMI+ > DMI- (+{ind.dmi_plus - ind.dmi_minus:.1f})")
+        if direction == "sell":
+            if ind.dmi_minus > ind.dmi_plus:
+                reasons.append(f"DMI- > DMI+ (+{ind.dmi_minus - ind.dmi_plus:.1f})")
         else:
-            reasons.append(f"DMI- > DMI+ (+{ind.dmi_minus - ind.dmi_plus:.1f})")
+            if ind.dmi_plus > ind.dmi_minus:
+                reasons.append(f"DMI+ > DMI- (+{ind.dmi_plus - ind.dmi_minus:.1f})")
 
-        score = len(reasons)
+        supporting_reasons = [r for r in reasons if _reason_supports_direction(r, direction)]
+        score = len(supporting_reasons)
         min_score = config.scoring.min_score_for_signal
 
         if cfg.min_score_enabled and score < min_score:
@@ -624,7 +701,7 @@ class SignalEngine:
                     )
         _gate_log["candle_close"] = True
 
-        sl, tp = _calculate_sl_tp(ind, signal_type, structure)
+        sl, tp = _calculate_sl_tp(ind, signal_type, structure, entry=entry_price)
 
         # M1: all gates passed — log success
         _log_gates(_gate_log, ind, passed=True)
@@ -653,7 +730,7 @@ class SignalEngine:
             signal=signal_type,
             symbol=ind.symbol, timeframe=ind.timeframe, close=ind.close,
             sl=sl, tp=tp, reasons=reasons, score=score,
-            entry_price=ind.close,
+            entry_price=entry_price if entry_price is not None else ind.close,
             _factor_strengths=factor_strengths, _weighted_score=weighted_score,
             _rsi_strength=rsi_str, _ema_alignment_info=ema_alignment_info,
             _has_trigger=has_trigger, _has_leading_trigger=has_leading_trigger,
@@ -718,12 +795,33 @@ def _get_weights() -> Dict[str, int]:
     }
 
 
+def _reason_supports_direction(reason: str, direction: str) -> bool:
+    """Check if a reason string supports the given signal direction."""
+    reason_lower = reason.lower()
+    if direction == "buy":
+        if any(w in reason_lower for w in ["продажи", "медвежий", "sell", "bearish"]):
+            return False
+        if "not aligned" in reason_lower or "против" in reason_lower:
+            return False
+    else:
+        if any(w in reason_lower for w in ["покупки", "бычий", "buy", "bullish"]):
+            return False
+        if "not aligned" in reason_lower or "против" in reason_lower:
+            return False
+    return True
+
+
 def _strength_supertrend(ind: IndicatorValues, direction: str) -> float:
-    if direction == "buy" and ind.supertrend_direction == 1:
-        return 1.0
-    if direction == "sell" and ind.supertrend_direction == -1:
-        return 1.0
-    return -0.5
+    aligned = (
+        (direction == "buy" and ind.supertrend_direction == 1) or
+        (direction == "sell" and ind.supertrend_direction == -1)
+    )
+    if aligned:
+        adx_factor = min(1.0, max(0.3, (ind.adx - config.trading.adx_min) / 30))
+        return adx_factor
+    else:
+        adx_factor = min(1.0, max(0.3, (ind.adx - config.trading.adx_min) / 30))
+        return -adx_factor
 
 
 def _strength_ema(ind: IndicatorValues, direction: str) -> float:
@@ -816,28 +914,32 @@ def _strength_dmi(ind: IndicatorValues, direction: str) -> float:
 
 
 def _calculate_sl_tp(
-    ind: IndicatorValues, signal: SignalType, structure: Optional[Any] = None
+    ind: IndicatorValues,
+    signal: SignalType,
+    structure: Optional[Any] = None,
+    entry: Optional[float] = None,
 ):
     cfg = config.trading
     atr = ind.atr if ind.atr > 0 else ind.close * cfg.atr_fallback_pct / 100
+    ep = entry if entry is not None else ind.close
 
     if structure and structure.last_bos:
         bos = structure.last_bos
         if signal == SignalType.BUY and bos.type == "bullish":
             sl = round(bos.level * 0.995, 8)
-            tp = round(ind.close + atr * cfg.atr_multiplier_tp, 8)
+            tp = round(ep + atr * cfg.atr_multiplier_tp, 8)
             return sl, tp
         if signal == SignalType.SELL and bos.type == "bearish":
             sl = round(bos.level * 1.005, 8)
-            tp = round(ind.close - atr * cfg.atr_multiplier_tp, 8)
+            tp = round(ep - atr * cfg.atr_multiplier_tp, 8)
             return sl, tp
 
     if signal == SignalType.BUY:
-        sl = round(ind.close - atr * cfg.atr_multiplier_sl, 8)
-        tp = round(ind.close + atr * cfg.atr_multiplier_tp, 8)
+        sl = round(ep - atr * cfg.atr_multiplier_sl, 8)
+        tp = round(ep + atr * cfg.atr_multiplier_tp, 8)
     else:
-        sl = round(ind.close + atr * cfg.atr_multiplier_sl, 8)
-        tp = round(ind.close - atr * cfg.atr_multiplier_tp, 8)
+        sl = round(ep + atr * cfg.atr_multiplier_sl, 8)
+        tp = round(ep - atr * cfg.atr_multiplier_tp, 8)
     return sl, tp
 
 
