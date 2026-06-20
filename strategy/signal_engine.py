@@ -7,7 +7,7 @@ import html
 import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import List, Literal, Optional, Dict, Any
 
 from loguru import logger
 
@@ -58,6 +58,7 @@ class SignalResult:
     _has_leading_trigger: bool = False
     _regime: Optional[str] = None
     _regime_blocked: bool = False
+    _sl_source: Optional[Literal["bos", "atr"]] = None
     _swing_highs_1h: List[float] = field(default_factory=list)
     _swing_lows_1h: List[float] = field(default_factory=list)
 
@@ -701,7 +702,7 @@ class SignalEngine:
                     )
         _gate_log["candle_close"] = True
 
-        sl, tp = _calculate_sl_tp(ind, signal_type, structure, entry=entry_price)
+        sl, tp, sl_source = _calculate_sl_tp(ind, signal_type, structure, entry=entry_price)
 
         # M1: all gates passed — log success
         _log_gates(_gate_log, ind, passed=True)
@@ -737,6 +738,7 @@ class SignalEngine:
             _confidence_v2=conf_v2, _regime=regime_name, _regime_blocked=False,
             _structure_trend=structure.trend if _structure_provided and structure else None,
             _structure_bos=structure.last_bos.type if _structure_provided and structure and structure.last_bos else None,
+            _sl_source=sl_source,
         )
 
     # FIX P1: облегчённая проверка для confirmation timeframe (15m)
@@ -918,7 +920,7 @@ def _calculate_sl_tp(
     signal: SignalType,
     structure: Optional[Any] = None,
     entry: Optional[float] = None,
-):
+) -> tuple[float, float, Literal["bos", "atr"]]:
     cfg = config.trading
     atr = ind.atr if ind.atr > 0 else ind.close * cfg.atr_fallback_pct / 100
     ep = entry if entry is not None else ind.close
@@ -928,11 +930,11 @@ def _calculate_sl_tp(
         if signal == SignalType.BUY and bos.type == "bullish":
             sl = round(bos.level * 0.995, 8)
             tp = round(ep + atr * cfg.atr_multiplier_tp, 8)
-            return sl, tp
+            return sl, tp, "bos"
         if signal == SignalType.SELL and bos.type == "bearish":
             sl = round(bos.level * 1.005, 8)
             tp = round(ep - atr * cfg.atr_multiplier_tp, 8)
-            return sl, tp
+            return sl, tp, "bos"
 
     if signal == SignalType.BUY:
         sl = round(ep - atr * cfg.atr_multiplier_sl, 8)
@@ -940,7 +942,7 @@ def _calculate_sl_tp(
     else:
         sl = round(ep + atr * cfg.atr_multiplier_sl, 8)
         tp = round(ep - atr * cfg.atr_multiplier_tp, 8)
-    return sl, tp
+    return sl, tp, "atr"
 
 
 signal_engine = SignalEngine()

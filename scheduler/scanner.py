@@ -535,30 +535,65 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
                         except Exception as e:
                             logger.warning(f"TP recalculation with FVG failed for {symbol} {timeframe}: {e}")
 
-                    # Recalculate SL with structural levels
+                    # Recalculate SL with structural levels (Task 2: risk improvement check)
                     if result.sl is not None:
                         try:
                             from risk.dynamic_risk import calculate_structural_sl as recalc_sl
                             atr_val_sl = float(ind.atr) if ind.atr is not None else 0.0
                             if atr_val_sl <= 0:
                                 atr_val_sl = float(ind.close) * 0.02 if ind.close else 0.02
-                            new_sl = recalc_sl(
-                                direction=result.signal.value,
-                                entry=entry_price or result.close,
-                                sweeps=_sweeps,
-                                order_blocks=_order_blocks,
-                                structure=_structure,
-                                atr=atr_val_sl,
-                                close=float(ind.close) if ind.close else 0.0,
-                            )
-                            if new_sl != result.sl:
-                                old_sl = result.sl
-                                result.sl = new_sl
-                                logger.info(
-                                    f"SL recalculated with structure for {symbol} {timeframe}: "
-                                    f"{old_sl:.4f} → {result.sl:.4f}"
+
+                            _ep = entry_price or result.close
+                            _skip_structural_sl = False
+
+                            # Skip structural SL if signal already used BOS-based SL
+                            # (BOS already applies 0.5% buffer — avoid double-buffering)
+                            if result._sl_source == "bos":
+                                _skip_structural_sl = True
+
+                            if not _skip_structural_sl:
+                                new_sl = recalc_sl(
+                                    direction=result.signal.value,
+                                    entry=_ep,
+                                    sweeps=_sweeps,
+                                    order_blocks=_order_blocks,
+                                    structure=_structure,
+                                    atr=atr_val_sl,
+                                    close=float(ind.close) if ind.close else 0.0,
                                 )
-                                result.reasons.append(f"SL adjusted by structure: {result.sl:.4f}")
+                                # Only apply structural SL if it improves risk (shorter distance)
+                                _current_dist = abs(_ep - result.sl)
+                                _structural_dist = abs(_ep - new_sl)
+                                if _structural_dist <= _current_dist and new_sl != result.sl:
+                                    old_sl = result.sl
+                                    result.sl = new_sl
+                                    logger.info(
+                                        f"structural SL accepted for {symbol} {timeframe}: "
+                                        f"{old_sl:.4f} → {result.sl:.4f} "
+                                        f"(dist {old_sl:.4f}: {_current_dist:.4f} → {new_sl:.4f}: {_structural_dist:.4f})"
+                                    )
+                                    result.reasons.append(f"SL adjusted by structure: {result.sl:.4f}")
+                                elif new_sl != result.sl:
+                                    logger.info(
+                                        f"structural SL rejected (worse risk) for {symbol} {timeframe}: "
+                                        f"current SL={result.sl:.4f} (dist={_current_dist:.4f}), "
+                                        f"structural SL={new_sl:.4f} (dist={_structural_dist:.4f})"
+                                    )
+
+                                # Stop hunt buffer (Task 6): apply only to structural SL
+                                if new_sl != result.sl and config.trading.stop_hunt_buffer_pct > 0:
+                                    _buffer_pct = config.trading.stop_hunt_buffer_pct / 100.0
+                                    if is_buy:
+                                        result.sl = round(result.sl * (1 - _buffer_pct), 8)
+                                    else:
+                                        result.sl = round(result.sl * (1 + _buffer_pct), 8)
+                                    logger.info(
+                                        f"Stop hunt buffer applied for {symbol} {timeframe}: "
+                                        f"SL={result.sl:.4f} (buffer={config.trading.stop_hunt_buffer_pct}%)"
+                                    )
+                                    result.reasons.append(
+                                        f"SL + stop hunt buffer {config.trading.stop_hunt_buffer_pct}%: {result.sl:.4f}"
+                                    )
                         except Exception as e:
                             logger.warning(f"SL recalculation with structure failed for {symbol} {timeframe}: {e}")
 
@@ -836,6 +871,27 @@ async def scan_symbol(symbol: str, timeframe: str, notify_callback, blocked_call
                 )
             except Exception as e:
                 logger.warning(f"Failed to save context snapshot: {e}")
+
+        # ── News filter (Task 5) ────────────────────────────────────────
+        if config.risk.news_filter_enabled:
+            try:
+                from risk.news_filter import check_news_block
+                news_block = await check_news_block(
+                    direction="BUY" if is_buy else "SELL",
+                    entry_price=entry_price or result.close,
+                )
+                if news_block.blocked:
+                    await _notify_blocked(
+                        blocked_callback, result, symbol, timeframe,
+                        f"news filter: {news_block.reason}",
+                    )
+                    logger.info(
+                        f"Signal BLOCKED by news filter: {result.signal} {symbol} {timeframe} — "
+                        f"{news_block.reason}"
+                    )
+                    return None
+            except Exception as e:
+                logger.warning(f"News filter check failed for {symbol}: {e}")
 
         # ── SL distance guard ───────────────────────────────────────────
         if result.sl is not None and entry_price:

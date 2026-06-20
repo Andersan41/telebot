@@ -592,3 +592,91 @@ class TestConfirmedFlag:
         mock_save.assert_awaited_once()
         call_kwargs = mock_save.call_args.kwargs
         assert call_kwargs["confirmed"] is True
+
+
+# === News Filter Tests (Task 5) ===
+
+class TestNewsFilter:
+    @pytest.mark.asyncio
+    async def test_news_filter_disabled_passes(self):
+        """When NEWS_FILTER_ENABLED=false, no blocking occurs."""
+        from risk.news_filter import check_news_block
+        result = await check_news_block("BUY", entry_price=100.0)
+        assert result.blocked is False
+
+    @pytest.mark.asyncio
+    async def test_news_filter_no_events_passes(self):
+        """When no events are cached, no blocking occurs."""
+        from risk.news_filter import check_news_block, _cache_events, _events_cache
+        _cache_events([])
+        result = await check_news_block("BUY", entry_price=100.0)
+        assert result.blocked is False
+
+    @pytest.mark.asyncio
+    async def test_news_filter_blocks_during_event(self):
+        """Signal blocked during high-impact event window."""
+        from risk.news_filter import check_news_block, _cache_events, MacroEvent
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        event = MacroEvent(
+            name="FOMC Rate Decision",
+            timestamp=now,
+            impact="high",
+            currency="USD",
+        )
+        _cache_events([event])
+        # Patch config to enable the filter
+        import config.settings as settings_mod
+        old_val = settings_mod.config.risk.news_filter_enabled
+        settings_mod.config.risk.news_filter_enabled = True
+        try:
+            result = await check_news_block("BUY", entry_price=100.0)
+            assert result.blocked is True
+            assert "FOMC" in result.event_name
+        finally:
+            settings_mod.config.risk.news_filter_enabled = old_val
+
+    @pytest.mark.asyncio
+    async def test_news_filter_ignores_medium_impact(self):
+        """Medium-impact events do not block signals."""
+        from risk.news_filter import check_news_block, _cache_events, MacroEvent
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        event = MacroEvent(
+            name="Retail Sales",
+            timestamp=now,
+            impact="medium",
+            currency="USD",
+        )
+        _cache_events([event])
+        import config.settings as settings_mod
+        old_val = settings_mod.config.risk.news_filter_enabled
+        settings_mod.config.risk.news_filter_enabled = True
+        try:
+            result = await check_news_block("BUY", entry_price=100.0)
+            assert result.blocked is False
+        finally:
+            settings_mod.config.risk.news_filter_enabled = old_val
+
+    @pytest.mark.asyncio
+    async def test_news_filter_passes_outside_window(self):
+        """Signal passes when event is outside the block window."""
+        from risk.news_filter import check_news_block, _cache_events, MacroEvent
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        # Event 3 hours in the future — outside the 60min window
+        event = MacroEvent(
+            name="CPI",
+            timestamp=now + timedelta(hours=3),
+            impact="high",
+            currency="USD",
+        )
+        _cache_events([event])
+        import config.settings as settings_mod
+        old_val = settings_mod.config.risk.news_filter_enabled
+        settings_mod.config.risk.news_filter_enabled = True
+        try:
+            result = await check_news_block("BUY", entry_price=100.0)
+            assert result.blocked is False
+        finally:
+            settings_mod.config.risk.news_filter_enabled = old_val

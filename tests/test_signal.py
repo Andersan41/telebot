@@ -2119,34 +2119,38 @@ class TestCalculateSlTpEntry:
 
     def test_buy_sl_tp_from_entry_not_close(self):
         ind = self._make_ind(close=50000.0, atr=1000.0)
-        sl, tp = _calculate_sl_tp(ind, SignalType.BUY, entry=51000.0)
+        sl, tp, sl_source = _calculate_sl_tp(ind, SignalType.BUY, entry=51000.0)
         # SL = entry - atr * 1.5 = 51000 - 1500 = 49500
         assert sl == 49500.0
         # TP = entry + atr * 3.0 = 51000 + 3000 = 54000
         assert tp == 54000.0
+        assert sl_source == "atr"
 
     def test_sell_sl_tp_from_entry_not_close(self):
         ind = self._make_ind(close=50000.0, atr=1000.0)
-        sl, tp = _calculate_sl_tp(ind, SignalType.SELL, entry=49000.0)
+        sl, tp, sl_source = _calculate_sl_tp(ind, SignalType.SELL, entry=49000.0)
         # SL = entry + atr * 1.5 = 49000 + 1500 = 50500
         assert sl == 50500.0
         # TP = entry - atr * 3.0 = 49000 - 3000 = 46000
         assert tp == 46000.0
+        assert sl_source == "atr"
 
     def test_entry_none_fallback_to_close(self):
         ind = self._make_ind(close=50000.0, atr=1000.0)
-        sl, tp = _calculate_sl_tp(ind, SignalType.BUY, entry=None)
+        sl, tp, sl_source = _calculate_sl_tp(ind, SignalType.BUY, entry=None)
         # Same as without entry param — uses ind.close
         assert sl == 48500.0
         assert tp == 53000.0
+        assert sl_source == "atr"
 
     def test_entry_affects_sl_tp_not_ind_close(self):
         ind = self._make_ind(close=50000.0, atr=1000.0)
         # entry differs from close
-        sl, tp = _calculate_sl_tp(ind, SignalType.BUY, entry=52000.0)
+        sl, tp, sl_source = _calculate_sl_tp(ind, SignalType.BUY, entry=52000.0)
         # SL/TP based on 52000, not 50000
         assert sl == 50500.0  # 52000 - 1500
         assert tp == 55000.0  # 52000 + 3000
+        assert sl_source == "atr"
 
     def test_bos_entry_used_for_tp(self):
         """With BOS, SL comes from bos.level but TP still uses entry."""
@@ -2162,8 +2166,9 @@ class TestCalculateSlTpEntry:
             'last_choch': None,
         })()
         ind = self._make_ind(close=50000.0, atr=1000.0)
-        sl, tp = _calculate_sl_tp(ind, SignalType.BUY, structure=structure, entry=51000.0)
+        sl, tp, sl_source = _calculate_sl_tp(ind, SignalType.BUY, structure=structure, entry=51000.0)
         # SL = bos.level * 0.995 = 49000 * 0.995 = 48755
         assert sl == 48755.0
         # TP = entry + atr * 3.0 = 51000 + 3000 = 54000 (uses entry, not close)
         assert tp == 54000.0
+        assert sl_source == "bos"

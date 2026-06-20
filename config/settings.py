@@ -132,6 +132,8 @@ class TradingConfig:
     max_sl_distance_pct: float = float(os.getenv("MAX_SL_DISTANCE_PCT", "10.0"))
     # Минимальный R:R для финализации сигнала
     min_rr_threshold: float = float(os.getenv("MIN_RR_THRESHOLD", "1.5"))
+    # Буфер stop hunt для structural SL (%) — стоп ставится за уровень, а не на него
+    stop_hunt_buffer_pct: float = float(os.getenv("STOP_HUNT_BUFFER_PCT", "1.0"))
 
     # ─── Supertrend ──────────────────────────────────────────────────────
     # Период Supertrend
@@ -306,6 +308,14 @@ class RiskConfig:
     no_trade_zones_enabled: bool = os.getenv("NO_TRADE_ZONES_ENABLED", "true").lower() == "true"
     # Dynamic risk filter
     dynamic_risk_enabled: bool = os.getenv("DYNAMIC_RISK_ENABLED", "true").lower() == "true"
+
+    # ─── News Filter (Task 5) ──────────────────────────────────────────
+    # Блокировать сигналы вокруг high-impact событий
+    news_filter_enabled: bool = os.getenv("NEWS_FILTER_ENABLED", "false").lower() == "true"
+    # Блокировка до события (минуты)
+    news_block_before_minutes: int = int(os.getenv("NEWS_BLOCK_BEFORE_MINUTES", "60"))
+    # Блокировка после события (минуты)
+    news_block_after_minutes: int = int(os.getenv("NEWS_BLOCK_AFTER_MINUTES", "30"))
 
     # ─── Market Regime ───────────────────────────────────────────────────
     # Порог ADX для трендового режима (согласован с adx_min signal_engine)

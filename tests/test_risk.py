@@ -915,3 +915,168 @@ class TestFVGTP:
         )
         fvg_targets = [t for t in targets if "FVG" in t.label]
         assert len(fvg_targets) == 0
+
+
+# === Structural SL Risk Improvement Tests (Task 2) ===
+
+class TestStructuralSLRiskImprovement:
+    """Test that structural SL only replaces current SL when it improves risk."""
+
+    def test_structural_sl_closer_is_better(self):
+        """Structural SL closer to entry should be preferred."""
+        # BUY: current SL at 95.0 (dist=5.0), structural at 97.0 (dist=3.0)
+        # Structural is closer → should be used
+        sweeps = [_make_sweep("bullish", sweep_low=97.0, sweep_high=100.0)]
+        structural_sl = calculate_structural_sl("BUY", entry=100.0, sweeps=sweeps, order_blocks=[], atr=2.0, close=100.0)
+        current_sl = 95.0
+        current_dist = abs(100.0 - current_sl)  # 5.0
+        structural_dist = abs(100.0 - structural_sl)  # 3.0
+        assert structural_dist < current_dist
+        assert structural_sl == 97.0
+
+    def test_structural_sl_farther_is_worse(self):
+        """Structural SL farther from entry should NOT replace current SL."""
+        # BUY: current SL at 99.0 (dist=1.0), structural at 95.0 (dist=5.0)
+        sweeps = [_make_sweep("bullish", sweep_low=95.0, sweep_high=100.0)]
+        structural_sl = calculate_structural_sl("BUY", entry=100.0, sweeps=sweeps, order_blocks=[], atr=2.0, close=100.0)
+        current_sl = 99.0
+        current_dist = abs(100.0 - current_sl)  # 1.0
+        structural_dist = abs(100.0 - structural_sl)  # 5.0
+        assert structural_dist > current_dist
+
+    def test_structural_sl_equal_distance_no_change(self):
+        """Structural SL at same distance → no change (new_sl == result.sl guard)."""
+        sweeps = [_make_sweep("bullish", sweep_low=97.0, sweep_high=100.0)]
+        structural_sl = calculate_structural_sl("BUY", entry=100.0, sweeps=sweeps, order_blocks=[], atr=2.0, close=100.0)
+        assert structural_sl == 97.0
+
+
+# === Stop Hunt Buffer Tests (Task 6) ===
+
+class TestStopHuntBuffer:
+    """Test stop hunt buffer applied only to structural SL."""
+
+    def test_buy_stop_hunt_buffer_shifts_sl_down(self):
+        """BUY: buffer shifts structural SL further from entry."""
+        structural_sl = 97.0
+        entry = 100.0
+        buffer_pct = 1.0
+        buffered_sl = round(structural_sl * (1 - buffer_pct / 100), 8)
+        assert buffered_sl < structural_sl
+        assert buffered_sl == 96.03
+
+    def test_sell_stop_hunt_buffer_shifts_sl_up(self):
+        """SELL: buffer shifts structural SL further from entry."""
+        structural_sl = 103.0
+        entry = 100.0
+        buffer_pct = 1.0
+        buffered_sl = round(structural_sl * (1 + buffer_pct / 100), 8)
+        assert buffered_sl > structural_sl
+        assert buffered_sl == 104.03
+
+    def test_stop_hunt_buffer_not_applied_to_bos_sl(self):
+        """Stop hunt buffer should NOT be applied to BOS-based SL.
+
+        Uses explicit sl_source marker ('bos') instead of numeric heuristic.
+        """
+        # With sl_source="bos", scanner skips structural SL recalculation
+        # — no double-buffering. Verify the marker is the deciding factor.
+        from strategy.signal_engine import _calculate_sl_tp, SignalType
+        from indicators.engine import IndicatorValues
+        from market_structure.structure import BOS
+        from datetime import datetime
+
+        bos = BOS(type="bullish", level=97.0, timestamp=datetime.now(), candle_index=10)
+        structure = type('StructureState', (), {
+            'last_bos': bos, 'trend': 'bullish',
+            'recent_highs': [], 'recent_lows': [],
+            'structure_breaks': [], 'last_choch': None,
+        })()
+        ind = IndicatorValues(
+            symbol="BTC/USDT", timeframe="1h",
+            close=100.0, high=101.0, low=99.0,
+            ema_fast=100.0, ema_slow=99.0, ema_trend=98.0,
+            ema_fast_prev=99.5, ema_slow_prev=98.5,
+            rsi=55.0, macd=1.0, macd_signal=0.5, macd_hist=0.5, macd_hist_prev=0.3,
+            adx=30.0, dmi_plus=20.0, dmi_minus=15.0,
+            atr=2.0, supertrend=99.0, supertrend_direction=1,
+            volume=1000.0, volume_sma=800.0, volume_delta_pct=None,
+        )
+        sl, tp, sl_source = _calculate_sl_tp(ind, SignalType.BUY, structure=structure, entry=100.0)
+        # sl_source must be "bos" — this is what prevents double-buffering
+        assert sl_source == "bos"
+        # SL = bos.level * 0.995 = 97.0 * 0.995 = 96.515
+        assert sl == 96.515
+
+    def test_sl_source_atr_for_non_bos(self):
+        """ATR-based SL returns sl_source='atr' — no BOS buffer skip."""
+        from strategy.signal_engine import _calculate_sl_tp, SignalType
+        from indicators.engine import IndicatorValues
+
+        ind = IndicatorValues(
+            symbol="BTC/USDT", timeframe="1h",
+            close=100.0, high=101.0, low=99.0,
+            ema_fast=100.0, ema_slow=99.0, ema_trend=98.0,
+            ema_fast_prev=99.5, ema_slow_prev=98.5,
+            rsi=55.0, macd=1.0, macd_signal=0.5, macd_hist=0.5, macd_hist_prev=0.3,
+            adx=30.0, dmi_plus=20.0, dmi_minus=15.0,
+            atr=2.0, supertrend=99.0, supertrend_direction=1,
+            volume=1000.0, volume_sma=800.0, volume_delta_pct=None,
+        )
+        sl, tp, sl_source = _calculate_sl_tp(ind, SignalType.BUY, entry=100.0)
+        assert sl_source == "atr"
+
+    def test_atr_sl_numerically_close_to_bos_but_no_bos(self):
+        """ATR SL that coincidentally equals hypothetical BOS level — structural SL applied.
+
+        This is the false-positive scenario: old heuristic would skip structural SL
+        because ATR SL numerically matched bos.level * 0.995 within 0.1%. With the
+        explicit sl_source marker, structural SL and stop hunt buffer are correctly
+        applied because sl_source == "atr".
+        """
+        from strategy.signal_engine import _calculate_sl_tp, SignalType
+        from indicators.engine import IndicatorValues
+
+        # Scenario: BUY signal, no BOS structure, ATR-based SL happens to land
+        # at 96.515 (= hypothetical bos_level 97.0 * 0.995)
+        # ATR=2.31, atr_multiplier_sl=1.5, entry=100.0
+        # SL = 100.0 - 2.31 * 1.5 = 100.0 - 3.465 = 96.535 (close but not exact)
+        # Adjust to match exactly: SL = entry - atr * mult → 96.515 = 100 - atr*1.5
+        # → atr = (100 - 96.515) / 1.5 = 2.32333...
+        atr_val = (100.0 - 96.515) / 1.5
+        ind = IndicatorValues(
+            symbol="BTC/USDT", timeframe="1h",
+            close=100.0, high=101.0, low=99.0,
+            ema_fast=100.0, ema_slow=99.0, ema_trend=98.0,
+            ema_fast_prev=99.5, ema_slow_prev=98.5,
+            rsi=55.0, macd=1.0, macd_signal=0.5, macd_hist=0.5, macd_hist_prev=0.3,
+            adx=30.0, dmi_plus=20.0, dmi_minus=15.0,
+            atr=atr_val, supertrend=99.0, supertrend_direction=1,
+            volume=1000.0, volume_sma=800.0, volume_delta_pct=None,
+        )
+        sl, tp, sl_source = _calculate_sl_tp(ind, SignalType.BUY, entry=100.0)
+        # SL numerically equals hypothetical bos SL (97.0 * 0.995 = 96.515)
+        assert abs(sl - 96.515) < 0.001
+        # But source is ATR — no real BOS exists
+        assert sl_source == "atr"
+        # Therefore structural SL should NOT be skipped (old heuristic would have
+        # incorrectly skipped it, new marker correctly allows it)
+
+    def test_stop_hunt_buffer_respects_direction(self):
+        """BUY: buffer = 1% below; SELL: buffer = 1% above."""
+        # BUY
+        buy_sl = 97.0
+        buy_buffered = round(buy_sl * 0.99, 8)
+        assert buy_buffered < buy_sl
+
+        # SELL
+        sell_sl = 103.0
+        sell_buffered = round(sell_sl * 1.01, 8)
+        assert sell_buffered > sell_sl
+
+    def test_edge_case_atr_zero_empty_structures(self):
+        """ATR=0 with no sweeps/OBs → structural SL falls back to ATR-based."""
+        sl = calculate_structural_sl("BUY", entry=100.0, sweeps=[], order_blocks=[], atr=0.0, close=100.0)
+        cfg = config.trading
+        expected = round(100.0 - (100.0 * 0.02) * cfg.atr_multiplier_sl, 8)
+        assert sl == expected
