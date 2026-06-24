@@ -144,6 +144,10 @@ class BacktestConfig:
       - enable_confirm_tf_gate controls the confirm-TF alignment gate:
         when True, signals where confirm-TF EMA+Supertrend disagree are
         rejected. This is an independent filter from entry price source.
+      - min_score_for_signal: override for config.scoring.min_score_for_signal.
+        When set (not None), the batch runner temporarily patches the global
+        config value during signal_engine.evaluate() calls for this preset,
+        then restores it. None = use global config default.
 
     WARNING: enable_confirm_tf_gate=True without enable_unified_entry=False
     is the recommended combination. Enabling both (gate + unified entry) is
@@ -157,6 +161,7 @@ class BacktestConfig:
     enable_rr_filter: bool = True
     enable_news_filter: bool = True
     enable_stop_hunt_buffer: bool = True
+    min_score_for_signal: Optional[int] = None
 
 
 # Preset definitions: name → dict of BacktestConfig field overrides
