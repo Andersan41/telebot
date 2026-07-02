@@ -27,18 +27,30 @@ in `pytest.ini`; use `@pytest.mark.asyncio` on async tests.
 `plan/01-architecture.md`, `plan/07-scheduler.md`, `plan/11-pipeline.md`. Update those files
 when behavior changes, not this one.
 
-## Signal logic
+## Signal logic (new pipeline — scan_symbol_v2)
 
-- **4 of 6** conditions required: Supertrend, EMA alignment, EMA cross/pos, RSI, MACD, Volume.
-- ADX < `adx_min` (default 20) → flat → `NO_SIGNAL` (hard filter, not a counted criterion).
-- Volume contributes to **both** buy and sell score — boosts each equally, so the relative
-  margin still decides the winner.
-- Confirmation on `CONFIRM_TIMEFRAME` (default `15m`) only when it differs from the primary TF;
-  mismatch → reject. `Signal.confirmed` records the real outcome.
+**Architecture:** Pattern Engine → Feature Builder → Probability Engine → Risk Engine
+
+- **Layer 1 — Pattern Engine** (`strategy/pattern_engine.py`): Pure ICT pattern detection.
+  Setup = trigger (BOS or sweep) + confirmation (OB or FVG). No indicators, no scoring.
+- **Layer 2 — Feature Builder** (`strategy/feature_builder.py`): Collects ~35 raw features
+  into a flat vector (ICT pattern, market structure, volume, indicators, MTF, context, risk).
+  No scoring, no blocking — just data.
+- **Layer 3 — Probability Engine** (`strategy/probability_engine.py`): Estimates P(TP),
+  expected RR, profit factor. Rules-based fallback; ML (XGBoost/RandomForest) replaces
+  rules once 100+ historical outcomes are collected.
+- **Layer 4 — Risk Engine** (`risk/engine.py`): Capital protection only. Hard gates:
+  R:R minimum, SL absolute limits, portfolio risk, max active signals. Position sizing
+  via Kelly criterion with volatility adjustment.
+
+**Old pipeline** (`scan_symbol`) still exists for backward compatibility.
+`run_scan_cycle()` calls `scan_symbol_v2()`.
+
 - Cooldown per `symbol_timeframe` is `SIGNAL_COOLDOWN_MINUTES` (default 45), in-memory only —
   resets on restart.
-- Context gate: `CONTEXT_BLOCK_ON_BLOCKED` rejects BLOCKED; `CONTEXT_MIN_VERDICT` is a rank
-  gate (`BLOCKED < CONFLICTED < WEAK < CONFIRMED`). Default `WEAK`. Empty value disables the gate.
+- Context never blocks: `ContextScore` provides a score [-1, 1] for the Probability Engine.
+- BTC/ETH correlation removed as gates — become secondary features.
+- 15m confirmation TF removed entirely.
 
 ## Scheduler
 

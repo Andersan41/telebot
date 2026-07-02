@@ -1,8 +1,53 @@
 # Signal Pipeline — Complete Reference
 
 > Для анализа старшей моделью. Охватывает весь pipeline от OHLCV до Telegram.
-> Дата: 2026-05-21
-> Версия: Update 6 (production)
+> Дата: 2026-07-02
+> Версия: Update 7 (new pipeline)
+
+---
+
+## 0. NEW ARCHITECTURE (v2 pipeline)
+
+**Current production pipeline:** `scan_symbol_v2()` in `scheduler/scanner.py`.
+Old `scan_symbol()` retained for reference.
+
+```
+Pattern Engine → Feature Builder → Probability Engine → Risk Engine → Telegram
+```
+
+### Layer 1: Pattern Engine (`strategy/pattern_engine.py`)
+- Pure ICT pattern detection — no indicators, no scoring
+- Setup = trigger (BOS or sweep) + confirmation (OB or FVG)
+- Direction from BOS (primary) or sweep (secondary)
+- Returns `ICTSetup` dataclass with boolean components
+
+### Layer 2: Feature Builder (`strategy/feature_builder.py`)
+- Collects ~35 raw features into flat vector
+- Categories: ICT pattern, market structure, volume, indicators (raw), MTF, context, risk
+- `to_vector()` → dict ready for ML model input
+- `to_reasoning()` → human-readable supporting/opposing factors
+- No scoring, no blocking — just data
+
+### Layer 3: Probability Engine (`strategy/probability_engine.py`)
+- Rules-based fallback: simple heuristics starting from historical winrate
+- ML-based (XGBoost/RandomForest): replaces rules once 100+ outcomes collected
+- Outputs: `p_tp` (probability of hitting TP), `expected_rr`, `profit_factor`
+- `quality_label`: "strong" (≥65%), "moderate" (≥50%), "weak" (<50%)
+
+### Layer 4: Risk Engine (`risk/engine.py`)
+- **Hard gates only** (capital protection):
+  - R:R minimum (default 1.5)
+  - SL absolute limits (0.25%–5.0% of price)
+  - Portfolio risk cap (3%)
+  - Max active signals (3)
+- **Soft adjustments** (affect sizing, not blocking):
+  - Kelly criterion with confidence scaling
+  - Volatility adjustment
+  - SL distance quality bonus/penalty
+
+### Context Integration
+- `ContextScore` replaces `ContextVerdict` — score [-1, 1], never blocks
+- Feeds into Probability Engine as a feature
 
 ---
 
@@ -488,14 +533,18 @@ python -m scripts.analyze_gate_stats logs/bot.log --min-samples 10
 |------|-----------|-----------------|
 | `main.py` | Entry point | 62 (scheduler), 75 (outcome tracker) |
 | `scheduler/tasks.py` | APScheduler cron | 40, 48 |
-| `scheduler/scanner.py` | Full pipeline | 235 (scan_symbol), 884 (run_scan_cycle) |
-| `strategy/signal_engine.py` | Signal decision | 157 (evaluate), 627 (gate logging) |
+| `scheduler/scanner.py` | Full pipeline | 235 (scan_symbol), 280 (scan_symbol_v2), 884 (run_scan_cycle) |
+| `strategy/pattern_engine.py` | **NEW:** ICT pattern detection | detect() |
+| `strategy/feature_builder.py` | **NEW:** Feature vector builder | build(), to_vector() |
+| `strategy/probability_engine.py` | **NEW:** P(TP) estimation | predict() |
+| `risk/engine.py` | **NEW:** Risk engine + Kelly sizing | evaluate() |
+| `strategy/signal_engine.py` | Signal decision (old) | 157 (evaluate), 627 (gate logging) |
 | `indicators/engine.py` | TA calculation | — |
 | `data/exchange_client.py` | OHLCV fetching | 81 (fetch raw), 123 (fetch ohlcv) |
 | `context/analyzer.py` | Market context | — |
-| `context/scorer.py` | Context verdict | — |
-| `risk/no_trade_zones.py` | Risk gates | — |
-| `risk/dynamic_risk.py` | Position sizing | — |
+| `context/scorer.py` | Context score (old verdict + new score) | score(), score_simple() |
+| `risk/no_trade_zones.py` | Risk gates (old) | — |
+| `risk/dynamic_risk.py` | Position sizing (old) | — |
 | `risk/market_regime.py` | Regime detection | — |
 | `scoring/confidence_v2.py` | V2 confidence | — |
 | `liquidity/sweep.py` | Sweep detection | — |
@@ -505,13 +554,13 @@ python -m scripts.analyze_gate_stats logs/bot.log --min-samples 10
 | `bot/notifier.py` | Telegram sender | 82 (send_signal) |
 | `bot/handlers.py` | Bot commands | 23 (admin check), 106 (cmd_scan) |
 | `bot/menu.py` | Inline menu | — |
-| `config/settings.py` | All config | — |
+| `config/settings.py` | All config + PatternEngineConfig, ProbabilityConfig, RiskEngineConfig | — |
 | `storage/database.py` | DB layer | — |
 | `scheduler/outcome_tracker.py` | SL/TP tracking | 18 (check_open_outcomes) |
 | `scheduler/circuit_breaker.py` | Loss protection | — |
 | `scripts/analyze_gate_stats.py` | Gate analytics | — |
-| `backtest/engine.py` | Backtesting | — |
-| `backtest/compare_ema_trend.py` | EMA comparison | — |
+| `backtest/engine.py` | Backtesting (old pipeline) | — |
+| `tests/test_new_pipeline.py` | Tests for new modules | — |
 
 ---
 
@@ -570,6 +619,7 @@ pytest tests/test_signal.py -v
 pytest tests/test_backtest.py -v
 pytest tests/test_scanner.py -v
 pytest tests/test_exchange_client.py -v
+pytest tests/test_new_pipeline.py -v  # NEW: PatternEngine, FeatureBuilder, ProbabilityEngine, RiskEngine
 
 # Gate stats из лога
 python -m scripts.analyze_gate_stats logs/bot.log
