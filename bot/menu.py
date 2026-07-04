@@ -12,7 +12,7 @@ from loguru import logger
 
 from config.settings import config, get_active_symbols, FILTER_TOGGLE_KEYS, FILTER_PARAM_KEYS, reload_filter_toggles
 from indicators.engine import indicator_engine, IndicatorValues
-from strategy.signal_engine import signal_engine, SignalType, SignalResult
+from strategy.signal_engine import SignalType, SignalResult
 from strategy.levels import get_support_resistance, validate_levels_vs_trade
 from data.exchange_client import exchange_client
 from context.analyzer import context_engine
@@ -22,9 +22,67 @@ from risk.market_regime import RegimeDetector, MarketRegime
 WAITING: dict[int, str] = {}
 
 
+def _light_evaluate(ind: IndicatorValues, regime=None) -> SignalResult:
+    """Lightweight indicator-only signal for menu/analysis. NOT for trading."""
+    reasons = []
+    score = 0
+
+    if ind.ema_fast > ind.ema_slow:
+        score += 1
+        reasons.append("EMA fast > slow")
+    elif ind.ema_fast < ind.ema_slow:
+        score -= 1
+
+    if ind.rsi > 55:
+        score += 1
+        reasons.append(f"RSI {ind.rsi:.0f} > 55")
+    elif ind.rsi < 45:
+        score -= 1
+
+    if ind.macd_hist > 0:
+        score += 1
+        reasons.append("MACD hist > 0")
+    elif ind.macd_hist < 0:
+        score -= 1
+
+    if ind.adx > 20:
+        if ind.dmi_plus > ind.dmi_minus:
+            score += 1
+            reasons.append("ADX+ > ADX-")
+        else:
+            score -= 1
+
+    if ind.supertrend_direction == 1:
+        score += 1
+        reasons.append("Supertrend ↑")
+    elif ind.supertrend_direction == -1:
+        score -= 1
+
+    if score >= 2:
+        signal = SignalType.BUY
+    elif score <= -2:
+        signal = SignalType.SELL
+    else:
+        signal = SignalType.NO_SIGNAL
+
+    atr = ind.atr if ind.atr and ind.atr > 0 else ind.close * 0.015
+    entry = ind.close
+    if signal == SignalType.BUY:
+        sl = round(entry - atr * 1.5, 8)
+        tp = round(entry + atr * 3.0, 8)
+    elif signal == SignalType.SELL:
+        sl = round(entry + atr * 1.5, 8)
+        tp = round(entry - atr * 3.0, 8)
+    else:
+        sl = tp = None
+
+    return SignalResult(
+        signal=signal, symbol=ind.symbol, timeframe=ind.timeframe,
+        close=ind.close, sl=sl, tp=tp, score=score, reasons=reasons,
+    )
+
+
 def main_menu_keyboard() -> InlineKeyboardMarkup:
-    block_icon = "🔇" if config.signal_block_notify else "🔇"
-    block_status = "ВКЛ" if config.signal_block_notify else "ВЫКЛ"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔍 Анализ токена", callback_data="m:analyze"),
@@ -32,7 +90,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📡 Авто-скан всех", callback_data="m:scan_all"),
-            InlineKeyboardButton(f"{block_icon} Signal block", callback_data="m:signal_block"),
+            InlineKeyboardButton("📂 Открытые сделки", callback_data="m:open_trades"),
         ],
         [
             InlineKeyboardButton("⚙️ Настройки", callback_data="m:settings"),
@@ -162,47 +220,26 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
             return
 
-        if data == "m:signal_block":
-            block_status = "🟢 ВКЛ" if config.signal_block_notify else "🔴 ВЫКЛ"
-            text = (
-                f"🔇 <b>Signal block</b>\n\n"
-                f"Уведомления о заблокированных сигналах: {block_status}\n\n"
-                f"При включении бот отправляет в канал краткий анализ, "
-                f"когда сигнал проходит часть условий, "
-                f"но блокируется на одном из финальных этапов "
-                f"(MTF, BTC/ETH корреляция, контекст, риск-фильтры и т.д.)."
-            )
-            kb = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        f"{'🔴 Выключить' if config.signal_block_notify else '🟢 Включить'}",
-                        callback_data="m:signal_block_toggle",
-                    ),
-                ],
-                [InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")],
-            ])
-            await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-            return
-
-        if data == "m:signal_block_toggle":
+        if data == "m:open_trades":
             from storage.database import db
-            from config.settings import reload_filter_toggles
-            new_val = not config.signal_block_notify
-            await db.set_setting("filter:toggle:signal_block", str(new_val).lower())
-            await reload_filter_toggles()
-            block_status = "🟢 ВКЛ" if config.signal_block_notify else "🔴 ВЫКЛ"
-            text = (
-                f"🔇 <b>Signal block</b>\n\n"
-                f"Уведомления о заблокированных сигналах: {block_status}\n"
-            )
+            trades = await db.get_open_trades_with_signals()
+            if not trades:
+                text = "📂 <b>Открытые сделки</b>\n\nНет открытых сделок."
+            else:
+                lines = [f"📂 <b>Открытые сделки: {len(trades)}</b>\n"]
+                for i, t in enumerate(trades, 1):
+                    signal_icon = "🟢" if t["signal_type"] == "BUY" else "🔴"
+                    sent = t.get("sent_at", "")[:16] if t.get("sent_at") else "—"
+                    lines.append(
+                        f"{i}. {signal_icon} <b>{t['symbol']}</b> {t['timeframe']} "
+                        f"| Entry: <code>{_fmt_price(t['entry'])}</code> "
+                        f"| SL: <code>{_fmt_price(t['sl'])}</code> "
+                        f"| TP: <code>{_fmt_price(t['tp'])}</code> "
+                        f"| {sent}"
+                    )
+                text = "\n".join(lines)
             kb = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        f"{'🔴 Выключить' if config.signal_block_notify else '🟢 Включить'}",
-                        callback_data="m:signal_block_toggle",
-                    ),
-                ],
-                [InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="m:back")]
             ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
             return
@@ -420,31 +457,14 @@ def _format_indicator_params() -> tuple[str, InlineKeyboardMarkup]:
 # ── Filter management ────────────────────────────────────────────────
 
 FILTER_META: dict[str, dict] = {
-    "adx_filter":      {"label": "ADX (флэт)",        "group": "signal_engine"},
-    "ema_alignment":   {"label": "EMA alignment",      "group": "signal_engine"},
-    "ema_spread":      {"label": "EMA spread",         "group": "signal_engine"},
-    "ema_slope":       {"label": "EMA наклон",         "group": "signal_engine"},
-    "trigger":         {"label": "Триггер",            "group": "signal_engine"},
-    "candle_close":    {"label": "Candle close",       "group": "signal_engine"},
-    "min_score":       {"label": "Min score",          "group": "signal_engine"},
-    "compression":     {"label": "Компрессия",         "group": "signal_engine"},
-    "confirm_tf":      {"label": "Подтверждение ТФ",   "group": "signal_engine"},
-    "mtf":             {"label": "MTF alignment",      "group": "scanner"},
-    "distance_filter": {"label": "Distance filter",    "group": "scanner"},
-    "sr_levels":       {"label": "Уровни S/R",          "group": "scanner"},
-    "tp_path":         {"label": "TP path",            "group": "scanner"},
-    "btc_corr":        {"label": "BTC correlation",    "group": "scanner"},
-    "eth_corr":        {"label": "ETH correlation",    "group": "scanner"},
-    "volatility":      {"label": "Волатильность",      "group": "scanner"},
-    "no_trade_zones":  {"label": "No-trade зоны",      "group": "scanner"},
-    "dynamic_risk":    {"label": "Dynamic risk",       "group": "scanner"},
     "context":         {"label": "Контекст",           "group": "scanner"},
     "confidence_v2":   {"label": "Confidence V2",      "group": "scanner"},
+    "dynamic_risk":    {"label": "Dynamic risk",       "group": "scanner"},
+    "signal_block":    {"label": "Block Notify",        "group": "scanner"},
 }
 
 FILTER_GROUP_LABELS = {
-    "signal_engine": "🧠 Ядро сигнала",
-    "scanner":       "📡 Сканер",
+    "scanner": "📡 Сканер",
 }
 
 
@@ -505,8 +525,7 @@ def _format_filters_list() -> tuple[str, InlineKeyboardMarkup]:
 
 def _get_group_label_caption(group: str) -> str:
     labels = {
-        "signal_engine": "🧠 Ядро сигнала (signal_engine)",
-        "scanner": "📡 Сканер (доп. фильтры)",
+        "scanner": "📡 Сканер",
     }
     return labels.get(group, group)
 
@@ -614,7 +633,7 @@ async def _do_full_analysis(symbol: str) -> str:
             return f"❌ Ошибка расчёта индикаторов для <b>{html.escape(symbol)}</b>"
 
         regime = _detect_regime(ind, df)
-        result = signal_engine.evaluate(ind, regime=regime)
+        result = _light_evaluate(ind, regime=regime)
 
         # --- Подтверждение на confirm_tf ---
         confirm_tf = cfg.confirm_timeframe
@@ -626,7 +645,7 @@ async def _do_full_analysis(symbol: str) -> str:
         if config.trading.confirm_tf_enabled and result.is_actionable and confirm_tf and confirm_tf != primary_tf:
             ind_confirm = await _get_indicators(symbol, confirm_tf)
             if ind_confirm is not None:
-                confirm_result = signal_engine.evaluate(ind_confirm)
+                confirm_result = _light_evaluate(ind_confirm)
                 if confirm_result.signal == result.signal:
                     entry_price = float(confirm_result.close if confirm_result.close is not None else ind_confirm.close)
                     result._confirmed_tf = confirm_tf
@@ -759,7 +778,7 @@ async def _indicator_view(symbol: str) -> str:
         if ind is None:
             return f"❌ Не удалось получить данные для <b>{html.escape(symbol)}</b>\n\nПроверьте тикер (пример: BTC/USDT)"
 
-        result = signal_engine.evaluate(ind)
+        result = _light_evaluate(ind)
 
         # --- Подтверждение на confirm_tf ---
         entry_price = result.close if result.close is not None else ind.close
@@ -771,7 +790,7 @@ async def _indicator_view(symbol: str) -> str:
         if config.trading.confirm_tf_enabled and result.is_actionable and confirm_tf and confirm_tf != primary_tf:
             ind_confirm = await _get_indicators(symbol, confirm_tf)
             if ind_confirm is not None:
-                confirm_result = signal_engine.evaluate(ind_confirm)
+                confirm_result = _light_evaluate(ind_confirm)
                 if confirm_result.signal == result.signal:
                     entry_price = float(confirm_result.close if confirm_result.close is not None else ind_confirm.close)
                     result._confirmed_tf = confirm_tf
@@ -891,7 +910,7 @@ async def _do_scan_all() -> str:
             if ind is None:
                 neutral.append(f"⚠️ {symbol.replace('/USDT', '')}: нет данных")
                 continue
-            result = signal_engine.evaluate(ind)
+            result = _light_evaluate(ind)
             name = symbol.replace("/USDT", "").ljust(6)
             line = f"{name} RSI={ind.rsi:5.1f}  ADX={ind.adx:4.0f}"
             if result.signal == SignalType.BUY:
