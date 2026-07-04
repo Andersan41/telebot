@@ -188,24 +188,57 @@ async def _build_payload(symbol: str) -> Dict[str, Any]:
 
 
 def _compute_signal_light(df, symbol: str, timeframe: str) -> Dict[str, Any]:
-    """Упрощённый сигнал для дашборда."""
+    """Упрощённый сигнал для дашборда (indicator-only heuristic)."""
     from indicators.engine import indicator_engine
     iv = indicator_engine.calculate(df, symbol, timeframe)
     if iv is None:
         return {"signal": "NO_SIGNAL", "score": 0, "reasons": []}
 
-    from strategy.signal_engine import signal_engine
-    result = signal_engine.evaluate(iv)
+    reasons = []
+    score = 0
+
+    if iv.ema_fast > iv.ema_slow:
+        score += 1
+        reasons.append("EMA fast > slow")
+    elif iv.ema_fast < iv.ema_slow:
+        score -= 1
+
+    if iv.rsi > 55:
+        score += 1
+        reasons.append(f"RSI {iv.rsi:.0f} > 55")
+    elif iv.rsi < 45:
+        score -= 1
+
+    if iv.macd_hist > 0:
+        score += 1
+        reasons.append("MACD hist > 0")
+    elif iv.macd_hist < 0:
+        score -= 1
+
+    if iv.adx > 20:
+        if iv.dmi_plus > iv.dmi_minus:
+            score += 1
+            reasons.append("ADX+ > ADX-")
+        else:
+            score -= 1
+
+    if score >= 2:
+        signal = "BUY"
+    elif score <= -2:
+        signal = "SELL"
+    else:
+        signal = "NO_SIGNAL"
+
     return {
-        "signal": result.signal.value,
-        "score": result.score,
-        "verdict": result.verdict,
-        "confidence": round(result.confidence, 1),
-        "reasons": result.reasons[:5],
-        "entry": round(result.entry_price, 2) if result.entry_price else None,
-        "sl": round(result.sl, 2) if result.sl else None,
-        "tp": round(result.tp, 2) if result.tp else None,
-        "regime": getattr(result, "_regime", None),
+        "signal": signal,
+        "score": score,
+        "verdict": "СИЛЬНЫЙ" if abs(score) >= 3 else "УМЕРЕННЫЙ" if abs(score) == 2 else "СЛАБЫЙ",
+        "confidence": round(abs(score) / 4 * 100, 1),
+        "reasons": reasons[:5],
+        "entry": round(iv.close, 2),
+        "sl": None,
+        "tp": None,
+        "regime": None,
     }
 
 
