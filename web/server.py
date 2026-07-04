@@ -211,6 +211,7 @@ def _compute_signal_light(df, symbol: str, timeframe: str) -> Dict[str, Any]:
 
 async def _broadcast_loop():
     """Фоновая задача: рассылает обновления каждые N секунд."""
+    from storage.database import db
     while True:
         try:
             if _clients:
@@ -232,6 +233,20 @@ async def _broadcast_loop():
                             except Exception:
                                 stale.add(ws)
                     _clients.difference_update(stale)
+
+                # Рассылка открытых сделок всем клиентам
+                try:
+                    trades = await db.get_open_trades_with_signals()
+                    trades_msg = json.dumps({"type": "open_trades", "trades": trades}, default=str)
+                    stale = set()
+                    for ws in _clients:
+                        try:
+                            await ws.send_str(trades_msg)
+                        except Exception:
+                            stale.add(ws)
+                    _clients.difference_update(stale)
+                except Exception as e:
+                    logger.warning(f"Open trades broadcast error: {e}")
 
             await asyncio.sleep(config.web.update_interval)
         except asyncio.CancelledError:
@@ -375,6 +390,17 @@ async def api_filters_post(request):
     return web.json_response({"ok": True, "key": key, "enabled": bool(enabled)})
 
 
+async def api_open_trades(request):
+    """GET /api/open-trades — вернуть список открытых сделок."""
+    from storage.database import db
+    try:
+        trades = await db.get_open_trades_with_signals()
+        return web.json_response({"trades": trades})
+    except Exception as e:
+        logger.error(f"api_open_trades error: {e}")
+        return web.json_response({"trades": [], "error": str(e)})
+
+
 # ─── App factory ────────────────────────────────────────────────────────
 
 def create_app() -> web.Application:
@@ -393,6 +419,7 @@ def create_app() -> web.Application:
     # API
     app.router.add_get("/api/filters", api_filters_get)
     app.router.add_post("/api/filters", api_filters_post)
+    app.router.add_get("/api/open-trades", api_open_trades)
 
     # WebSocket
     app.router.add_get("/ws", ws_handler)
