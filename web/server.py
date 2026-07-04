@@ -379,7 +379,16 @@ async def api_filters_post(request):
 
 def create_app() -> web.Application:
     """Создаём aiohttp приложение."""
-    app = web.Application()
+
+    @web.middleware
+    async def no_cache_middleware(request, handler):
+        response = await handler(request)
+        if not request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+    app = web.Application(middlewares=[no_cache_middleware])
 
     # API
     app.router.add_get("/api/filters", api_filters_get)
