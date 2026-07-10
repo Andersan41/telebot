@@ -16,7 +16,7 @@ from bot.menu import (
 from bot.admin import (
     addsymbol_command, removesymbol_command, listsymbols_command,
     setparam_command, disable_command, enable_command, exportdb_command,
-    stats_command,
+    stats_command, trades_command, closetrade_command, hypotheses_command,
 )
 
 
@@ -46,13 +46,13 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>/status</b> — состояние сканера\n"
         "<b>/lastsignal</b> — последние 5 сигналов\n"
         "<b>/symbols</b> — отслеживаемые символы\n"
+        "<b>/trades</b> — открытые сделки\n"
+        "<b>/closetrade ID</b> — закрыть сделку вручную\n"
         "<b>/scan</b> — ручной запуск сканирования (только для admin)\n"
         "<b>/settings</b> — текущие настройки индикаторов (только для admin)\n\n"
         "🔍 <b>Логика сигналов:</b>\n"
-        "• Supertrend + EMA + RSI + MACD + ADX + объём\n"
-        "• Минимум 4 из 7 условий\n"
-        "• Подтверждение на 15M обязательно\n"
-        "• SL/TP на основе ATR\n"
+        "• ICT Core: Pattern Engine → Feature Builder → Probability Engine → Risk Engine\n"
+        "• SL/TP на основе BOS или ATR\n"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -159,6 +159,11 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("exportdb", exportdb_command))
     # F1: /stats
     app.add_handler(CommandHandler("stats", stats_command))
+    # F2: /trades, /closetrade
+    app.add_handler(CommandHandler("trades", trades_command))
+    app.add_handler(CommandHandler("closetrade", closetrade_command))
+    # F3: /hypotheses (new pipeline debug)
+    app.add_handler(CommandHandler("hypotheses", hypotheses_command))
     # Menu navigation (callbacks + text input for custom token)
     app.add_handler(CallbackQueryHandler(handle_menu_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_message))

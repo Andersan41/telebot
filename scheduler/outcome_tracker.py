@@ -8,12 +8,14 @@ PnL is calculated AFTER costs:
 """
 import asyncio
 import html
+import json
 import os
 from datetime import datetime, timezone, timedelta
 from loguru import logger
 from data.exchange_client import exchange_client
 from storage.database import db
 from config.settings import config
+from strategy.scenario_memory import scenario_memory, ScenarioOutcomeRecord
 
 
 OUTCOME_CHECK_INTERVAL_SECONDS = int(
@@ -106,6 +108,28 @@ def _calculate_net_pnl(
     return gross_pnl, net_pnl
 
 
+def _calculate_excursion(
+    signal_type: str,
+    entry_price: float,
+    high: float,
+    low: float,
+) -> tuple[float, float]:
+    """Calculate Maximum Favorable Excursion (MFE) and Maximum Adverse Excursion (MAE).
+
+    Returns:
+        (mfe_pct, mae_pct) — both as percentages
+    """
+    if signal_type == "BUY":
+        # For BUY: favorable = price goes up, adverse = price goes down
+        mfe_pct = ((high - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+        mae_pct = ((entry_price - low) / entry_price) * 100 if entry_price > 0 else 0
+    else:  # SELL
+        # For SELL: favorable = price goes down, adverse = price goes up
+        mfe_pct = ((entry_price - low) / entry_price) * 100 if entry_price > 0 else 0
+        mae_pct = ((high - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+    return mfe_pct, mae_pct
+
+
 async def check_open_outcomes() -> None:
     outcomes = await db.get_open_outcomes()
     if not outcomes:
@@ -124,6 +148,46 @@ async def check_open_outcomes() -> None:
                 close_price=signal.close_price, pnl_pct=0.0,
             )
             continue
+
+        # Skip if current candle is the same as the entry candle.
+        # This prevents same-bar SL resolution when the candle's wick
+        # already breached the SL level at signal creation time.
+        # Uses entry_candle_open stored at signal creation (preferred)
+        # or falls back to calculated value for backward compatibility.
+        entry_candle_open = None
+        if hasattr(signal, 'entry_candle_open') and signal.entry_candle_open is not None:
+            entry_candle_open = signal.entry_candle_open.replace(tzinfo=timezone.utc)
+        else:
+            # Fallback: calculate from created_at and timeframe
+            _TF_MINUTES = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                           "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440}
+            tf_minutes = _TF_MINUTES.get(signal.timeframe, 60)
+            signal_ts = signal.created_at.replace(tzinfo=timezone.utc)
+            tf_seconds = tf_minutes * 60
+            signal_epoch = int(signal_ts.timestamp())
+            entry_candle_open = datetime.fromtimestamp(
+                signal_epoch - (signal_epoch % tf_seconds), tz=timezone.utc
+            )
+
+        # Calculate current candle open time
+        now_epoch = int(now.timestamp())
+        tf_minutes = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                      "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440}
+        tf_minutes_val = tf_minutes.get(signal.timeframe, 60)
+        tf_seconds = tf_minutes_val * 60
+        current_candle_open = datetime.fromtimestamp(
+            now_epoch - (now_epoch % tf_seconds), tz=timezone.utc
+        )
+
+        if current_candle_open <= entry_candle_open:
+            logger.debug(
+                f"Skipping {signal.symbol} {signal.timeframe}: "
+                f"still on or before entry candle "
+                f"(entry_open={entry_candle_open.isoformat()}, "
+                f"current_open={current_candle_open.isoformat()})"
+            )
+            continue
+
         # Skip symbols on cooldown after repeated fetch failures
         cooldown_until = _symbol_cooldown_until.get(signal.symbol)
         if cooldown_until and now < cooldown_until:
@@ -165,6 +229,8 @@ async def check_open_outcomes() -> None:
         ) or (
             signal.signal_type == "SELL" and signal.sl and candle_high >= signal.sl
         )
+        # Calculate hold bars for ScenarioMemory
+        hold_bars = int((now - signal.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60 / max(1, {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440}.get(signal.timeframe, 60)))
         if hit_tp:
             # Use TP price as close if candle hit it (better fill estimate)
             close_price = signal.tp if (
@@ -175,7 +241,12 @@ async def check_open_outcomes() -> None:
                 signal.signal_type, signal.close_price, close_price,
                 signal.created_at.replace(tzinfo=timezone.utc), now,
             )
+            # Calculate MFE/MAE using entry price and candle extremes
+            mfe_pct, mae_pct = _calculate_excursion(
+                signal.signal_type, signal.close_price, candle_high, candle_low,
+            )
             await db.close_outcome(outcome.id, "HIT_TP", close_price, net_pnl)
+            await db.update_signal_excursion(signal.id, mfe_pct, mae_pct)
             try:
                 await db.update_candidate_outcome_by_signal(signal.id, "HIT_TP", net_pnl)
             except Exception:
@@ -192,6 +263,11 @@ async def check_open_outcomes() -> None:
                         trace_row.outcome = "HIT_TP"
                         trace_row.pnl_pct = net_pnl
                         await session.commit()
+                        # Record outcome in ScenarioMemory
+                        _record_hypothesis_outcome(
+                            trace_row, signal, "HIT_TP", net_pnl,
+                            mfe_pct, mae_pct, hold_bars,
+                        )
             except Exception:
                 pass
             logger.info(
@@ -210,7 +286,12 @@ async def check_open_outcomes() -> None:
                 signal.signal_type, signal.close_price, close_price,
                 signal.created_at.replace(tzinfo=timezone.utc), now,
             )
+            # Calculate MFE/MAE using entry price and candle extremes
+            mfe_pct, mae_pct = _calculate_excursion(
+                signal.signal_type, signal.close_price, candle_high, candle_low,
+            )
             await db.close_outcome(outcome.id, "HIT_SL", close_price, net_pnl)
+            await db.update_signal_excursion(signal.id, mfe_pct, mae_pct)
             try:
                 await db.update_candidate_outcome_by_signal(signal.id, "HIT_SL", net_pnl)
             except Exception:
@@ -227,6 +308,11 @@ async def check_open_outcomes() -> None:
                         trace_row.outcome = "HIT_SL"
                         trace_row.pnl_pct = net_pnl
                         await session.commit()
+                        # Record outcome in ScenarioMemory
+                        _record_hypothesis_outcome(
+                            trace_row, signal, "HIT_SL", net_pnl,
+                            mfe_pct, mae_pct, hold_bars,
+                        )
             except Exception:
                 pass
             logger.info(
@@ -250,3 +336,62 @@ async def outcome_tracker_loop() -> None:
         except Exception as e:
             logger.warning(f"Outcome tracker error: {e}")
         await asyncio.sleep(OUTCOME_CHECK_INTERVAL_SECONDS)
+
+
+def _record_hypothesis_outcome(
+    trace_row,
+    signal,
+    outcome: str,
+    pnl_pct: float,
+    mfe_pct: float,
+    mae_pct: float,
+    hold_bars: int,
+) -> None:
+    """Record trade outcome in ScenarioMemory for future learning.
+
+    Extracts hypothesis data from DecisionTrace.hypothesis_snapshot JSON
+    and creates a ScenarioOutcomeRecord.
+    """
+    try:
+        if not trace_row.hypothesis_snapshot:
+            return
+
+        h_data = json.loads(trace_row.hypothesis_snapshot)
+        narrative_type = h_data.get("narrative_type", "")
+        if not narrative_type:
+            return
+
+        # Calculate actual RR from entry/exit
+        entry_price = signal.close_price
+        exit_price = signal.tp if outcome == "HIT_TP" else signal.sl
+        if entry_price and exit_price and entry_price > 0:
+            if signal.signal_type == "BUY":
+                actual_rr = (exit_price - entry_price) / (entry_price - signal.sl) if signal.sl and entry_price > signal.sl else 0.0
+            else:
+                actual_rr = (entry_price - exit_price) / (signal.sl - entry_price) if signal.sl and signal.sl > entry_price else 0.0
+        else:
+            actual_rr = 0.0
+
+        record = ScenarioOutcomeRecord(
+            symbol=signal.symbol,
+            hypothesis_name=h_data.get("hypothesis_id", ""),
+            narrative_type=narrative_type,
+            direction=h_data.get("direction", signal.signal_type.lower()),
+            expected_rr=h_data.get("rr_ratio", 0.0),
+            expected_p_tp=h_data.get("confidence", 0.0),
+            expected_quality=h_data.get("quality", 0.0),
+            expected_confidence=h_data.get("confidence", 0.0),
+            actual_rr=actual_rr,
+            actual_pnl_pct=pnl_pct,
+            outcome=outcome,
+            mfe_pct=mfe_pct,
+            mae_pct=mae_pct,
+            hold_bars=hold_bars,
+        )
+        scenario_memory.record_outcome(record)
+        logger.debug(
+            f"ScenarioMemory: recorded {outcome} for {signal.symbol} "
+            f"{narrative_type} (rr={actual_rr:.2f}, pnl={pnl_pct:.2f}%)"
+        )
+    except Exception as e:
+        logger.debug(f"Failed to record hypothesis outcome: {e}")

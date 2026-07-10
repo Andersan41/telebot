@@ -28,10 +28,28 @@ OI_MODERATE_THRESHOLD = 0.5
 
 @dataclass
 class ContextVerdict:
-    """Итоговый вердикт контекстного модуля."""
-    verdict: str           # CONFIRMED / WEAK / CONFLICTED / BLOCKED
+    """Итоговый вердикт контекстного модуля.
+
+    BACKWARD COMPATIBLE — используется в scanner.py и DB.
+    Новая архитура использует ContextScore (ниже).
+    """
+    verdict: str           # CONFIRMED / WEAK / CONFLICTED / BLOCKED (legacy)
     confidence: float      # 0.0 до 1.0
     score: float           # итоговый взвешенный балл [-1.0, 1.0]
+    supporting: List[str] = field(default_factory=list)
+    opposing: List[str] = field(default_factory=list)
+    snapshot: Optional[ContextSnapshot] = None
+
+
+@dataclass
+class ContextScore:
+    """Simplified context scoring — no BLOCKED verdict.
+
+    Context never blocks — only provides a score [-1.0, 1.0]
+    that feeds into the Probability Engine as a feature.
+    """
+    score: float           # [-1.0, 1.0]
+    confidence: float      # [0.0, 1.0]
     supporting: List[str] = field(default_factory=list)
     opposing: List[str] = field(default_factory=list)
     snapshot: Optional[ContextSnapshot] = None
@@ -306,6 +324,22 @@ class ContextScorer:
                 return 0.3
             else:
                 return 0.5
+
+
+    def score_simple(self, signal_direction: str, snapshot: ContextSnapshot) -> ContextScore:
+        """Simplified context scoring — returns ContextScore (no BLOCKED).
+
+        Same logic as score() but returns ContextScore instead of ContextVerdict.
+        Context never blocks — only provides a score for the Probability Engine.
+        """
+        verdict = self.score(signal_direction, snapshot)
+        return ContextScore(
+            score=verdict.score,
+            confidence=verdict.confidence,
+            supporting=verdict.supporting,
+            opposing=verdict.opposing,
+            snapshot=verdict.snapshot,
+        )
 
 
 # Singleton

@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Strategy version — increment on every logic change for traceability
+VERSION = "2.4.0"
+
 
 @dataclass
 class TelegramConfig:
@@ -44,6 +47,17 @@ class ExchangeConfig:
     market_type: str = os.getenv("MARKET_TYPE", "swap")
 
 
+def _parse_json_env(key: str, default):
+    import json as _json
+    val = os.getenv(key, "")
+    if not val:
+        return default
+    try:
+        return _json.loads(val)
+    except Exception:
+        return default
+
+
 @dataclass
 class TradingConfig:
     """Параметры торговли и индикаторов."""
@@ -72,6 +86,8 @@ class TradingConfig:
     min_ema_spread_pct: float = float(os.getenv("MIN_EMA_SPREAD_PCT", "0.20"))
     # Включить проверку наклона EMA fast (отключена по умолчанию — слишком жёсткий фильтр)
     ema_slope_check: bool = os.getenv("EMA_SLOPE_CHECK", "true").lower() == "true"
+    # Sweep penalty: sweep degrades WR (-10.8pp), block as trigger
+    sweep_penalty_enabled: bool = os.getenv("SWEEP_PENALTY_ENABLED", "true").lower() == "true"
     # Коэффициент нормализации EMA spread strength (1.0 = max strength при spread >= 1%)
     ema_strength_cap: float = float(os.getenv("EMA_STRENGTH_CAP", "1.0"))
 
@@ -104,8 +120,8 @@ class TradingConfig:
     # ─── ADX / DMI ───────────────────────────────────────────────────────
     # Период ADX
     adx_period: int = int(os.getenv("ADX_PERIOD", "14"))
-    # Минимальный ADX для тренда (фильтр флэта)
-    adx_min: float = float(os.getenv("ADX_MIN", "20"))
+    # Минимальный ADX для тренда (фильтр флэта) — raised from 20 to 26 (WR 55.4% vs 43.3%)
+    adx_min: float = float(os.getenv("ADX_MIN", "26"))
     # Порог ADX для strong trend
     adx_strong: float = float(os.getenv("ADX_STRONG", "22"))
     # Диапазон нормализации ADX strength (ADX_MIN → 0, ADX_MIN+30 → 1)
@@ -122,6 +138,8 @@ class TradingConfig:
     atr_multiplier_sl: float = float(os.getenv("ATR_MULTIPLIER_SL", "1.5"))
     # Множитель ATR для Take Profit
     atr_multiplier_tp: float = float(os.getenv("ATR_MULTIPLIER_TP", "3.0"))
+    # Per-TF overrides (JSON: {"1h": {"sl": 2.0, "tp": 4.0}, "4h": {"sl": 2.5, "tp": 5.0}})
+    atr_multipliers_per_tf: dict = field(default_factory=lambda: _parse_json_env("ATR_MULTIPLIERS_PER_TF", {}))
     # Fallback ATR = close * atr_fallback_pct (если ATR = 0)
     atr_fallback_pct: float = float(os.getenv("ATR_FALLBACK_PCT", "2.0"))
 
@@ -133,7 +151,13 @@ class TradingConfig:
     # Минимальный R:R для финализации сигнала
     min_rr_threshold: float = float(os.getenv("MIN_RR_THRESHOLD", "1.5"))
     # Буфер stop hunt для structural SL (%) — стоп ставится за уровень, а не на него
-    stop_hunt_buffer_pct: float = float(os.getenv("STOP_HUNT_BUFFER_PCT", "1.0"))
+    stop_hunt_buffer_pct: float = float(os.getenv("STOP_HUNT_BUFFER_PCT", "0.5"))
+    # Максимальное расстояние Order Block от entry (%) — OB дальше этого порога не используется для SL
+    max_ob_distance_pct: float = float(os.getenv("MAX_OB_DISTANCE_PCT", "3.0"))
+    # Комиссия биржи за одну сторону (%) — 0.05% по умолчанию (Binance spot/taker)
+    exchange_fee_pct: float = float(os.getenv("EXCHANGE_FEE_PCT", "0.05"))
+    # Проскальзывание (% от цены) — 0.05% по умолчанию
+    slippage_pct: float = float(os.getenv("SLIPPAGE_PCT", "0.05"))
 
     # ─── Supertrend ──────────────────────────────────────────────────────
     # Период Supertrend
@@ -170,6 +194,8 @@ class TradingConfig:
     min_score_enabled: bool = os.getenv("MIN_SCORE_ENABLED", "true").lower() == "true"
     # Compression breakout mode (stricter checks in compression regime)
     compression_enabled: bool = os.getenv("COMPRESSION_ENABLED", "true").lower() == "true"
+    # Block all signals in compression regime (WR 37.7%, no edge)
+    block_compression_regime: bool = os.getenv("BLOCK_COMPRESSION_REGIME", "true").lower() == "true"
 
     # ─── Candles ─────────────────────────────────────────────────────────
     # Лимит свечей при запросе OHLCV
@@ -366,6 +392,9 @@ class DerivativesConfig:
     btc_ema200_timeframe: str = os.getenv("BTC_EMA200_TIMEFRAME", "4h")
     # Включить корреляцию с BTC
     btc_correlation_enabled: bool = os.getenv("BTC_CORRELATION_ENABLED", "true").lower() == "true"
+    # BTC global trend filter: block BUY if BTC below daily EMA200, block SELL if above
+    btc_global_trend_filter: bool = os.getenv("BTC_GLOBAL_TREND_FILTER", "true").lower() == "true"
+    btc_global_ema_period: int = int(os.getenv("BTC_GLOBAL_EMA_PERIOD", "200"))
     # Символ ETH для корреляции
     eth_symbol: str = os.getenv("ETH_SYMBOL", "ETH/USDT")
     # Символы для корреляции ETH (через запятую)
@@ -517,6 +546,48 @@ class WebConfig:
 
 
 @dataclass
+class PatternEngineConfig:
+    """ICT Pattern Engine — Layer 1 configuration."""
+
+    # Require BOS or sweep as trigger
+    require_bos_or_sweep: bool = os.getenv("PATTERN_REQUIRE_BOS_OR_SWEEP", "true").lower() == "true"
+    # Require OB or FVG as confirmation
+    require_ob_or_fvg: bool = os.getenv("PATTERN_REQUIRE_OB_OR_FVG", "true").lower() == "true"
+    # OB proximity threshold (% from midpoint to consider "near")
+    ob_proximity_pct: float = float(os.getenv("PATTERN_OB_PROXIMITY_PCT", "2.0"))
+
+
+@dataclass
+class ProbabilityConfig:
+    """Probability Engine — ML/rules configuration."""
+
+    # Path to trained ML model
+    model_path: str = os.getenv("PROBABILITY_MODEL_PATH", "models/probability_model.pkl")
+    # Minimum outcomes needed to train ML model
+    min_samples_for_ml: int = int(os.getenv("PROBABILITY_MIN_SAMPLES_FOR_ML", "100"))
+    # Fallback winrate when no historical data
+    fallback_winrate: float = float(os.getenv("PROBABILITY_FALLBACK_WINRATE", "50.0"))
+
+
+@dataclass
+class RiskEngineConfig:
+    """Risk Engine — Layer 3 capital protection."""
+
+    # Minimum R:R ratio (hard gate)
+    min_rr_ratio: float = float(os.getenv("RISK_ENGINE_MIN_RR", "1.5"))
+    # Absolute SL minimum % (hard gate)
+    sl_absolute_min_pct: float = float(os.getenv("RISK_ENGINE_SL_MIN_PCT", "0.25"))
+    # Absolute SL maximum % (hard gate)
+    sl_absolute_max_pct: float = float(os.getenv("RISK_ENGINE_SL_MAX_PCT", "5.0"))
+    # Base risk % per trade
+    base_risk_pct: float = float(os.getenv("RISK_ENGINE_BASE_RISK_PCT", "1.0"))
+    # Minimum risk % (floor)
+    min_risk_pct: float = float(os.getenv("RISK_ENGINE_MIN_RISK_PCT", "0.1"))
+    # Maximum risk % (ceiling)
+    max_risk_pct: float = float(os.getenv("RISK_ENGINE_MAX_RISK_PCT", "2.0"))
+
+
+@dataclass
 class AppConfig:
     """Главная конфигурация приложения."""
 
@@ -533,6 +604,17 @@ class AppConfig:
     notifier: NotifierConfig = field(default_factory=NotifierConfig)
     support_resistance: SupportResistanceConfig = field(default_factory=SupportResistanceConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    # New pipeline configs
+    pattern_engine: PatternEngineConfig = field(default_factory=PatternEngineConfig)
+    probability: ProbabilityConfig = field(default_factory=ProbabilityConfig)
+    risk_engine: RiskEngineConfig = field(default_factory=RiskEngineConfig)
+
+    # ─── Feature Flags (Phase 1) ─────────────────────────────────────────
+    htf_hard_gate: bool = os.getenv("HTF_HARD_GATE", "true").lower() == "true"
+    external_liquidity_tp: bool = os.getenv("EXTERNAL_LIQUIDITY_TP", "true").lower() == "true"
+    ob_mitigation: bool = os.getenv("OB_MITIGATION", "true").lower() == "true"
+    confidence_cap: bool = os.getenv("CONFIDENCE_CAP", "true").lower() == "true"
+    shadow_mode: bool = os.getenv("SHADOW_MODE", "true").lower() == "true"
 
     # URL базы данных
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/signals.db")
@@ -543,6 +625,8 @@ class AppConfig:
 
     # Cooldown между сигналами по одному инструменту (минуты)
     signal_cooldown_minutes: int = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "45"))
+    # Множитель cooldown для таймфреймов: effective = max(base, tf_minutes * multiplier)
+    signal_cooldown_tf_multiplier: float = float(os.getenv("SIGNAL_COOLDOWN_TF_MULTIPLIER", "2.0"))
 
     # Контекстный модуль
     context_enabled: bool = os.getenv("CONTEXT_ENABLED", "true").lower() == "true"
@@ -556,6 +640,15 @@ class AppConfig:
 
     # Timeout для context fetcher (секунды)
     context_fetch_timeout: float = float(os.getenv("CONTEXT_FETCH_TIMEOUT", "10"))
+
+    # TTL кэша вердиктов context enrichment (секунды) — используется при таймауте
+    context_cache_ttl_seconds: int = int(os.getenv("CONTEXT_CACHE_TTL_SECONDS", "1800"))
+
+    # ─── Portfolio Risk Gate ─────────────────────────────────────────────
+    # Максимальное число одновременно открытых сигналов
+    max_active_signals: int = int(os.getenv("MAX_ACTIVE_SIGNALS", "3"))
+    # Максимальный суммарный риск открытых позиций (%)
+    max_portfolio_risk_pct: float = float(os.getenv("MAX_PORTFOLIO_RISK_PCT", "3.0"))
 
     def _parse_coingecko_map(self, map_str: str) -> dict[str, str]:
         result = {}
@@ -630,28 +723,10 @@ class AppConfig:
 
 # Mapping: DB key → (config_attribute_path, type)
 FILTER_TOGGLE_KEYS: dict[str, tuple[str, type]] = {
-    "adx_filter": ("trading.adx_filter_enabled", bool),
-    "ema_alignment": ("trading.ema_alignment_enabled", bool),
-    "ema_spread": ("trading.ema_spread_enabled", bool),
-    "trigger": ("trading.trigger_required", bool),
-    "candle_close": ("trading.candle_close_enabled", bool),
-    "min_score": ("trading.min_score_enabled", bool),
-    "compression": ("trading.compression_enabled", bool),
-    "confirm_tf": ("trading.confirm_tf_enabled", bool),
-    "ema_slope": ("trading.ema_slope_check", bool),
-    "macd_slope": ("trading.macd_slope_check", bool),
-    "mtf": ("market_structure.mtf_enabled", bool),
-    "distance_filter": ("market_structure.distance_filter_enabled", bool),
-    "sr_levels": ("market_structure.sr_levels_enabled", bool),
-    "tp_path": ("market_structure.tp_path_enabled", bool),
-    "btc_corr": ("derivatives.btc_correlation_enabled", bool),
-    "eth_corr": ("derivatives.eth_correlation_enabled", bool),
-    "volatility": ("risk.volatility_filter_enabled", bool),
-    "no_trade_zones": ("risk.no_trade_zones_enabled", bool),
-    "dynamic_risk": ("risk.dynamic_risk_enabled", bool),
     "context": ("context_enabled", bool),
     "confidence_v2": ("scoring.confidence_v2_enabled", bool),
     "signal_block": ("signal_block_notify", bool),
+    "dynamic_risk": ("risk.dynamic_risk_enabled", bool),
 }
 
 FILTER_PARAM_KEYS: dict[str, tuple[str, type]] = {
@@ -695,6 +770,7 @@ FILTER_PARAM_KEYS: dict[str, tuple[str, type]] = {
     # Context params
     "context_min_verdict": ("context_min_verdict", str),
     "context_fetch_timeout": ("context_fetch_timeout", float),
+    "context_cache_ttl_seconds": ("context_cache_ttl_seconds", int),
     # Scoring params
     "confidence_strong_threshold": ("scoring.confidence_strong_threshold", float),
     "confidence_moderate_threshold": ("scoring.confidence_moderate_threshold", float),
@@ -795,3 +871,68 @@ _runtime_symbols_cache: Optional[list[str]] = None
 
 def get_active_symbols() -> list[str]:
     return _runtime_symbols_cache if _runtime_symbols_cache is not None else config.trading.symbols
+
+
+def build_config_snapshot() -> str:
+    """Serialize key strategy parameters to JSON for decision trace.
+
+    Captures the exact parameter state at scan time, enabling:
+    - Reproducibility: know exactly which config produced each signal
+    - Version comparison: detect config drift between strategy versions
+    - Root cause analysis: correlate WR changes with parameter changes
+    """
+    import json as _json
+    s = config.scoring
+    t = config.trading
+    r = config.risk
+    m = config.market_structure
+    d = config.derivatives
+
+    snapshot = {
+        # Signal engine weights
+        "w_supertrend": s.w_supertrend, "w_ema": s.w_ema,
+        "w_macd": s.w_macd, "w_rsi": s.w_rsi,
+        "w_volume": s.w_volume, "w_adx": s.w_adx, "w_dmi": s.w_dmi,
+        "w_bos": s.w_bos, "w_sweep": s.w_sweep, "w_ob": s.w_ob,
+        "w_btc": s.w_btc, "w_funding": s.w_funding, "w_oi": s.w_oi,
+        # EMA
+        "ema_fast": t.ema_fast, "ema_slow": t.ema_slow, "ema_trend": t.ema_trend,
+        "min_ema_spread_pct": t.min_ema_spread_pct,
+        # ADX
+        "adx_min": t.adx_min, "adx_strong": t.adx_strong,
+        # RSI
+        "rsi_period": t.rsi_period, "rsi_overbought": t.rsi_overbought,
+        "rsi_oversold": t.rsi_oversold,
+        # MACD
+        "macd_fast": t.macd_fast, "macd_slow": t.macd_slow, "macd_signal": t.macd_signal,
+        # Score
+        "min_score_for_signal": s.min_score_for_signal,
+        # SL/TP
+        "atr_multiplier_sl": t.atr_multiplier_sl, "atr_multiplier_tp": t.atr_multiplier_tp,
+        "min_rr_threshold": t.min_rr_threshold,
+        "min_sl_distance_pct": t.min_sl_distance_pct, "max_sl_distance_pct": t.max_sl_distance_pct,
+        "stop_hunt_buffer_pct": t.stop_hunt_buffer_pct, "max_ob_distance_pct": t.max_ob_distance_pct,
+        # Filter toggles
+        "adx_filter_enabled": t.adx_filter_enabled,
+        "ema_alignment_enabled": t.ema_alignment_enabled,
+        "trigger_required": t.trigger_required,
+        "compression_enabled": t.compression_enabled,
+        "block_compression_regime": t.block_compression_regime,
+        "confirm_tf_enabled": t.confirm_tf_enabled,
+        "confirm_timeframe": t.confirm_timeframe,
+        # Risk
+        "risk_strong_pct": r.risk_strong_pct, "risk_moderate_pct": r.risk_moderate_pct,
+        "volatility_filter_enabled": r.volatility_filter_enabled,
+        "no_trade_zones_enabled": r.no_trade_zones_enabled,
+        "dynamic_risk_enabled": r.dynamic_risk_enabled,
+        # Context
+        "context_min_verdict": config.context_min_verdict,
+        "context_fetch_timeout": config.context_fetch_timeout,
+        # MTF
+        "mtf_required_alignment": m.mtf_required_alignment, "mtf_enabled": m.mtf_enabled,
+        # Derivatives
+        "btc_correlation_enabled": d.btc_correlation_enabled,
+        "btc_global_trend_filter": d.btc_global_trend_filter,
+        "eth_correlation_enabled": d.eth_correlation_enabled,
+    }
+    return _json.dumps(snapshot, sort_keys=True)

@@ -26,7 +26,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import io
 import os
 import sys
 import math
@@ -34,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
@@ -80,6 +79,14 @@ class BacktestTrade:
     signal_score: int = 0
     confidence: float = 0.0
     reasons: list[str] = field(default_factory=list)
+    # Enriched factor data (for dataset / factor importance)
+    factor_strengths: dict = field(default_factory=dict)
+    factor_present: dict = field(default_factory=dict)
+    verdict: str = ""
+    confidence_v2_score: float = 0.0
+    confidence_v2_quality: str = ""
+    sl_distance_pct: float = 0.0
+    theoretical_rr: float = 0.0
 
 
 @dataclass
@@ -90,7 +97,65 @@ class RejectStats:
     sl_distance_rejected: int = 0
     news_rejected: int = 0
     confirm_tf_rejected: int = 0
+    sell_sweep_rejected: int = 0
     other_rejected: int = 0
+
+
+@dataclass
+class FunnelData:
+    """Per-symbol funnel instrumentation data."""
+    symbol: str
+    steps: dict = field(default_factory=dict)
+    total_signals_processed: int = 0
+    signal_engine_score_distribution: dict = field(default_factory=dict)
+    passed_score_distribution: dict = field(default_factory=dict)
+    passed_sl_sources: dict = field(default_factory=dict)
+    sl_shifted: int = 0
+
+
+# Pipeline funnel steps (in order — first match wins)
+FUNNEL_STEPS = [
+    "NO_SIGNAL_ENGINE",
+    "CONFIRM_TF_REJECT",
+    "DISTANCE_FILTER",
+    "TP_PATH_BLOCKED",
+    "MTF_ALIGNMENT",
+    "BTC_CORRELATION",
+    "ETH_CORRELATION",
+    "VOLATILITY_REGIME",
+    "CONTEXT_BLOCKED",
+    "NEWS_FILTER",
+    "SL_DISTANCE_MIN",
+    "SL_DISTANCE_MAX",
+    "RR_GUARD",
+    "NO_TRADE_ZONE",
+    "DYNAMIC_RISK_WEAK",
+    "COOLDOWN",
+    "PORTFOLIO_RISK",
+    "PASSED",
+]
+
+# Which pipeline steps are actually implemented in the backtest
+BACKTEST_ACTIVE: dict[str, bool] = {
+    "NO_SIGNAL_ENGINE": True,
+    "CONFIRM_TF_REJECT": True,
+    "DISTANCE_FILTER": False,
+    "TP_PATH_BLOCKED": False,
+    "MTF_ALIGNMENT": False,
+    "BTC_CORRELATION": False,
+    "ETH_CORRELATION": False,
+    "VOLATILITY_REGIME": False,
+    "CONTEXT_BLOCKED": False,
+    "NEWS_FILTER": False,
+    "SL_DISTANCE_MIN": True,
+    "SL_DISTANCE_MAX": True,
+    "RR_GUARD": True,
+    "NO_TRADE_ZONE": False,
+    "DYNAMIC_RISK_WEAK": False,
+    "COOLDOWN": False,
+    "PORTFOLIO_RISK": False,
+    "PASSED": True,
+}
 
 
 @dataclass
@@ -162,6 +227,7 @@ class BacktestConfig:
     enable_news_filter: bool = True
     enable_stop_hunt_buffer: bool = True
     min_score_for_signal: Optional[int] = None
+    sell_sweep_block: bool = False  # TEMP: reject SELL signals with sweep trigger
 
 
 # Preset definitions: name → dict of BacktestConfig field overrides
@@ -346,6 +412,7 @@ class BacktestEngine:
         send_telegram: bool = False,
         market_type: Optional[str] = None,
         bt_config: Optional[BacktestConfig] = None,
+        instrument: bool = False,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -353,6 +420,8 @@ class BacktestEngine:
         self.send_telegram = send_telegram
         self.market_type = market_type
         self.bt_config = bt_config or BacktestConfig()
+        self.instrument = instrument
+        self.funnel_data: Optional[FunnelData] = None
         self._indicator_engine = IndicatorEngine()
 
     async def run(self) -> BacktestResult:
@@ -402,6 +471,13 @@ class BacktestEngine:
         in_trade = False
         ct: Optional[BacktestTrade] = None
         signals_count = 0
+
+        # Funnel instrumentation (populated only when self.instrument=True)
+        _funnel_counts: dict[str, int] = {s: 0 for s in FUNNEL_STEPS}
+        _funnel_engine_scores: dict[int, int] = {}
+        _funnel_passed_scores: dict[int, int] = {}
+        _funnel_passed_sl_sources: dict[str, int] = {}
+        _funnel_sl_shifted: int = 0
 
         for i in range(warmup, len(df)):
             window = df.iloc[:i + 1].copy()
@@ -503,6 +579,8 @@ class BacktestEngine:
                                 if not confirm_ok and self.bt_config.enable_confirm_tf_gate:
                                     reject_stats.confirm_tf_rejected += 1
                                     reject_stats.total_rejected += 1
+                                    if self.instrument:
+                                        _funnel_counts["CONFIRM_TF_REJECT"] += 1
                                     continue
                     except Exception:
                         pass
@@ -518,6 +596,10 @@ class BacktestEngine:
                 )
 
                 if not (result.is_actionable and result.sl is not None and result.tp is not None):
+                    if self.instrument:
+                        _funnel_counts["NO_SIGNAL_ENGINE"] += 1
+                        score = result.score
+                        _funnel_engine_scores[score] = _funnel_engine_scores.get(score, 0) + 1
                     continue
 
                 is_buy = result.signal == SignalType.BUY
@@ -603,9 +685,13 @@ class BacktestEngine:
                         else:
                             result.sl = round(entry_price * (1 + min_dist / 100), 8)
                         result.reasons.append(f"SL shifted to min distance {min_dist}%")
+                        if self.instrument:
+                            _funnel_sl_shifted += 1
                     elif sl_dist_pct > max_dist:
                         reject_stats.sl_distance_rejected += 1
                         reject_stats.total_rejected += 1
+                        if self.instrument:
+                            _funnel_counts["SL_DISTANCE_MAX"] += 1
                         continue
 
                 # RR filter (Task 2.6)
@@ -617,12 +703,22 @@ class BacktestEngine:
                     if rr < min_rr:
                         reject_stats.rr_rejected += 1
                         reject_stats.total_rejected += 1
+                        if self.instrument:
+                            _funnel_counts["RR_GUARD"] += 1
                         continue
 
                 # News filter (Task 2.7: documented exclusion)
                 # NOTE: risk/news_filter.py is a stub (fetch_macro_events returns []).
                 # No historical news data available for backtesting — skip filter.
                 # Gated by enable_news_filter for A/B/n completeness (no-op when enabled).
+
+                # Funnel: signal passed all active filters
+                if self.instrument:
+                    _funnel_counts["PASSED"] += 1
+                    score = result.score
+                    _funnel_passed_scores[score] = _funnel_passed_scores.get(score, 0) + 1
+                    sl_src = result._sl_source or "atr"
+                    _funnel_passed_sl_sources[sl_src] = _funnel_passed_sl_sources.get(sl_src, 0) + 1
 
                 # Build trade
                 ct = BacktestTrade(
@@ -670,6 +766,18 @@ class BacktestEngine:
 
             risk = abs(t.entry_price - t.sl)
             t.rr = round(abs(t.exit_price - t.entry_price) / risk, 2) if risk > 0 else 0.0
+
+        # Build funnel data
+        if self.instrument:
+            self.funnel_data = FunnelData(
+                symbol=self.symbol,
+                steps=_funnel_counts,
+                total_signals_processed=signals_count,
+                signal_engine_score_distribution=_funnel_engine_scores,
+                passed_score_distribution=_funnel_passed_scores,
+                passed_sl_sources=_funnel_passed_sl_sources,
+                sl_shifted=_funnel_sl_shifted,
+            )
 
         return self._build_result(trades, signals_count, reject_stats, len(df))
 

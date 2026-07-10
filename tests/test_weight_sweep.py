@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
+from pathlib import Path
 
 import pandas as pd
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from tgbot.backtest.synthetic import make_trending_ohlcv
 from tgbot.backtest.weight_sweep import run_profile_sweep

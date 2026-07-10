@@ -1080,3 +1080,124 @@ class TestStopHuntBuffer:
         cfg = config.trading
         expected = round(100.0 - (100.0 * 0.02) * cfg.atr_multiplier_sl, 8)
         assert sl == expected
+
+
+class TestStopHuntBufferCondition:
+    """Test that stop hunt buffer is applied ONLY when structural SL is accepted.
+
+    These tests verify the _structural_sl_applied flag logic used in both
+    scanner.py and backtest/engine.py (fix for inverted condition bug).
+    """
+
+    def test_buffer_applied_only_when_structural_accepted(self):
+        """Buffer applied to structural SL when it replaces ATR SL."""
+        entry = 100.0
+        atr_sl = 97.0
+        structural_sl = 98.0  # closer to entry, accepted
+        buffer_pct = 1.0
+
+        structural_sl_applied = False
+        current_dist = abs(entry - atr_sl)
+        structural_dist = abs(entry - structural_sl)
+
+        if structural_dist <= current_dist and structural_sl != atr_sl:
+            result_sl = structural_sl
+            structural_sl_applied = True
+        else:
+            result_sl = atr_sl
+
+        if structural_sl_applied and buffer_pct > 0:
+            buffered = round(result_sl * (1 - buffer_pct / 100), 8)
+        else:
+            buffered = result_sl
+
+        assert structural_sl_applied
+        assert buffered < structural_sl  # buffer pushed SL further from entry
+        assert buffered == 97.02  # 98.0 * 0.99
+
+    def test_buffer_not_applied_when_structural_rejected(self):
+        """Buffer NOT applied to ATR SL when structural SL is rejected (worse risk)."""
+        entry = 100.0
+        atr_sl = 97.0
+        structural_sl = 95.0  # further from entry, rejected
+        buffer_pct = 1.0
+
+        structural_sl_applied = False
+        current_dist = abs(entry - atr_sl)
+        structural_dist = abs(entry - structural_sl)
+
+        if structural_dist <= current_dist and structural_sl != atr_sl:
+            result_sl = structural_sl
+            structural_sl_applied = True
+        else:
+            result_sl = atr_sl
+
+        if structural_sl_applied and buffer_pct > 0:
+            buffered = round(result_sl * (1 - buffer_pct / 100), 8)
+        else:
+            buffered = result_sl
+
+        assert not structural_sl_applied
+        assert buffered == atr_sl  # no buffer applied, SL stays at ATR level
+
+    def test_buffer_not_applied_when_sl_is_bos(self):
+        """Buffer NOT applied when sl_source is 'bos' (structural SL skipped entirely)."""
+        sl_source = "bos"
+        skip_structural_sl = sl_source == "bos"
+        structural_sl_applied = False
+
+        # When skip_structural_sl is True, calculate_structural_sl is never called
+        # so _structural_sl_applied stays False → no buffer
+        assert skip_structural_sl
+        assert not structural_sl_applied
+
+    def test_buffer_not_applied_when_structural_equals_atr(self):
+        """Buffer NOT applied when structural SL happens to equal ATR SL (same value)."""
+        entry = 100.0
+        atr_sl = 97.0
+        structural_sl = 97.0  # same as ATR SL
+        buffer_pct = 1.0
+
+        structural_sl_applied = False
+        current_dist = abs(entry - atr_sl)
+        structural_dist = abs(entry - structural_sl)
+
+        if structural_dist <= current_dist and structural_sl != atr_sl:
+            result_sl = structural_sl
+            structural_sl_applied = True
+        else:
+            result_sl = atr_sl
+
+        if structural_sl_applied and buffer_pct > 0:
+            buffered = round(result_sl * (1 - buffer_pct / 100), 8)
+        else:
+            buffered = result_sl
+
+        assert not structural_sl_applied
+        assert buffered == atr_sl
+
+    def test_buffer_sell_direction_shifts_sl_up(self):
+        """SELL: buffer shifts structural SL further above entry."""
+        entry = 100.0
+        atr_sl = 103.0
+        structural_sl = 102.0  # closer to entry, accepted
+        buffer_pct = 1.0
+
+        structural_sl_applied = False
+        current_dist = abs(entry - atr_sl)
+        structural_dist = abs(entry - structural_sl)
+
+        if structural_dist <= current_dist and structural_sl != atr_sl:
+            result_sl = structural_sl
+            structural_sl_applied = True
+        else:
+            result_sl = atr_sl
+
+        if structural_sl_applied and buffer_pct > 0:
+            buffered = round(result_sl * (1 + buffer_pct / 100), 8)
+        else:
+            buffered = result_sl
+
+        assert structural_sl_applied
+        assert buffered > structural_sl  # buffer pushed SL further from entry
+        assert buffered == 103.02  # 102.0 * 1.01

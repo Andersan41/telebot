@@ -1,16 +1,24 @@
 """
 strategy/pattern_engine.py — ICT Pattern Engine (Layer 1)
 
-The ONLY source of trading signals. Pure ICT — no indicators, no scoring.
+Two separate pipelines:
 
-Detects:
-- BOS (Break of Structure) → direction
-- Liquidity Sweep → direction + confirmation
-- Order Block → confirmation zone
-- Fair Value Gap → confirmation zone
-- Displacement → candle quality signal
+REVERSAL:
+  Sweep → Displacement → MSS → [OB/FVG entry zone] → Entry
 
-Minimum for valid setup: trigger (BOS or sweep) + confirmation (OB or FVG).
+CONTINUATION:
+  Trend → Pullback → BOS → [OB/FVG retrace] → Entry
+
+Scenario Detection ≠ Entry Ready.
+- Scenario: "Is there a trade idea?"
+- Entry Armed: "Can we enter now?" (price in OB/FVG zone)
+
+Hard gates per setup type:
+  Reversal: sweep + displacement + mss
+  Continuation: BOS + trend alignment
+
+OB/FVG are entry zones, never gates.
+RSI/ADX/EMA never block.
 """
 from __future__ import annotations
 
@@ -26,36 +34,48 @@ class ICTSetup:
 
     detected: bool
     direction: Optional[str] = None  # "buy" / "sell"
+    setup_type: Optional[str] = None  # "reversal" / "continuation"
 
-    # === Pattern components (boolean — present or not) ===
-    has_bos: bool = False
-    bos_type: Optional[str] = None  # "bullish" / "bearish"
-    bos_level: float = 0.0
-
+    # ── Reversal components ──
     has_sweep: bool = False
     sweep_type: Optional[str] = None
     sweep_strength: float = 0.0
     sweep_reclaim_candles: int = 0
 
+    has_displacement: bool = False
+    displacement_body_pct: float = 0.0
+    displacement_atr_ratio: float = 0.0
+
+    has_mss: bool = False
+    mss_score: float = 0.0  # 0-100
+    mss_causality: float = 0.0  # 0-1 exponential decay
+    sweep_to_mss_bars: int = 0
+
+    # ── Continuation components ──
+    has_bos: bool = False
+    bos_type: Optional[str] = None  # "bullish" / "bearish"
+    bos_level: float = 0.0
+
+    # ── Entry zones (NOT gates) ──
     has_ob: bool = False
     ob_type: Optional[str] = None
-    ob_distance_pct: float = 0.0  # how close price is to OB midpoint
+    ob_distance_pct: float = 0.0
     ob_midpoint: float = 0.0
 
     has_fvg: bool = False
     fvg_type: Optional[str] = None
     fvg_size_pct: float = 0.0
 
-    has_displacement: bool = False
-    displacement_body_pct: float = 0.0
+    # ── Entry readiness (soft — log but don't block) ──
+    entry_armed: bool = False
 
-    # === Structural info ===
-    structure_trend: Optional[str] = None  # "bullish" / "bearish" / "ranging"
+    # ── Structural info ──
+    structure_trend: Optional[str] = None
 
-    # === Component count ===
+    # ── Component list ──
     components_found: List[str] = field(default_factory=list)
 
-    # === Rejection info ===
+    # ── Rejection info ──
     rejection_reason: Optional[str] = None
 
     @property
@@ -63,11 +83,21 @@ class ICTSetup:
         return len(self.components_found)
 
     @property
+    def is_reversal(self) -> bool:
+        return self.setup_type == "reversal"
+
+    @property
+    def is_continuation(self) -> bool:
+        return self.setup_type == "continuation"
+
+    @property
     def has_trigger(self) -> bool:
-        return self.has_bos or self.has_sweep
+        """Backward-compatible: any trigger present."""
+        return self.has_sweep or self.has_bos
 
     @property
     def has_confirmation(self) -> bool:
+        """Backward-compatible: any confirmation present."""
         return self.has_ob or self.has_fvg
 
 
@@ -75,16 +105,13 @@ class PatternEngine:
     """Detects ICT setups from raw price action data.
 
     No indicators. No scoring. Pure pattern detection.
+    Two pipelines: reversal and continuation.
     """
 
     def __init__(
         self,
-        require_bos_or_sweep: bool = True,
-        require_ob_or_fvg: bool = True,
         ob_proximity_pct: float = 2.0,
     ):
-        self.require_bos_or_sweep = require_bos_or_sweep
-        self.require_ob_or_fvg = require_ob_or_fvg
         self.ob_proximity_pct = ob_proximity_pct
 
     def detect(
@@ -95,8 +122,12 @@ class PatternEngine:
         fvgs: list,
         candle_quality,
         current_price: float,
+        atr: float = 0.0,
     ) -> ICTSetup:
         """Detect whether a valid ICT setup exists.
+
+        Tries REVERSAL first (sweep + displacement + MSS).
+        Falls back to CONTINUATION (trend + BOS).
 
         Args:
             sweeps: list of SweepEvent from liquidity.sweep.detect_sweeps()
@@ -105,162 +136,323 @@ class PatternEngine:
             fvgs: list of FairValueGap from liquidity.fvg.detect_fvg()
             candle_quality: CandleQuality from liquidity.candle_quality.analyze_last_candle()
             current_price: current close price
+            atr: current ATR value
 
         Returns:
             ICTSetup with detection result.
         """
-        # 1. Resolve direction from structure/sweep
-        direction = self._resolve_direction(structure, sweeps)
+        direction = None
+        setup_type = None
+        reversal_rejection = None
+        continuation_rejection = None
+
+        # ═══ REVERSAL PATH ═══
+        # Sweep → Displacement → MSS
+        reversal = self._try_reversal(
+            sweeps, structure, candle_quality, atr, current_price,
+        )
+        if reversal.detected:
+            direction = reversal.direction
+            setup_type = "reversal"
+        else:
+            reversal_rejection = reversal.rejection_reason
+
+        # ═══ CONTINUATION PATH ═══
+        # Trend → BOS (only if reversal not found)
+        if not reversal.detected:
+            continuation = self._try_continuation(structure)
+            if continuation.detected:
+                direction = continuation.direction
+                setup_type = "continuation"
+                reversal = continuation
+            else:
+                continuation_rejection = continuation.rejection_reason
+
         if direction is None:
+            trend = structure.trend if structure else "ranging"
+            # Prefer continuation-specific reason if continuation was tried
+            # and reversal failed at early stage (no sweep)
+            if continuation_rejection and reversal_rejection:
+                # If reversal failed at first step, continuation reason is more relevant
+                if "no sweep" in (reversal_rejection or ""):
+                    reason = continuation_rejection
+                else:
+                    reason = reversal_rejection
+            else:
+                reason = continuation_rejection or reversal_rejection or "no valid setup"
             return ICTSetup(
                 detected=False,
-                structure_trend=structure.trend if structure else None,
-                rejection_reason="no clear direction (no BOS/sweep)",
+                structure_trend=trend,
+                rejection_reason=reason,
             )
 
-        # 2. Detect BOS
-        has_bos = False
-        bos_type = None
-        bos_level = 0.0
-        if structure and structure.last_bos:
-            bos = structure.last_bos
-            has_bos = True
-            bos_type = bos.type
-            bos_level = bos.level
+        # ═══ DETECT ENTRY ZONES ═══
+        setup = reversal
+        setup.direction = direction
+        setup.setup_type = setup_type
+        setup.structure_trend = structure.trend if structure else None
 
-        # 3. Detect sweep
+        self._detect_entry_zones(setup, order_blocks, fvgs, direction, current_price)
+
+        # ═══ CHECK ENTRY ARMED ═══
+        setup.entry_armed = self._check_entry_armed(setup, current_price)
+
+        # ═══ BUILD COMPONENT LIST ═══
+        setup.components_found = self._build_components(setup)
+
+        # ═══ LOG ═══
+        logger.info(
+            f"ICT setup: {direction.upper()} {setup_type} | "
+            f"components={setup.components_found} | "
+            f"entry_armed={setup.entry_armed} | "
+            f"MSS={setup.has_mss} BOS={setup.has_bos} "
+            f"Sweep={setup.has_sweep} Disp={setup.has_displacement} "
+            f"OB={setup.has_ob} FVG={setup.has_fvg}"
+        )
+
+        return setup
+
+    def _try_reversal(
+        self,
+        sweeps: list,
+        structure,
+        candle_quality,
+        atr: float,
+        current_price: float,
+    ) -> ICTSetup:
+        """Try to detect a REVERSAL setup: sweep + displacement + MSS."""
+        # 1. Sweep required
         has_sweep = False
         sweep_type = None
         sweep_strength = 0.0
         sweep_reclaim = 0
-        if sweeps:
-            for s in sweeps:
-                s_dir = "buy" if s.type == "bullish" else "sell" if s.type == "bearish" else s.type
-                if s.is_valid and s_dir == direction:
-                    has_sweep = True
-                    sweep_type = s.type
-                    sweep_strength = s.strength
-                    sweep_reclaim = s.reclaim_candles
-                    break
+        sweep_candle_index = -1
 
-        # 4. Detect OB
-        has_ob = False
-        ob_type = None
-        ob_distance = 0.0
-        ob_mid = 0.0
-        if order_blocks:
-            for ob in order_blocks:
-                ob_dir = "buy" if ob.type == "bullish" else "sell" if ob.type == "bearish" else ob.type
-                if ob.is_valid and ob_dir == direction:
-                    has_ob = True
-                    ob_type = ob.type
-                    ob_mid = ob.midpoint
-                    if current_price > 0:
-                        ob_distance = abs(current_price - ob.midpoint) / current_price * 100
-                    break
+        valid_sweeps = [s for s in sweeps if s.is_valid]
+        for s in valid_sweeps:
+            has_sweep = True
+            sweep_type = s.type
+            sweep_strength = s.strength
+            sweep_reclaim = s.reclaim_candles
+            sweep_candle_index = s.candle_index
+            break  # use first valid sweep
 
-        # 5. Detect FVG
-        has_fvg = False
-        fvg_type = None
-        fvg_size = 0.0
-        if fvgs:
-            for f in fvgs:
-                f_dir = "buy" if f.type == "bullish" else "sell" if f.type == "bearish" else f.type
-                if f.is_active and f_dir == direction:
-                    has_fvg = True
-                    fvg_type = f.type
-                    fvg_size = f.size_pct
-                    break
+        if not has_sweep:
+            return ICTSetup(
+                detected=False,
+                rejection_reason="reversal: no sweep",
+            )
 
-        # 6. Detect displacement
+        # 2. Displacement (informational — not a gate for MSS setups)
+        # MSS classification already measures displacement >= 1 ATR between sweep and CHoCH.
+        # The current candle does NOT need to be a displacement candle.
         has_displacement = False
         disp_body = 0.0
+        disp_atr = 0.0
         if candle_quality:
             has_displacement = candle_quality.is_displacement
             disp_body = candle_quality.body_pct
+        if atr > 0 and candle_quality:
+            disp_atr = candle_quality.body_pct * (current_price / 100) / atr
+        if candle_quality:
+            disp_atr = candle_quality.body_atr_ratio if hasattr(candle_quality, 'body_atr_ratio') else disp_atr
 
-        # 7. Build component list
-        components = []
-        if has_bos:
-            components.append("BOS")
-        if has_sweep:
-            components.append("Sweep")
-        if has_ob:
-            components.append("OB")
-        if has_fvg:
-            components.append("FVG")
-        if has_displacement:
-            components.append("Displacement")
+        # 3. MSS required (strong CHoCH after sweep)
+        has_mss = False
+        mss_score = 0.0
+        mss_causality = 0.0
+        sweep_to_mss = 0
+        direction = None
 
-        # 8. Check minimum requirements
-        has_trigger = (not self.require_bos_or_sweep) or (has_bos or has_sweep)
-        has_confirmation = (not self.require_ob_or_fvg) or (has_ob or has_fvg)
+        if structure and structure.last_mss is not None:
+            mss = structure.last_mss
+            has_mss = True
+            mss_score = mss.mss_score
+            mss_causality = mss.causality_score
+            # Direction from MSS + sweep alignment
+            if mss.type == "bullish":
+                direction = "buy"
+            elif mss.type == "bearish":
+                direction = "sell"
+            # Bars between sweep and MSS
+            if sweep_candle_index >= 0 and mss.candle_index >= 0:
+                sweep_to_mss = max(0, mss.candle_index - sweep_candle_index)
 
-        if not has_trigger:
+        if not has_mss:
             return ICTSetup(
                 detected=False,
-                direction=direction,
-                has_bos=has_bos, bos_type=bos_type, bos_level=bos_level,
                 has_sweep=has_sweep, sweep_type=sweep_type,
-                has_ob=has_ob, has_fvg=has_fvg,
-                structure_trend=structure.trend if structure else None,
-                components_found=components,
-                rejection_reason="no trigger (need BOS or Sweep)",
+                has_displacement=has_displacement,
+                rejection_reason="reversal: no MSS (strong CHoCH)",
             )
 
-        if not has_confirmation:
+        if direction is None:
             return ICTSetup(
                 detected=False,
-                direction=direction,
-                has_bos=has_bos, bos_type=bos_type, bos_level=bos_level,
                 has_sweep=has_sweep, sweep_type=sweep_type,
-                structure_trend=structure.trend if structure else None,
-                components_found=components,
-                rejection_reason="no confirmation (need OB or FVG)",
+                has_displacement=has_displacement,
+                has_mss=has_mss,
+                rejection_reason="reversal: MSS direction unclear",
             )
-
-        # 9. Setup detected
-        logger.info(
-            f"ICT setup detected: {direction.upper()} | "
-            f"components={components} | "
-            f"BOS={has_bos} Sweep={has_sweep} OB={has_ob} FVG={has_fvg} Disp={has_displacement}"
-        )
 
         return ICTSetup(
             detected=True,
             direction=direction,
-            has_bos=has_bos, bos_type=bos_type, bos_level=bos_level,
-            has_sweep=has_sweep, sweep_type=sweep_type,
-            sweep_strength=sweep_strength, sweep_reclaim_candles=sweep_reclaim,
-            has_ob=has_ob, ob_type=ob_type,
-            ob_distance_pct=ob_distance, ob_midpoint=ob_mid,
-            has_fvg=has_fvg, fvg_type=fvg_type, fvg_size_pct=fvg_size,
-            has_displacement=has_displacement, displacement_body_pct=disp_body,
-            structure_trend=structure.trend if structure else None,
-            components_found=components,
+            setup_type="reversal",
+            has_sweep=has_sweep,
+            sweep_type=sweep_type,
+            sweep_strength=sweep_strength,
+            sweep_reclaim_candles=sweep_reclaim,
+            has_displacement=has_displacement,
+            displacement_body_pct=disp_body,
+            displacement_atr_ratio=disp_atr,
+            has_mss=has_mss,
+            mss_score=mss_score,
+            mss_causality=mss_causality,
+            sweep_to_mss_bars=sweep_to_mss,
         )
 
-    def _resolve_direction(self, structure, sweeps) -> Optional[str]:
-        """Determine trade direction from structure and sweeps.
+    def _try_continuation(self, structure) -> ICTSetup:
+        """Try to detect a CONTINUATION setup: trend + BOS."""
+        if structure is None:
+            return ICTSetup(
+                detected=False,
+                rejection_reason="continuation: no structure",
+            )
 
-        Priority:
-        1. BOS direction (most reliable)
-        2. Sweep direction (second most reliable)
-        """
-        # Primary: BOS
-        if structure and structure.last_bos:
+        trend = structure.trend
+
+        # 1. Trend required (no ranging)
+        if trend == "ranging":
+            return ICTSetup(
+                detected=False,
+                structure_trend=trend,
+                rejection_reason="continuation: ranging market",
+            )
+
+        # 2. BOS required
+        has_bos = False
+        bos_type = None
+        bos_level = 0.0
+        direction = None
+
+        if structure.last_bos is not None:
             bos = structure.last_bos
-            if bos.type in ("bullish", "bearish"):
-                return "buy" if bos.type == "bullish" else "sell"
+            has_bos = True
+            bos_type = bos.type
+            bos_level = bos.level
+            if bos.type == "bullish":
+                direction = "buy"
+            elif bos.type == "bearish":
+                direction = "sell"
 
-        # Secondary: sweep
-        valid_sweeps = [s for s in sweeps if s.is_valid]
-        if valid_sweeps:
-            last = valid_sweeps[-1]
-            if last.type in ("bullish", "bearish"):
-                return "buy" if last.type == "bullish" else "sell"
+        if not has_bos:
+            return ICTSetup(
+                detected=False,
+                structure_trend=trend,
+                rejection_reason="continuation: no BOS",
+            )
 
-        return None
+        # 3. Trend alignment required
+        trend_aligned = (
+            (direction == "buy" and trend == "bullish") or
+            (direction == "sell" and trend == "bearish")
+        )
+
+        if not trend_aligned:
+            return ICTSetup(
+                detected=False,
+                has_bos=has_bos, bos_type=bos_type,
+                structure_trend=trend,
+                rejection_reason=f"continuation: BOS {bos_type} vs trend {trend}",
+            )
+
+        return ICTSetup(
+            detected=True,
+            direction=direction,
+            setup_type="continuation",
+            has_bos=has_bos,
+            bos_type=bos_type,
+            bos_level=bos_level,
+        )
+
+    def _detect_entry_zones(
+        self,
+        setup: ICTSetup,
+        order_blocks: list,
+        fvgs: list,
+        direction: str,
+        current_price: float,
+    ):
+        """Detect OB and FVG as entry zones (not gates)."""
+        # OB
+        for ob in order_blocks:
+            ob_dir = "buy" if ob.type == "bullish" else "sell" if ob.type == "bearish" else ob.type
+            if ob.is_valid and ob_dir == direction:
+                setup.has_ob = True
+                setup.ob_type = ob.type
+                setup.ob_midpoint = ob.midpoint
+                if current_price > 0:
+                    setup.ob_distance_pct = abs(current_price - ob.midpoint) / current_price * 100
+                break
+
+        # FVG
+        for f in fvgs:
+            f_dir = "buy" if f.type == "bullish" else "sell" if f.type == "bearish" else f.type
+            if f.is_active and f_dir == direction:
+                setup.has_fvg = True
+                setup.fvg_type = f.type
+                setup.fvg_size_pct = f.size_pct
+                break
+
+    def _check_entry_armed(self, setup: ICTSetup, current_price: float) -> bool:
+        """Check if price is in an OB or FVG zone.
+
+        Entry armed is soft — logged but NOT a gate.
+        For BUY: price near OB midpoint (below) or inside bullish FVG.
+        For SELL: price near OB midpoint (above) or inside bearish FVG.
+        """
+        if current_price <= 0:
+            return False
+
+        # Check OB proximity
+        if setup.has_ob and setup.ob_midpoint > 0:
+            dist_pct = abs(current_price - setup.ob_midpoint) / current_price * 100
+            if dist_pct <= self.ob_proximity_pct:
+                return True
+
+        # Check FVG containment
+        if setup.has_fvg:
+            # For bullish FVG: price should be within or below the gap
+            if setup.fvg_type == "bullish":
+                # FVG gap is between bottom and top
+                # Price entering from above retracing into the gap
+                return True  # FVG exists and is active → armed
+            elif setup.fvg_type == "bearish":
+                return True
+
+        return False
+
+    def _build_components(self, setup: ICTSetup) -> List[str]:
+        """Build component list for logging and features."""
+        components = []
+        if setup.setup_type == "reversal":
+            if setup.has_sweep:
+                components.append("Sweep")
+            if setup.has_displacement:
+                components.append("Displacement")
+            if setup.has_mss:
+                components.append("MSS")
+        elif setup.setup_type == "continuation":
+            if setup.has_bos:
+                components.append("BOS")
+        if setup.has_ob:
+            components.append("OB")
+        if setup.has_fvg:
+            components.append("FVG")
+        if setup.entry_armed:
+            components.append("EntryArmed")
+        return components
 
 
 # Singleton

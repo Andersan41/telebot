@@ -443,3 +443,75 @@ class TestMTFAlignment:
             )
         assert result.alignment_state == "mixed"
         assert result.aligned is True
+
+    @pytest.mark.asyncio
+    async def test_clamp_required_to_available_htfs(self):
+        """primary=4h → higher_tfs=['1d'] → required clamped from 2 to 1."""
+        state = StructureState(trend="bearish")
+        df = _make_ohlcv_trending(n=100, trend="bearish", seed=42)
+        mock_client = AsyncMock()
+        mock_client.fetch_ohlcv = AsyncMock(return_value=df)
+
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("market_structure.structure.analyze_structure", lambda *a, **k: state)
+            result = await check_mtf_alignment(
+                symbol="BTC/USDT",
+                direction="bullish",
+                primary_tf="4h",
+                exchange_client=mock_client,
+                required_alignment=2,  # would be 2, but only 1 HTF available
+                timeframes=["1d", "4h", "1h"],
+            )
+        # 1d is bearish, BUY requested → aligned_count=0, required clamped to 1 → BLOCKED
+        assert result.aligned is False
+        assert len(result.states) == 1  # only "1d" checked
+
+    @pytest.mark.asyncio
+    async def test_clamp_primary_4h_bullish_1d(self):
+        """primary=4h, 1d bullish → aligned=1, required=1 → PASS."""
+        state = StructureState(trend="bullish")
+        df = _make_ohlcv_trending(n=100, trend="bullish", seed=42)
+        mock_client = AsyncMock()
+        mock_client.fetch_ohlcv = AsyncMock(return_value=df)
+
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("market_structure.structure.analyze_structure", lambda *a, **k: state)
+            result = await check_mtf_alignment(
+                symbol="BTC/USDT",
+                direction="bullish",
+                primary_tf="4h",
+                exchange_client=mock_client,
+                required_alignment=2,
+                timeframes=["1d", "4h", "1h"],
+            )
+        assert result.aligned is True
+        assert len(result.states) == 1
+
+    @pytest.mark.asyncio
+    async def test_clamp_primary_1h_still_requires_2(self):
+        """primary=1h → higher_tfs=['4h','1d'] → required stays 2."""
+        bullish_state = StructureState(trend="bullish")
+        bearish_state = StructureState(trend="bearish")
+        call_count = 0
+        def mock_analyze(*a, **k):
+            nonlocal call_count
+            call_count += 1
+            return bullish_state if call_count == 1 else bearish_state
+
+        df = _make_ohlcv_trending(n=100, trend="bullish", seed=42)
+        mock_client = AsyncMock()
+        mock_client.fetch_ohlcv = AsyncMock(return_value=df)
+
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("market_structure.structure.analyze_structure", mock_analyze)
+            result = await check_mtf_alignment(
+                symbol="BTC/USDT",
+                direction="bullish",
+                primary_tf="1h",
+                exchange_client=mock_client,
+                required_alignment=2,
+                timeframes=["1d", "4h", "1h"],
+            )
+        # 4h=bullish, 1d=bearish → aligned=1 < required=2 → BLOCKED
+        assert result.aligned is False
+        assert len(result.states) == 2

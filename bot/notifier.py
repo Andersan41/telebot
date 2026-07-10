@@ -191,3 +191,56 @@ async def send_error_alert(message: str, retries: int = 3):
             except Exception as e:
                 logger.error(f"Unexpected error sending admin alert: {e}", exc_info=True)
                 break
+
+
+# ── Hypothesis formatting (new pipeline) ─────────────────────────────
+
+def format_hypothesis_summary(decision: object) -> str:
+    """Format Decision + Hypothesis for Telegram signal message.
+
+    Appended to signal message when hypothesis is available.
+    """
+    if decision is None or not getattr(decision, "trade", False):
+        return ""
+
+    h = getattr(decision, "hypothesis", None)
+    if h is None:
+        return ""
+
+    lines = [f"\n🧠 <b>Market Hypothesis:</b>"]
+    lines.append(f"├ Narrative: <b>{html.escape(h.narrative_type)}</b>")
+    lines.append(f"├ Quality: <b>{h.quality:.0f}</b>/100")
+    lines.append(f"├ Confidence: <b>{h.confidence:.0%}</b>")
+    lines.append(f"├ Decay: <b>{h.decay_factor:.0%}</b>")
+    lines.append(f"├ Utility: <b>{getattr(decision, 'utility', 0):.3f}</b>")
+    if h.rr_ratio > 0:
+        lines.append(f"├ R:R: <b>1:{h.rr_ratio:.1f}</b>")
+
+    # Market state
+    ms = getattr(decision, "market_state", None)
+    if ms:
+        lines.append(f"├ Phase: <b>{ms.phase.value}</b> (conf={ms.phase_confidence:.0%})")
+
+    return "\n".join(lines)
+
+
+def format_hypothesis_set_stats(hset: object) -> str:
+    """Format HypothesisSet stats for admin debugging."""
+    if hset is None:
+        return ""
+
+    lines = [f"\n📊 <b>Hypothesis Set:</b>"]
+    lines.append(f"├ Total: <b>{len(hset)}</b> hypotheses")
+
+    best_buy = getattr(hset, "best_buy", None)
+    best_sell = getattr(hset, "best_sell", None)
+
+    if best_buy:
+        lines.append(f"├ Best BUY: <b>{best_buy.narrative_type}</b> (q={best_buy.quality:.0f}, c={best_buy.confidence:.2f})")
+    if best_sell:
+        lines.append(f"├ Best SELL: <b>{best_sell.narrative_type}</b> (q={best_sell.quality:.0f}, c={best_sell.confidence:.2f})")
+
+    gap = getattr(hset, "ambiguity_gap", 1.0)
+    lines.append(f"├ Ambiguity gap: <b>{gap:.3f}</b>")
+
+    return "\n".join(lines)

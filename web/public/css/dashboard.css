@@ -578,3 +578,331 @@ body {
   .token-search input { width: 100%; }
   .signal-details { grid-template-columns: 1fr; }
 }
+
+/* ===== ANALYTICS ROW: OI + VP + BOOK ===== */
+.analytics-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.analytics-card {
+  padding: 10px 12px;
+}
+
+/* Open Interest */
+.oi-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.oi-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.oi-change {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.oi-change.bull { color: #a3e635; }
+.oi-change.bear { color: #f87171; }
+.oi-change.neu  { color: #facc15; }
+
+.oi-details {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.oi-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.oi-detail-label {
+  font-size: 9px;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.oi-detail-value {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.oi-detail-value.bull { color: #a3e635; }
+.oi-detail-value.bear { color: #f87171; }
+.oi-detail-value.neu  { color: #facc15; }
+
+/* Volume Profile */
+.vp-levels {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.vp-level {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.vp-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.vp-vah { color: #f87171; }
+.vp-poc { color: #facc15; }
+.vp-val { color: #a3e635; }
+
+.vp-price {
+  font-size: 12px;
+  font-weight: 500;
+  color: #e0e0e0;
+}
+
+.vp-poc-price {
+  font-size: 14px;
+  font-weight: 700;
+  color: #facc15;
+}
+
+.vp-histogram {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  height: 60px;
+  justify-content: center;
+}
+
+.vp-bar {
+  height: 3px;
+  border-radius: 1px;
+  transition: width 0.3s ease;
+  min-width: 2px;
+}
+
+.vp-bar-poc  { background: #facc15; }
+.vp-bar-va   { background: #60a5fa80; }
+.vp-bar-outer { background: #333; }
+
+/* Book Anomalies */
+.book-imbalance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.book-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.book-side-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.book-side-label.bid { color: #a3e635; }
+.book-side-label.ask { color: #f87171; }
+
+.book-volume {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.book-spread {
+  font-size: 11px;
+  color: #888;
+}
+
+.book-anomaly-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.book-anomaly-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 6px;
+  background: #111;
+  border-radius: 4px;
+}
+
+.book-anomaly-side {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  min-width: 30px;
+  text-align: center;
+}
+
+.book-anomaly-side.bid { background: #1a2e10; color: #a3e635; }
+.book-anomaly-side.ask { background: #2e1010; color: #f87171; }
+
+.book-anomaly-price {
+  color: #e0e0e0;
+  font-weight: 500;
+}
+
+.book-anomaly-vol {
+  color: #888;
+  margin-left: auto;
+}
+
+.book-no-anomalies {
+  font-size: 11px;
+  color: #444;
+  padding: 4px 0;
+  text-align: center;
+}
+
+/* ===== RESPONSIVE for analytics ===== */
+@media (max-width: 900px) {
+  .analytics-row { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  .analytics-row { grid-template-columns: 1fr; }
+}
+
+/* ===== OPEN TRADES TABLE ===== */
+.trades-section {
+  margin-top: 10px;
+  padding: 12px;
+  background: #111;
+  border: 0.5px solid #222;
+  border-radius: 8px;
+}
+
+.trades-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.trades-title {
+  font-size: 12px;
+  color: #888;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.trades-count {
+  font-size: 11px;
+  color: #a3e635;
+  background: #1a2e10;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.trades-table-wrap {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+
+.trades-table-wrap::-webkit-scrollbar { height: 4px; }
+.trades-table-wrap::-webkit-scrollbar-track { background: transparent; }
+.trades-table-wrap::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+.trades-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.trades-table thead th {
+  text-align: left;
+  font-size: 10px;
+  color: #555;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-bottom: 0.5px solid #222;
+  white-space: nowrap;
+}
+
+.trades-table tbody td {
+  padding: 7px 10px;
+  border-bottom: 0.5px solid #1a1a1a;
+  color: #ccc;
+  white-space: nowrap;
+}
+
+.trades-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.trades-table tbody tr:hover {
+  background: #1a1a1a;
+}
+
+.trades-empty {
+  text-align: center;
+  color: #444;
+  font-size: 12px;
+  padding: 16px 10px !important;
+}
+
+.trades-signal-buy {
+  color: #a3e635;
+  font-weight: 700;
+}
+
+.trades-signal-sell {
+  color: #f87171;
+  font-weight: 700;
+}
+
+.trades-ticker {
+  color: #e0e0e0;
+  font-weight: 600;
+}
+
+.trades-tf {
+  color: #888;
+  font-size: 11px;
+}
+
+.trades-price {
+  color: #e0e0e0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.trades-sent {
+  color: #555;
+  font-size: 11px;
+}
+
+/* ===== RESPONSIVE for trades ===== */
+@media (max-width: 768px) {
+  .trades-table { font-size: 11px; }
+  .trades-table thead th,
+  .trades-table tbody td { padding: 5px 6px; }
+}

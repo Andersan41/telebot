@@ -35,6 +35,8 @@ async def setup_db(tmp_path):
 @pytest.fixture
 async def buy_signal():
     """Создаёт BUY-сигнал: entry=100, SL=95, TP=110."""
+    # Set entry_candle_open to 2 hours ago to avoid same-candle skip
+    entry_candle = datetime.now(timezone.utc) - timedelta(hours=2)
     sig = await db.save_signal(
         symbol="BTC/USDT",
         timeframe="1h",
@@ -44,6 +46,7 @@ async def buy_signal():
         tp=110.0,
         score=5,
         reasons=["test"],
+        entry_candle_open=entry_candle,
     )
     await db.create_outcome(sig.id)
     return sig
@@ -52,6 +55,8 @@ async def buy_signal():
 @pytest.fixture
 async def sell_signal():
     """Создаёт SELL-сигнал: entry=100, SL=105, TP=90."""
+    # Set entry_candle_open to 2 hours ago to avoid same-candle skip
+    entry_candle = datetime.now(timezone.utc) - timedelta(hours=2)
     sig = await db.save_signal(
         symbol="ETH/USDT",
         timeframe="1h",
@@ -61,14 +66,20 @@ async def sell_signal():
         tp=90.0,
         score=5,
         reasons=["test"],
+        entry_candle_open=entry_candle,
     )
     await db.create_outcome(sig.id)
     return sig
 
 
-def _make_ohlcv(close_price):
-    """Helper: DataFrame с двумя свечами (входная цена + текущая)."""
-    return pd.DataFrame({"close": [100.0, close_price]})
+@pytest.fixture(autouse=True)
+def mock_notification():
+    """Mock Telegram notifications to prevent real messages during tests."""
+    with patch(
+        "scheduler.outcome_tracker._send_close_notification",
+        new_callable=AsyncMock,
+    ):
+        yield
 
 
 class TestHitTP:
@@ -76,10 +87,9 @@ class TestHitTP:
 
     @pytest.mark.asyncio
     async def test_buy_hit_tp(self, buy_signal, setup_db):
-        mock_df = _make_ohlcv(112.0)  # выше TP=110
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=mock_df,
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=112.0,
         ):
             await check_open_outcomes()
 
@@ -90,10 +100,9 @@ class TestHitTP:
 
     @pytest.mark.asyncio
     async def test_sell_hit_tp(self, sell_signal, setup_db):
-        mock_df = _make_ohlcv(88.0)  # ниже TP=90 для SELL
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=mock_df,
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=88.0,
         ):
             await check_open_outcomes()
 
@@ -107,10 +116,9 @@ class TestHitSL:
 
     @pytest.mark.asyncio
     async def test_buy_hit_sl(self, buy_signal, setup_db):
-        mock_df = _make_ohlcv(93.0)  # ниже SL=95 для BUY
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=mock_df,
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=93.0,
         ):
             await check_open_outcomes()
 
@@ -121,10 +129,9 @@ class TestHitSL:
 
     @pytest.mark.asyncio
     async def test_sell_hit_sl(self, sell_signal, setup_db):
-        mock_df = _make_ohlcv(107.0)  # выше SL=105 для SELL
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=mock_df,
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=107.0,
         ):
             await check_open_outcomes()
 
@@ -138,10 +145,9 @@ class TestNoHit:
 
     @pytest.mark.asyncio
     async def test_price_in_corridor(self, buy_signal, setup_db):
-        mock_df = _make_ohlcv(105.0)  # между SL=95 и TP=110
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=mock_df,
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=105.0,
         ):
             await check_open_outcomes()
 
@@ -167,6 +173,7 @@ class TestExpired:
             tp=55.0,
             score=5,
             reasons=["test"],
+            entry_candle_open=old_ts - timedelta(hours=1),
         )
         # Обновляем created_at в БД на 8 дней назад
         async with db._session_factory() as session:
@@ -179,8 +186,8 @@ class TestExpired:
         await db.create_outcome(sig.id)
 
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=pd.DataFrame({"close": [50.0, 51.0]}),
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=51.0,
         ):
             await check_open_outcomes()
 
@@ -203,28 +210,31 @@ class TestGetOutcomeStats:
 
     @pytest.mark.asyncio
     async def test_stats_with_mixed_results(self, setup_db):
+        entry_candle = datetime.now(timezone.utc) - timedelta(hours=2)
         sig1 = await db.save_signal(
             symbol="BTC/USDT", timeframe="1h", signal_type="BUY",
             close_price=100.0, sl=95.0, tp=110.0, score=5, reasons=["a"],
+            entry_candle_open=entry_candle,
         )
         sig2 = await db.save_signal(
             symbol="ETH/USDT", timeframe="1h", signal_type="BUY",
             close_price=200.0, sl=190.0, tp=220.0, score=5, reasons=["b"],
+            entry_candle_open=entry_candle,
         )
         await db.create_outcome(sig1.id)
         await db.create_outcome(sig2.id)
 
         # Первый сигнал → HIT_TP (цена 115)
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=pd.DataFrame({"close": [100.0, 115.0]}),
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=115.0,
         ):
             await check_open_outcomes()
 
         # Второй сигнал → HIT_SL (цена 185)
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=pd.DataFrame({"close": [200.0, 185.0]}),
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=185.0,
         ):
             await check_open_outcomes()
 
@@ -238,12 +248,12 @@ class TestGetOutcomeStats:
 
 
 class TestFetchError:
-    """fetch_ohlcv возвращает None → скип, outcome остаётся OPEN."""
+    """fetch_ticker_price возвращает None → скип, outcome остаётся OPEN."""
 
     @pytest.mark.asyncio
     async def test_fetch_returns_none(self, buy_signal, setup_db):
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
             new_callable=AsyncMock, return_value=None,
         ):
             await check_open_outcomes()
@@ -252,17 +262,49 @@ class TestFetchError:
         assert len(open_outcomes) == 1
 
 
-class TestFetchEmpty:
-    """fetch_ohlcv возвращает пустой DataFrame → скип."""
+class TestTickerSLBreachWhileCandleInside:
+    """Регрессионный тест: ticker пробивает SL, но закрытая свеча внутри диапазона.
+
+    Баг: outcome_tracker использовал close последней ЗАКРЫТОЙ свечи (iloc[:-1]).
+    Если SL пробит на ТЕКУЩЕЙ незакрытой свече — трекер не видел пробоя.
+    Исправление: используем fetch_ticker_price (real-time).
+    """
 
     @pytest.mark.asyncio
-    async def test_fetch_returns_empty(self, buy_signal, setup_db):
-        empty_df = pd.DataFrame({"close": []})
+    async def test_sell_sl_breach_ticker_only(self, sell_signal, setup_db):
+        """SELL entry=100, SL=105. Candle close=102 (внутри), ticker=106 (SL пробит)."""
         with patch(
-            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
-            new_callable=AsyncMock, return_value=empty_df,
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=106.0,
         ):
             await check_open_outcomes()
 
-        open_outcomes = await db.get_open_outcomes()
-        assert len(open_outcomes) == 1
+        stats = await db.get_outcome_stats()
+        assert stats["closed"] == 1
+        assert stats["wins"] == 0  # SL
+
+    @pytest.mark.asyncio
+    async def test_buy_sl_breach_ticker_only(self, buy_signal, setup_db):
+        """BUY entry=100, SL=95. Candle close=97 (внутри), ticker=94 (SL пробит)."""
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=94.0,
+        ):
+            await check_open_outcomes()
+
+        stats = await db.get_outcome_stats()
+        assert stats["closed"] == 1
+        assert stats["wins"] == 0  # SL
+
+    @pytest.mark.asyncio
+    async def test_sell_tp_breach_ticker_only(self, sell_signal, setup_db):
+        """SELL entry=100, TP=90. Candle close=92 (внутри), ticker=89 (TP пробит)."""
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=89.0,
+        ):
+            await check_open_outcomes()
+
+        stats = await db.get_outcome_stats()
+        assert stats["closed"] == 1
+        assert stats["wins"] == 1  # TP

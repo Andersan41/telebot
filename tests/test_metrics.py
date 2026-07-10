@@ -60,68 +60,61 @@ class TestStartMetricsServer:
 
 
 class TestScanSymbolMetrics:
-    """scan_symbol инкрементирует signals_total и измеряет duration."""
+    """scan_symbol_v2 инкрементирует signals_total и измеряет duration."""
 
     @pytest.mark.asyncio
     async def test_signals_total_increased_on_signal(self, monkeypatch):
-        from strategy.signal_engine import SignalResult, SignalType
-        from context.scorer import ContextVerdict
-
-        result = SignalResult(
-            signal=SignalType.BUY, symbol="BTC/USDT",
-            timeframe="1h", close=50000.0, sl=48500.0, tp=53000.0,
-            score=6, reasons=["test"],
+        from strategy.pattern_engine import ICTSetup
+        from strategy.probability_engine import TradeProbability
+        setup_mock = ICTSetup(
+            detected=True, direction="buy",
+            has_bos=True, bos_type="bullish", bos_level=49500.0,
+            has_ob=True, ob_type="bullish", ob_distance_pct=0.5,
+            components_found=["bos", "ob"],
+        )
+        pred_mock = TradeProbability(
+            p_tp=0.55, expected_rr=2.5, profit_factor=1.8,
+            confidence=0.7, model_type="rules",
+        )
+        risk_mock = MagicMock(
+            should_trade=True, risk_pct=1.0, rr_ratio=3.0, rejection_reason=None,
         )
 
-        ind_mock = MagicMock()
-        ind_mock.atr = 600.0
-        ind_mock.close = 50000.0
-        ind_mock.volume = 1200.0
-        ind_mock.volume_sma = 1000.0
-        ind_mock.rsi = 55.0
-        ind_mock.adx = 30.0
-        ind_mock.dmi_plus = 25.0
-        ind_mock.dmi_minus = 15.0
-        ind_mock.macd_hist = 30.0
-        df_mock = MagicMock()
-        monkeypatch.setattr("scheduler.scanner._is_cooldown_active", AsyncMock(return_value=False))
-        monkeypatch.setattr("scheduler.scanner._get_indicators", AsyncMock(return_value=(ind_mock, df_mock)))
-        monkeypatch.setattr("scheduler.scanner.signal_engine", MagicMock(evaluate=MagicMock(return_value=result)))
-        monkeypatch.setattr("scheduler.scanner.db", MagicMock(save_signal=AsyncMock(), set_cooldown=AsyncMock()))
-        monkeypatch.setattr("scheduler.scanner.config.trading", MagicMock(
-            confirm_timeframe="15m", symbols=["BTC/USDT"]
+        monkeypatch.setattr("scheduler.scanner._is_cooldown_active", AsyncMock(return_value=(False, 0)))
+        monkeypatch.setattr("scheduler.scanner._get_indicators", AsyncMock(return_value=(MagicMock(atr=600.0, close=50000.0), MagicMock())))
+        monkeypatch.setattr("strategy.pattern_engine.pattern_engine", MagicMock(detect=MagicMock(return_value=setup_mock)))
+        monkeypatch.setattr("strategy.feature_builder.feature_builder", MagicMock(build=MagicMock(return_value=MagicMock(to_reasoning=MagicMock(return_value=[])))))
+        monkeypatch.setattr("strategy.probability_engine.probability_engine", MagicMock(predict=MagicMock(return_value=pred_mock)))
+        monkeypatch.setattr("risk.engine.risk_engine", MagicMock(evaluate=MagicMock(return_value=risk_mock)))
+        monkeypatch.setattr("scheduler.scanner.db", MagicMock(
+            save_signal=AsyncMock(), set_cooldown=AsyncMock(),
+            get_active_signals_count=AsyncMock(return_value=0),
+            get_portfolio_risk_sum=AsyncMock(return_value=0.0),
+            get_last_signal=AsyncMock(return_value=None),
+            create_outcome=AsyncMock(),
         ))
-        monkeypatch.setattr("scheduler.scanner.config", MagicMock(
-            context_enabled=False, context_min_verdict="WEAK"
-        ))
-
-        from monitoring.metrics import signals_total
-        before = signals_total._metrics  # internal list of _LabelKeys
 
         cb = AsyncMock()
-        from scheduler.scanner import scan_symbol
-        await scan_symbol("BTC/USDT", "1h", cb)
+        from scheduler.scanner import scan_symbol_v2
+        await scan_symbol_v2("BTC/USDT", "1h", cb)
 
         cb.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_scan_duration_histogram_wraps(self, monkeypatch):
         """Проверяем, что scan_duration_seconds.labels().time() вызывается."""
-        from strategy.signal_engine import SignalResult, SignalType
         from monitoring.metrics import scan_duration_seconds
 
-        result = SignalResult(
-            signal=SignalType.NO_SIGNAL, symbol="BTC/USDT",
-            timeframe="1h", close=50000.0, score=2, reasons=[],
-        )
-
-        monkeypatch.setattr("scheduler.scanner._is_cooldown_active", AsyncMock(return_value=False))
+        monkeypatch.setattr("scheduler.scanner._is_cooldown_active", AsyncMock(return_value=(False, 0)))
         monkeypatch.setattr("scheduler.scanner._get_indicators", AsyncMock(return_value=(MagicMock(), MagicMock())))
-        monkeypatch.setattr("scheduler.scanner.signal_engine", MagicMock(evaluate=MagicMock(return_value=result)))
+        monkeypatch.setattr("scheduler.scanner.db", MagicMock(
+            get_active_signals_count=AsyncMock(return_value=0),
+            get_portfolio_risk_sum=AsyncMock(return_value=0.0),
+        ))
 
-        from scheduler.scanner import scan_symbol
-        result = await scan_symbol("BTC/USDT", "1h", AsyncMock())
-        assert result is None  # NO_SIGNAL → None
+        from scheduler.scanner import scan_symbol_v2
+        result = await scan_symbol_v2("BTC/USDT", "1h", AsyncMock())
+        assert result is None  # no pattern → None
 
 
 class TestContextFetchErrorsMetrics:

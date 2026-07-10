@@ -54,6 +54,7 @@ class SignalResult:
     _regime: Optional[str] = None
     _regime_blocked: bool = False
     _sl_source: Optional[Literal["bos", "atr"]] = None
+    tp_source: str = ""  # external_liquidity | opposing_ob | active_fvg | swing | atr
     _swing_highs_1h: List[float] = field(default_factory=list)
     _swing_lows_1h: List[float] = field(default_factory=list)
     _rejection_reason: Optional[str] = None
@@ -154,32 +155,219 @@ def _calculate_sl_tp(
     signal: SignalType,
     structure: Any = None,
     entry: Optional[float] = None,
-) -> tuple[float, float, Literal["bos", "atr"]]:
-    """Calculate SL/TP using BOS level (structural) or ATR (fallback)."""
+    timeframe: Optional[str] = None,
+    order_blocks: Optional[list] = None,
+    sweeps: Optional[list] = None,
+    fvgs: Optional[list] = None,
+    df: Any = None,
+) -> tuple[float, float, Literal["ob", "fractal", "bos", "atr"]]:
+    """Calculate SL/TP using ICT priority chain: OB > Fractal > BOS > ATR.
+
+    SL Priority:
+        1. Order Block zone (OB.low for BUY, OB.high for SELL + buffer)
+        2. Fractal/Swing Point (swing_low for BUY, swing_high for SELL + buffer)
+        3. BOS level (bos.level * 0.995/1.005)
+        4. ATR fallback (entry ± ATR * multiplier)
+
+    TP Priority:
+        1. Opposing Order Block (nearest bearish OB for BUY, bullish for SELL)
+        2. Active FVG (bearish FVG.bottom for BUY, bullish FVG.top for SELL)
+        3. Swing structure (nearest swing_high for BUY, swing_low for SELL)
+        4. ATR fallback (entry ± ATR * multiplier)
+    """
     cfg = config.trading
     atr = ind.atr if ind.atr and ind.atr > 0 else ind.close * cfg.atr_fallback_pct / 100
     ep = entry if entry is not None else ind.close
+    buffer_pct = cfg.stop_hunt_buffer_pct / 100  # convert % to decimal
+    max_ob_dist = cfg.max_ob_distance_pct / 100
 
-    if structure and structure.last_bos:
+    # Per-TF ATR multiplier overrides
+    atr_sl = cfg.atr_multiplier_sl
+    atr_tp = cfg.atr_multiplier_tp
+    if timeframe and cfg.atr_multipliers_per_tf:
+        tf_override = cfg.atr_multipliers_per_tf.get(timeframe, {})
+        if "sl" in tf_override:
+            atr_sl = float(tf_override["sl"])
+        if "tp" in tf_override:
+            atr_tp = float(tf_override["tp"])
+
+    # ═══ SL Priority Chain ═══
+
+    sl = None
+    sl_source = "atr"
+
+    # 1. Order Block — SL behind the OB zone
+    if order_blocks and signal == SignalType.BUY:
+        # For BUY: find nearest bullish OB below entry
+        candidates = [
+            ob for ob in order_blocks
+            if ob.type == "bullish" and ob.low < ep
+            and (ep - ob.low) / ep <= max_ob_dist
+        ]
+        if candidates:
+            # Pick the one closest to entry (highest low)
+            best_ob = max(candidates, key=lambda ob: ob.low)
+            sl = round(best_ob.low * (1 - buffer_pct), 8)
+            sl_source = "ob"
+    elif order_blocks and signal == SignalType.SELL:
+        # For SELL: find nearest bearish OB above entry
+        candidates = [
+            ob for ob in order_blocks
+            if ob.type == "bearish" and ob.high > ep
+            and (ob.high - ep) / ep <= max_ob_dist
+        ]
+        if candidates:
+            best_ob = min(candidates, key=lambda ob: ob.high)
+            sl = round(best_ob.high * (1 + buffer_pct), 8)
+            sl_source = "ob"
+
+    # 2. Fractal / Swing Point — SL behind the最近的 fractal
+    if sl is None and structure:
+        swing_lows = getattr(structure, "recent_lows", []) or []
+        swing_highs = getattr(structure, "recent_highs", []) or []
+
+        if signal == SignalType.BUY and swing_lows:
+            # Find nearest swing low below entry
+            valid_lows = [p for p in swing_lows if p < ep]
+            if valid_lows:
+                best_low = max(valid_lows)  # closest to entry
+                sl = round(best_low * (1 - buffer_pct), 8)
+                sl_source = "fractal"
+        elif signal == SignalType.SELL and swing_highs:
+            # Find nearest swing high above entry
+            valid_highs = [p for p in swing_highs if p > ep]
+            if valid_highs:
+                best_high = min(valid_highs)  # closest to entry
+                sl = round(best_high * (1 + buffer_pct), 8)
+                sl_source = "fractal"
+
+    # 3. BOS level — SL behind the BOS
+    if sl is None and structure and structure.last_bos:
         bos = structure.last_bos
         if signal == SignalType.BUY and bos.type == "bullish":
-            sl = round(bos.level * 0.995, 8)
-            tp = round(ep + atr * cfg.atr_multiplier_tp, 8)
-            if sl < ep:
-                return sl, tp, "bos"
-        if signal == SignalType.SELL and bos.type == "bearish":
-            sl = round(bos.level * 1.005, 8)
-            tp = round(ep - atr * cfg.atr_multiplier_tp, 8)
-            if sl > ep:
-                return sl, tp, "bos"
+            candidate_sl = round(bos.level * (1 - buffer_pct), 8)
+            if candidate_sl < ep:
+                sl = candidate_sl
+                sl_source = "bos"
+        elif signal == SignalType.SELL and bos.type == "bearish":
+            candidate_sl = round(bos.level * (1 + buffer_pct), 8)
+            if candidate_sl > ep:
+                sl = candidate_sl
+                sl_source = "bos"
 
+    # 4. ATR fallback
+    if sl is None:
+        if signal == SignalType.BUY:
+            sl = round(ep - atr * atr_sl, 8)
+        else:
+            sl = round(ep + atr * atr_sl, 8)
+        sl_source = "atr"
+
+    # ═══ TP Priority Chain ═══
+
+    tp = None
+    tp_source = "atr"
+    min_tp_distance = atr * 1.5  # Minimum TP distance = 1.5 ATR
+
+    # 1. External Liquidity (EQH/EQL)
+    sl_dist = abs(ep - sl) if sl else atr * atr_sl
     if signal == SignalType.BUY:
-        sl = round(ep - atr * cfg.atr_multiplier_sl, 8)
-        tp = round(ep + atr * cfg.atr_multiplier_tp, 8)
-    else:
-        sl = round(ep + atr * cfg.atr_multiplier_sl, 8)
-        tp = round(ep - atr * cfg.atr_multiplier_tp, 8)
-    return sl, tp, "atr"
+        from liquidity.external import find_external_liquidity
+        ext_tp = find_external_liquidity(df, 'long', ep, sl_dist) if df is not None else None
+        if ext_tp is not None:
+            tp = round(ext_tp, 8)
+            tp_source = "external_liquidity"
+    elif signal == SignalType.SELL:
+        from liquidity.external import find_external_liquidity
+        ext_tp = find_external_liquidity(df, 'short', ep, sl_dist) if df is not None else None
+        if ext_tp is not None:
+            tp = round(ext_tp, 8)
+            tp_source = "external_liquidity"
+
+    # 2. Opposing Order Block — TP at the OB zone
+    if tp is None and order_blocks and signal == SignalType.BUY:
+        targets = [
+            ob for ob in order_blocks
+            if ob.type == "bearish" and ob.high > ep + min_tp_distance
+        ]
+        if targets:
+            best_target = min(targets, key=lambda ob: ob.high)
+            tp = round(best_target.midpoint, 8)
+            tp_source = "ob"
+    elif tp is None and order_blocks and signal == SignalType.SELL:
+        targets = [
+            ob for ob in order_blocks
+            if ob.type == "bullish" and ob.low < ep - min_tp_distance
+        ]
+        if targets:
+            best_target = max(targets, key=lambda ob: ob.low)
+            tp = round(best_target.midpoint, 8)
+            tp_source = "ob"
+
+    # 3. Active FVG — TP at the FVG boundary
+    if tp is None and fvgs:
+        if signal == SignalType.BUY:
+            fvg_targets = [
+                fvg for fvg in fvgs
+                if fvg.type == "bearish" and not fvg.filled and fvg.bottom > ep + min_tp_distance
+            ]
+            if fvg_targets:
+                best_fvg = min(fvg_targets, key=lambda f: f.bottom)
+                tp = round(best_fvg.bottom, 8)
+                tp_source = "fvg"
+        elif signal == SignalType.SELL:
+            fvg_targets = [
+                fvg for fvg in fvgs
+                if fvg.type == "bullish" and not fvg.filled and fvg.top < ep - min_tp_distance
+            ]
+            if fvg_targets:
+                best_fvg = max(fvg_targets, key=lambda f: f.top)
+                tp = round(best_fvg.top, 8)
+                tp_source = "fvg"
+
+    # 4. Swing structure — TP at the opposing swing point
+    if tp is None and structure:
+        swing_highs = getattr(structure, "recent_highs", []) or []
+        swing_lows = getattr(structure, "recent_lows", []) or []
+
+        if signal == SignalType.BUY and swing_highs:
+            valid_highs = [p for p in swing_highs if p > ep + min_tp_distance]
+            if valid_highs:
+                tp = round(min(valid_highs), 8)
+                tp_source = "fractal"
+        elif signal == SignalType.SELL and swing_lows:
+            valid_lows = [p for p in swing_lows if p < ep - min_tp_distance]
+            if valid_lows:
+                tp = round(max(valid_lows), 8)
+                tp_source = "fractal"
+
+    # 5. ATR fallback
+    if tp is None:
+        if signal == SignalType.BUY:
+            tp = round(ep + atr * atr_tp, 8)
+        else:
+            tp = round(ep - atr * atr_tp, 8)
+        tp_source = "atr"
+
+    # ═══ Validation ═══
+
+    # Ensure SL is on the correct side of entry
+    if signal == SignalType.BUY and sl >= ep:
+        sl = round(ep - atr * atr_sl, 8)
+        sl_source = "atr"
+    elif signal == SignalType.SELL and sl <= ep:
+        sl = round(ep + atr * atr_sl, 8)
+        sl_source = "atr"
+
+    # Ensure TP is on the correct side of entry
+    if signal == SignalType.BUY and tp <= ep:
+        tp = round(ep + atr * atr_tp, 8)
+        tp_source = "atr"
+    elif signal == SignalType.SELL and tp >= ep:
+        tp = round(ep - atr * atr_tp, 8)
+        tp_source = "atr"
+
+    return sl, tp, sl_source
 
 
 # Backward-compatible singleton (used by legacy callers and backtests)

@@ -2,10 +2,17 @@
 market_structure/structure.py — Market Structure Engine V2.
 
 Detects BOS (Break of Structure), CHoCH (Change of Character),
+MSS (Market Structure Shift = strong CHoCH),
 swing points (HH/HL/LH/LL), and multi-timeframe alignment.
+
+MSS is a subset of CHoCH — classified as "mss" when:
+1. Sweep within causal window (5 bars, exponential decay)
+2. Displacement >= 1 ATR
+3. Reclaim <= 2 bars
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Optional
@@ -20,6 +27,7 @@ class SwingPoint:
     price: float
     timestamp: datetime
     type: Literal["high", "low"]
+    candle_index: int = 0
 
 
 @dataclass
@@ -33,11 +41,22 @@ class BOS:
 
 @dataclass
 class CHoCH:
-    """Change of Character — first break of opposite structure."""
+    """Change of Character — first break of opposite structure.
+
+    May be classified as MSS (Market Structure Shift) when confirmed
+    by sweep + displacement + fast reclaim.
+    """
     type: Literal["bullish", "bearish"]
     level: float
     timestamp: datetime
     candle_index: int
+    # ── MSS classification ──
+    strength: Literal["weak", "normal", "mss"] = "normal"
+    has_sweep_reference: bool = False
+    displacement_score: float = 0.0  # displacement / ATR
+    reclaim_bars: int = 0
+    causality_score: float = 0.0  # exponential decay from sweep (0-1)
+    mss_score: float = 0.0  # 0-100 quality score (equal weights v1)
 
 
 @dataclass
@@ -45,10 +64,160 @@ class StructureState:
     trend: Literal["bullish", "bearish", "ranging"]
     last_bos: Optional[BOS] = None
     last_choch: Optional[CHoCH] = None
+    last_mss: Optional[CHoCH] = None  # last CHoCH with strength="mss"
     swing_points: list[SwingPoint] = field(default_factory=list)
     structure_breaks: int = 0
     recent_highs: list[float] = field(default_factory=list)
     recent_lows: list[float] = field(default_factory=list)
+
+
+def calc_causality(bars_since_sweep: int, half_life: float = 3.0) -> float:
+    """Exponential decay: causal link between sweep and CHoCH.
+
+    bars=0 → 1.0, bars=3 → 0.5, bars=5 → 0.33, bars=10 → 0.1
+    """
+    if bars_since_sweep < 0:
+        return 0.0
+    return math.exp(-0.693 * bars_since_sweep / half_life)
+
+
+def calc_mss_score(
+    sweep_strength: float,
+    displacement_atr: float,
+    reclaim_bars: int,
+    volume_ratio: float,
+    htf_aligned: bool,
+) -> float:
+    """MSS quality score 0-100. Equal weights v1 (20% each).
+
+    ML replaces these weights after 200-300 trades.
+    """
+    # Sweep quality: strength 0-1 → 0-20
+    sweep_score = min(sweep_strength, 1.0) * 20.0
+
+    # Displacement strength: ATR ratio → 0-20 (cap at 3 ATR)
+    disp_score = min(displacement_atr / 3.0, 1.0) * 20.0
+
+    # Reclaim speed: <=1 bars = 20, <=2 = 15, <=3 = 10, <=5 = 5, >5 = 0
+    if reclaim_bars <= 1:
+        reclaim_score = 20.0
+    elif reclaim_bars <= 2:
+        reclaim_score = 15.0
+    elif reclaim_bars <= 3:
+        reclaim_score = 10.0
+    elif reclaim_bars <= 5:
+        reclaim_score = 5.0
+    else:
+        reclaim_score = 0.0
+
+    # Volume expansion: ratio < 1.0 → 0, otherwise → 0-20
+    vol_score = max(0.0, min((volume_ratio - 1.0) / 2.0, 1.0)) * 20.0
+
+    # HTF alignment: boolean → 0 or 20
+    htf_score = 20.0 if htf_aligned else 0.0
+
+    return round(sweep_score + disp_score + reclaim_score + vol_score + htf_score, 1)
+
+
+def classify_choch(
+    choch: CHoCH,
+    sweeps: list,
+    displacement_atr: float = 0.0,
+    reclaim_bars: int = 0,
+    volume_ratio: float = 1.0,
+    htf_aligned: bool = False,
+    max_causal_bars: int = 5,
+    df: Optional[pd.DataFrame] = None,
+    atr_value: float = 0.0,
+) -> CHoCH:
+    """Classify CHoCH strength as weak/normal/mss.
+
+    MSS criteria (all must pass):
+    1. Sweep within causal window (max_causal_bars, default 5)
+    2. Displacement >= 1 ATR (measured as max body between sweep and CHoCH)
+    3. Reclaim <= 2 bars
+    """
+    choch.displacement_score = displacement_atr
+    choch.reclaim_bars = reclaim_bars
+
+    # Find matching sweep (OPPOSITE direction, within causal window)
+    matching_sweep = None
+    bars_since = 999
+
+    for s in sweeps:
+        if not s.is_valid:
+            continue
+        # Sweep direction must OPPOSE CHoCH direction
+        # Bullish CHoCH = structure shifts up AFTER bearish sweep (sell-side grab)
+        # Bearish CHoCH = structure shifts down AFTER bullish sweep (buy-side grab)
+        sweep_dir = "buy" if s.type == "bullish" else "sell"
+        choch_dir = "buy" if choch.type == "bullish" else "sell"
+        if sweep_dir == choch_dir:
+            continue
+
+        # Check causal window
+        if choch.candle_index >= 0 and s.candle_index >= 0:
+            delta = choch.candle_index - s.candle_index
+        else:
+            delta = 0  # unknown index, assume close
+        if 0 <= delta <= max_causal_bars:
+            if matching_sweep is None or delta < bars_since:
+                matching_sweep = s
+                bars_since = delta
+
+    if matching_sweep is not None:
+        choch.has_sweep_reference = True
+        choch.causality_score = calc_causality(bars_since)
+
+        # Measure displacement as max body/ATR between sweep and CHoCH
+        # (not just the CHoCH candle — ICT: displacement leg causes the structure break)
+        if df is not None and atr_value > 0 and matching_sweep.candle_index >= 0 and choch.candle_index >= 0:
+            start = max(0, matching_sweep.candle_index)
+            end = min(choch.candle_index + 1, len(df))
+            max_disp = 0.0
+            for idx in range(start, end):
+                candle = df.iloc[idx]
+                body = abs(float(candle["close"]) - float(candle["open"]))
+                disp = body / atr_value
+                if disp > max_disp:
+                    max_disp = disp
+            if max_disp > displacement_atr:
+                displacement_atr = max_disp
+                choch.displacement_score = displacement_atr
+    else:
+        choch.has_sweep_reference = False
+        choch.causality_score = 0.0
+
+    # Classify
+    is_mss = (
+        choch.has_sweep_reference
+        and displacement_atr >= 1.0
+        and reclaim_bars <= 2
+    )
+
+    if is_mss:
+        choch.strength = "mss"
+        choch.mss_score = calc_mss_score(
+            sweep_strength=matching_sweep.strength if matching_sweep else 0.0,
+            displacement_atr=displacement_atr,
+            reclaim_bars=reclaim_bars,
+            volume_ratio=volume_ratio,
+            htf_aligned=htf_aligned,
+        )
+    elif choch.has_sweep_reference and displacement_atr >= 0.5:
+        choch.strength = "normal"
+        choch.mss_score = calc_mss_score(
+            sweep_strength=matching_sweep.strength if matching_sweep else 0.0,
+            displacement_atr=displacement_atr,
+            reclaim_bars=reclaim_bars,
+            volume_ratio=volume_ratio,
+            htf_aligned=htf_aligned,
+        ) * 0.6  # partial credit
+    else:
+        choch.strength = "weak"
+        choch.mss_score = 0.0
+
+    return choch
 
 
 def _find_swing_points(
@@ -59,6 +228,7 @@ def _find_swing_points(
     """Find swing highs and lows in OHLCV data."""
     swings: list[SwingPoint] = []
     data = df.tail(lookback)
+    offset = len(df) - len(data)  # offset from original df index
 
     for i in range(swing_window, len(data) - swing_window):
         high_window = data["high"].iloc[i - swing_window : i + swing_window + 1]
@@ -70,12 +240,15 @@ def _find_swing_points(
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=__import__("datetime", fromlist=["timezone"]).timezone.utc)
 
+        candle_idx = offset + i  # absolute index in original df
+
         if data["high"].iloc[i] == high_window.max():
             swings.append(
                 SwingPoint(
                     price=float(data["high"].iloc[i]),
                     timestamp=ts,
                     type="high",
+                    candle_index=candle_idx,
                 )
             )
         if data["low"].iloc[i] == low_window.min():
@@ -84,6 +257,7 @@ def _find_swing_points(
                     price=float(data["low"].iloc[i]),
                     timestamp=ts,
                     type="low",
+                    candle_index=candle_idx,
                 )
             )
 
@@ -94,66 +268,113 @@ def _detect_bos_choch(
     swings: list[SwingPoint],
 ) -> tuple[Optional[BOS], Optional[CHoCH], int]:
     """
-    Detect BOS and CHoCH from swing points.
+    Detect BOS and CHoCH from swing points by iterating through history.
 
-    Bullish BOS: close above previous swing high (we use swing high break)
-    Bearish BOS: close below previous swing low
-    Bullish CHoCH: first higher high after bearish structure
-    Bearish CHoCH: first lower low after bullish structure
+    BOS = structure continuation (trend confirmed)
+    CHoCH = structure reversal (trend broken)
+
+    Algorithm:
+      1. Pair swing highs and lows chronologically.
+      2. Determine trend from first pair (HH+HL=bullish, LH+LL=bearish).
+      3. For each subsequent pair, check if latest swing breaks or confirms trend.
     """
     if len(swings) < 4:
         return None, None, 0
 
-    highs = [s for s in swings if s.type == "high"]
-    lows = [s for s in swings if s.type == "low"]
+    highs = sorted(
+        [s for s in swings if s.type == "high"], key=lambda s: s.candle_index
+    )
+    lows = sorted(
+        [s for s in swings if s.type == "low"], key=lambda s: s.candle_index
+    )
+
+    if len(highs) < 2 or len(lows) < 2:
+        return None, None, 0
 
     last_bos: Optional[BOS] = None
     last_choch: Optional[CHoCH] = None
     structure_breaks = 0
 
-    if len(highs) >= 2 and len(lows) >= 2:
-        last_high = highs[-1]
-        prev_high = highs[-2]
-        last_low = lows[-1]
-        prev_low = lows[-2]
+    # Build chronological list of (high, low) pairs
+    # Interleave by candle_index and pair consecutive H-L swings
+    all_swings = sorted(highs + lows, key=lambda s: s.candle_index)
 
-        bullish_structure = prev_high.price > prev_low.price
+    # Extract trend sequence from highs and lows separately
+    # We track trend by looking at consecutive swing highs and swing lows
+    trend = None  # None=unknown, True=bullish, False=bearish
 
-        if last_high.price > prev_high.price:
-            if not bullish_structure:
+    for i in range(1, len(highs)):
+        prev_h = highs[i - 1]
+        curr_h = highs[i]
+
+        # Find the closest low before this high to pair with
+        matching_lows = [l for l in lows if l.candle_index <= curr_h.candle_index]
+        if len(matching_lows) < 2:
+            continue
+
+        prev_l = matching_lows[-2] if len(matching_lows) >= 2 else None
+        curr_l = matching_lows[-1]
+
+        if prev_l is None:
+            continue
+
+        highs_rising = curr_h.price > prev_h.price
+        lows_rising = curr_l.price > prev_l.price
+
+        # Determine pair trend
+        if highs_rising and lows_rising:
+            pair_trend = True
+        elif not highs_rising and not lows_rising:
+            pair_trend = False
+        else:
+            pair_trend = None  # mixed
+
+        # --- Check for structure breaks ---
+        if curr_h.price > prev_h.price:
+            # Higher high
+            if trend is False or (trend is None and pair_trend is not True):
+                # CHoCH bullish: higher high after bearish/mixed trend
                 last_choch = CHoCH(
                     type="bullish",
-                    level=last_high.price,
-                    timestamp=last_high.timestamp,
-                    candle_index=-1,
+                    level=curr_h.price,
+                    timestamp=curr_h.timestamp,
+                    candle_index=curr_h.candle_index,
                 )
                 structure_breaks += 1
             else:
+                # BOS bullish: higher high confirming bullish trend
                 last_bos = BOS(
                     type="bullish",
-                    level=last_high.price,
-                    timestamp=last_high.timestamp,
-                    candle_index=-1,
+                    level=curr_h.price,
+                    timestamp=curr_h.timestamp,
+                    candle_index=curr_h.candle_index,
                 )
                 structure_breaks += 1
 
-        if last_low.price < prev_low.price:
-            if bullish_structure:
+        if curr_l.price < prev_l.price:
+            # Lower low
+            if trend is True or (trend is None and pair_trend is not False):
+                # CHoCH bearish: lower low after bullish/mixed trend
                 last_choch = CHoCH(
                     type="bearish",
-                    level=last_low.price,
-                    timestamp=last_low.timestamp,
-                    candle_index=-1,
+                    level=curr_l.price,
+                    timestamp=curr_l.timestamp,
+                    candle_index=curr_l.candle_index,
                 )
                 structure_breaks += 1
             else:
+                # BOS bearish: lower low confirming bearish trend
                 last_bos = BOS(
                     type="bearish",
-                    level=last_low.price,
-                    timestamp=last_low.timestamp,
-                    candle_index=-1,
+                    level=curr_l.price,
+                    timestamp=curr_l.timestamp,
+                    candle_index=curr_l.candle_index,
                 )
                 structure_breaks += 1
+
+        # Update trend
+        if pair_trend is not None:
+            trend = pair_trend
 
     return last_bos, last_choch, structure_breaks
 
@@ -163,7 +384,17 @@ def _classify_trend(
     last_bos: Optional[BOS],
     last_choch: Optional[CHoCH],
 ) -> Literal["bullish", "bearish", "ranging"]:
-    """Classify overall trend based on structure."""
+    """Classify overall trend based on structure.
+
+    Use the most recent structure event (by candle_index) to determine trend.
+    BOS after CHoCH overrides the CHoCH direction.
+    """
+    # Pick whichever structure event is more recent
+    if last_bos is not None and last_choch is not None:
+        if last_bos.candle_index >= last_choch.candle_index:
+            return "bullish" if last_bos.type == "bullish" else "bearish"
+        else:
+            return "bullish" if last_choch.type == "bullish" else "bearish"
     if last_choch is not None:
         return "bullish" if last_choch.type == "bullish" else "bearish"
     if last_bos is not None:
@@ -185,6 +416,12 @@ def analyze_structure(
     df: pd.DataFrame,
     lookback: int = 50,
     swing_window: int = 5,
+    sweeps: Optional[list] = None,
+    displacement_atr: float = 0.0,
+    reclaim_bars: int = 0,
+    volume_ratio: float = 1.0,
+    htf_aligned: bool = False,
+    atr_value: float = 0.0,
 ) -> StructureState:
     """
     Analyze market structure from OHLCV data.
@@ -193,13 +430,35 @@ def analyze_structure(
         df: DataFrame with OHLCV data (index should be datetime-like).
         lookback: number of recent candles to analyze.
         swing_window: window size for swing point detection.
+        sweeps: optional list of SweepEvent for MSS classification.
+        displacement_atr: displacement / ATR ratio for MSS classification.
+        reclaim_bars: bars to reclaim for MSS classification.
+        volume_ratio: volume / average volume for MSS scoring.
+        htf_aligned: HTF alignment for MSS scoring.
+        atr_value: actual ATR value for max displacement calculation.
 
     Returns:
-        StructureState with trend, BOS, CHoCH, swing points.
+        StructureState with trend, BOS, CHoCH (classified), MSS, swing points.
     """
     swings = _find_swing_points(df, lookback=lookback, swing_window=swing_window)
     last_bos, last_choch, breaks = _detect_bos_choch(swings)
     trend = _classify_trend(swings, last_bos, last_choch)
+
+    # Classify CHoCH as MSS if criteria met
+    last_mss = None
+    if last_choch is not None:
+        classify_choch(
+            last_choch,
+            sweeps=sweeps or [],
+            displacement_atr=displacement_atr,
+            reclaim_bars=reclaim_bars,
+            volume_ratio=volume_ratio,
+            htf_aligned=htf_aligned,
+            df=df,
+            atr_value=atr_value,
+        )
+        if last_choch.strength == "mss":
+            last_mss = last_choch
 
     highs = [s.price for s in swings if s.type == "high"]
     lows = [s.price for s in swings if s.type == "low"]
@@ -208,6 +467,7 @@ def analyze_structure(
         trend=trend,
         last_bos=last_bos,
         last_choch=last_choch,
+        last_mss=last_mss,
         swing_points=swings,
         structure_breaks=breaks,
         recent_highs=highs[-5:] if len(highs) >= 5 else highs,
@@ -273,6 +533,9 @@ async def check_mtf_alignment(
         if _parse_timeframe_to_seconds(tf) > primary_seconds
     ]
 
+    # Clamp required to available HTFs: primary=4h → ["1d"] → required=min(1,2)=1
+    required_alignment = min(len(higher_tfs), required_alignment)
+
     if not higher_tfs:
         return MTFAlignmentResult(alignment_state="bullish_aligned", aligned=True, states={})
 
@@ -322,3 +585,188 @@ async def check_mtf_alignment(
         aligned=aligned_count >= required_alignment,
         states=states,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# HTF Alignment Score (soft multiplier)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _detect_trend_from_df(df: pd.DataFrame) -> str:
+    """Quick trend detection from a small OHLCV window using EMAs."""
+    if df is None or len(df) < 20:
+        return "ranging"
+    ema_fast = df["close"].ewm(span=8, adjust=False).mean()
+    ema_slow = df["close"].ewm(span=21, adjust=False).mean()
+    last_fast = float(ema_fast.iloc[-1])
+    last_slow = float(ema_slow.iloc[-1])
+    if last_fast > last_slow * 1.005:
+        return "bullish"
+    elif last_fast < last_slow * 0.995:
+        return "bearish"
+    return "ranging"
+
+
+async def calc_htf_alignment_score(
+    symbol: str,
+    direction: str,
+    exchange_client,
+    timeframes: list[str] | None = None,
+) -> float:
+    """Score based on W1/D1/H4 trend agreement with signal direction.
+
+    Scoring table (3 HTFs):
+        W1 same + D1 same + H4 same  → 1.0
+        W1 same + D1 same + H4 opp   → 0.8
+        W1 same + D1 opp  + H4 same  → 0.5
+        W1 opp  + D1 opp  + H4 same  → 0.2
+        ranging counted as neutral (no penalty)
+
+    If fewer HTFs available, score is proportionally scaled.
+
+    Args:
+        symbol: Trading pair.
+        direction: "buy" or "sell" (mapped to "bullish"/"bearish").
+        exchange_client: for fetching OHLCV data.
+        timeframes: override list (default: ["1w", "1d", "4h"]).
+
+    Returns:
+        Score 0.0–1.0.
+    """
+    if timeframes is None:
+        timeframes = ["1w", "1d", "4h"]
+
+    trend_map = {}
+    for tf in timeframes:
+        try:
+            df = await exchange_client.fetch_ohlcv(symbol, tf, limit=50)
+            if df is not None and len(df) >= 20:
+                trend_map[tf] = _detect_trend_from_df(df)
+        except Exception:
+            continue
+
+    if not trend_map:
+        return 0.5  # unknown — neutral
+
+    bull = "bullish" if direction in ("buy", "bullish") else "bearish"
+    opp = "bearish" if bull == "bullish" else "bullish"
+
+    same_count = sum(1 for t in trend_map.values() if t == bull)
+    opp_count = sum(1 for t in trend_map.values() if t == opp)
+    ranging_count = sum(1 for t in trend_map.values() if t == "ranging")
+
+    total = len(trend_map)
+
+    if same_count == total:
+        return 1.0
+    if same_count == total - 1 and opp_count == 1:
+        return 0.8
+    if same_count >= 1 and opp_count <= 1:
+        return 0.5
+    if opp_count >= same_count and same_count >= 1:
+        return 0.2
+    if ranging_count == total:
+        return 0.5
+
+    return 0.3
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Premium / Discount Score (soft multiplier)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def get_htf_directional_bias(df_1d: pd.DataFrame, df_4h: pd.DataFrame) -> str:
+    """
+    Определяет HTF bias на основе 1D и 4H.
+
+    Returns: 'bullish', 'bearish', 'neutral'
+    """
+    # 1D bias
+    ema55_1d = df_1d['close'].ewm(span=55).mean().iloc[-1]
+    price_1d = df_1d['close'].iloc[-1]
+    slope_1d = (ema55_1d - df_1d['close'].ewm(span=55).mean().iloc[-5]) / 5
+
+    # 4H bias
+    ema55_4h = df_4h['close'].ewm(span=55).mean().iloc[-1]
+    price_4h = df_4h['close'].iloc[-1]
+    slope_4h = (ema55_4h - df_4h['close'].ewm(span=55).mean().iloc[-5]) / 5
+
+    slope_threshold = 0.001
+
+    if abs(slope_1d) < slope_threshold and abs(slope_4h) < slope_threshold:
+        return 'neutral'
+
+    if price_1d > ema55_1d and slope_1d > 0:
+        return 'bullish'
+    elif price_1d < ema55_1d and slope_1d < 0:
+        return 'bearish'
+
+    if price_4h > ema55_4h and slope_4h > 0:
+        return 'bullish'
+    elif price_4h < ema55_4h and slope_4h < 0:
+        return 'bearish'
+
+    return 'neutral'
+
+
+def calc_premium_discount_score(
+    df: pd.DataFrame,
+    direction: str,
+    lookback: int = 50,
+) -> float:
+    """Score based on price location relative to range equilibrium.
+
+    Premium = above equilibrium (good for sell)
+    Discount = below equilibrium (good for buy)
+
+    Score:
+        Favorable location  → 1.0
+        Near equilibrium    → 0.6
+        Opposing location   → 0.3
+
+    Args:
+        df: OHLCV DataFrame (at least `lookback` rows).
+        direction: "buy" or "sell".
+        lookback: number of candles for range calculation.
+
+    Returns:
+        Score 0.0–1.0.
+    """
+    if df is None or len(df) < 10:
+        return 0.5
+
+    data = df.tail(lookback)
+    range_high = float(data["high"].max())
+    range_low = float(data["low"].min())
+    rng = range_high - range_low
+
+    if rng <= 0:
+        return 0.5
+
+    current = float(df["close"].iloc[-1])
+    equilibrium = (range_high + range_low) / 2.0
+
+    # Position: -1 (at range low) to +1 (at range high)
+    position = (current - equilibrium) / (rng / 2.0)
+
+    if direction in ("buy", "bullish"):
+        # Discount = below equilibrium (position < 0) → favorable
+        if position < -0.3:
+            return 1.0  # deep discount
+        elif position < 0.1:
+            return 0.7  # near/just below equilibrium
+        elif position < 0.4:
+            return 0.5  # entering premium zone
+        else:
+            return 0.3  # deep premium — unfavorable for buys
+    else:
+        # Premium = above equilibrium (position > 0) → favorable
+        if position > 0.3:
+            return 1.0  # deep premium
+        elif position > -0.1:
+            return 0.7  # near/just above equilibrium
+        elif position > -0.4:
+            return 0.5  # entering discount zone
+        else:
+            return 0.3  # deep discount — unfavorable for sells

@@ -134,7 +134,19 @@ async def main():
         logger.info("Starting Telegram bot (polling mode)...")
         await app.initialize()
         await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
+
+        # Retry polling start to handle Telegram server lingering sessions
+        for attempt in range(1, 6):
+            try:
+                await app.updater.start_polling(drop_pending_updates=True)
+                break
+            except Exception as e:
+                if "Conflict" in str(e) and attempt < 5:
+                    logger.warning(f"Telegram conflict on attempt {attempt}, retrying in {attempt * 5}s...")
+                    await app.updater.stop()
+                    await asyncio.sleep(attempt * 5)
+                else:
+                    raise
 
         logger.info("✅ Bot is running. Press Ctrl+C to stop.")
 

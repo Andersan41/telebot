@@ -10,6 +10,8 @@ from market_structure.structure import (
     MTFAlignmentResult,
     analyze_structure,
     check_mtf_alignment,
+    calc_htf_alignment_score,
+    calc_premium_discount_score,
 )
 from market_structure.distance_filter import (
     DistanceFilterResult,
@@ -29,6 +31,8 @@ __all__ = [
     "MTFAlignmentResult",
     "analyze_structure",
     "check_mtf_alignment",
+    "calc_htf_alignment_score",
+    "calc_premium_discount_score",
     "DistanceFilterResult",
     "check_distance_filter",
     "Obstacle",

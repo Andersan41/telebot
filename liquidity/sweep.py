@@ -90,6 +90,9 @@ def detect_sweeps(
     if len(data) < swing_window * 2 + 2:
         return []
 
+    # Compute offset so candle_index is absolute in the original df
+    offset = len(df) - len(data)
+
     sweeps: list[SweepEvent] = []
 
     swing_highs = _find_swing_highs(data, swing_window)
@@ -122,7 +125,7 @@ def detect_sweeps(
                     wick_body_ratio=wick_body,
                     displacement_after=displacement,
                     delta_aligned=delta_aligned,
-                    candle_index=i,
+                    candle_index=offset + i,
                 ))
 
         for swing_low in swing_lows:
@@ -146,7 +149,7 @@ def detect_sweeps(
                     wick_body_ratio=wick_body,
                     displacement_after=displacement,
                     delta_aligned=delta_aligned,
-                    candle_index=i,
+                    candle_index=offset + i,
                 ))
 
     return sweeps

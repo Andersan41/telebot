@@ -29,6 +29,7 @@ function connect() {
     try {
       const data = JSON.parse(e.data);
       if (data.type === 'update') renderDashboard(data);
+      if (data.type === 'open_trades') renderOpenTrades(data.trades || []);
     } catch (err) {
       console.error('Parse error:', err);
     }
@@ -37,7 +38,7 @@ function connect() {
 
 // ── Render ──────────────────────────────────────────
 function renderDashboard(data) {
-  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error } = data;
+  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies } = data;
 
   if (error) {
     updateStatus(`Ошибка: ${error}`);
@@ -52,6 +53,9 @@ function renderDashboard(data) {
   if (levels) renderLevelsData(levels);
   if (structure) renderSMC(structure, liquidity);
   if (priceHistory) updatePriceChart(priceHistory);
+  if (openInterest) renderOpenInterest(openInterest);
+  if (volumeProfile) renderVolumeProfile(volumeProfile, price);
+  if (bookAnomalies) renderBookAnomalies(bookAnomalies);
 
   renderVerdictFromSignal(signal, indicators);
 }
@@ -329,6 +333,132 @@ function updatePriceChart(history) {
   }
 }
 
+// ── Open Interest ──────────────────────────────────
+function renderOpenInterest(oi) {
+  const value = oi.current || 0;
+  const change = oi.change_pct || 0;
+  const trend = oi.trend || 'none';
+
+  setText('val-oi', value > 1000000 ? (value / 1000000).toFixed(2) + 'M' : value > 1000 ? (value / 1000).toFixed(1) + 'K' : value.toFixed(0));
+
+  const changeEl = document.getElementById('oi-change');
+  if (changeEl) {
+    const sign = change >= 0 ? '+' : '';
+    changeEl.textContent = `${sign}${change.toFixed(1)}%`;
+    changeEl.className = `oi-change ${change > 0 ? 'bull' : change < 0 ? 'bear' : 'neu'}`;
+  }
+
+  const trendEl = document.getElementById('oi-trend');
+  if (trendEl) {
+    const trendMap = { increasing: 'Растёт', decreasing: 'Снижается', stable: 'Стабилен' };
+    trendEl.textContent = trendMap[trend] || '—';
+    trendEl.className = `oi-detail-value ${trend === 'increasing' ? 'bull' : trend === 'decreasing' ? 'bear' : 'neu'}`;
+  }
+
+  setText('oi-value-usd', oi.value_usd ? '$' + formatLargeNumber(oi.value_usd) : '—');
+
+  const badge = document.getElementById('badge-oi');
+  if (badge) {
+    const badgeInfo = change > 5 ? { text: 'Рост', cls: 'badge-bull' }
+      : change < -5 ? { text: 'Снижение', cls: 'badge-bear' }
+      : { text: 'Стабильно', cls: 'badge-neu' };
+    badge.textContent = badgeInfo.text;
+    badge.className = `badge ${badgeInfo.cls}`;
+  }
+
+  const bar = document.getElementById('bar-oi');
+  if (bar) {
+    const pct = clamp(50 + change * 3, 0, 100);
+    bar.className = `bar-fill ${change > 0 ? 'bar-green' : change < 0 ? 'bar-red' : 'bar-orange'}`;
+    bar.style.width = pct + '%';
+  }
+}
+
+// ── Volume Profile ─────────────────────────────────
+function renderVolumeProfile(vp, currentPrice) {
+  setText('vp-poc', vp.poc ? '$' + formatPrice(vp.poc) : '—');
+  setText('vp-vah', vp.vah ? '$' + formatPrice(vp.vah) : '—');
+  setText('vp-val', vp.val ? '$' + formatPrice(vp.val) : '—');
+
+  const container = document.getElementById('vp-histogram');
+  if (!container || !vp.profile || vp.profile.length === 0) return;
+
+  const maxPct = Math.max(...vp.profile.map(p => p.pct), 1);
+  const pocPrice = vp.poc || 0;
+
+  container.innerHTML = vp.profile.slice().reverse().map(bar => {
+    const isPoc = Math.abs(bar.price - pocPrice) / pocPrice < 0.001;
+    const inVA = bar.price >= (vp.val || 0) && bar.price <= (vp.vah || Infinity);
+    let cls = 'vp-bar';
+    if (isPoc) cls += ' vp-bar-poc';
+    else if (inVA) cls += ' vp-bar-va';
+    else cls += ' vp-bar-outer';
+
+    return `<div class="${cls}" style="width:${bar.pct}%" title="$${formatPrice(bar.price)}: ${bar.volume}"></div>`;
+  }).join('');
+}
+
+// ── Book Anomalies ─────────────────────────────────
+function renderBookAnomalies(book) {
+  const bidVol = book.total_bid || 0;
+  const askVol = book.total_ask || 0;
+  const total = bidVol + askVol;
+
+  setText('book-bid-vol', bidVol > 1000 ? (bidVol / 1000).toFixed(1) + 'K' : bidVol.toFixed(1));
+  setText('book-ask-vol', askVol > 1000 ? (askVol / 1000).toFixed(1) + 'K' : askVol.toFixed(1));
+  setText('book-spread', book.spread_pct ? book.spread_pct.toFixed(3) + '%' : '—');
+
+  const bidPct = total > 0 ? (bidVol / total * 100) : 50;
+  const bidBar = document.getElementById('bar-book-bid');
+  if (bidBar) {
+    bidBar.style.width = bidPct + '%';
+    bidBar.className = `bar-fill ${bidPct > 60 ? 'bar-green' : bidPct < 40 ? 'bar-red' : 'bar-orange'}`;
+  }
+
+  const badge = document.getElementById('badge-book');
+  if (badge) {
+    const imbalance = book.imbalance || 0;
+    const absImb = Math.abs(imbalance);
+    if (absImb > 0.3) {
+      badge.textContent = imbalance > 0 ? 'Bid доминирует' : 'Ask доминирует';
+      badge.className = `badge ${imbalance > 0 ? 'badge-bull' : 'badge-bear'}`;
+    } else {
+      badge.textContent = 'Баланс';
+      badge.className = 'badge badge-neu';
+    }
+  }
+
+  const list = document.getElementById('book-anomaly-list');
+  if (!list) return;
+
+  if (book.anomalies && book.anomalies.length > 0) {
+    list.innerHTML = book.anomalies.slice(0, 3).map(a => `
+      <div class="book-anomaly-item">
+        <span class="book-anomaly-side ${a.side}">${a.side.toUpperCase()}</span>
+        <span class="book-anomaly-price">$${formatPrice(a.price)}</span>
+        <span class="book-anomaly-vol">${a.volume.toFixed(1)} (${a.ratio}x)</span>
+      </div>
+    `).join('');
+  } else {
+    list.innerHTML = '<div class="book-no-anomalies">Нет аномалий</div>';
+  }
+}
+
+// ── Utils для нового функционала ───────────────────
+function formatLargeNumber(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return n.toFixed(0);
+}
+
+function formatPrice(p) {
+  if (!p) return '0';
+  if (p >= 1000) return Number(p).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  if (p >= 1) return p.toFixed(4);
+  return p.toFixed(6);
+}
+
 // ── Token picker ────────────────────────────────────
 document.getElementById('tokenBtn')?.addEventListener('click', () => {
   const raw = document.getElementById('tokenInput')?.value.trim().toUpperCase();
@@ -447,6 +577,59 @@ async function toggleFilter(key, enabled, inputEl) {
   }
 }
 
+// ── Open Trades ──────────────────────────────────
+function renderOpenTrades(trades) {
+  const tbody = document.getElementById('tradesBody');
+  const countEl = document.getElementById('tradesCount');
+  if (!tbody) return;
+
+  if (countEl) countEl.textContent = trades.length;
+
+  if (!trades || trades.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="trades-empty">Нет открытых сделок</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = trades.map((t, i) => {
+    const signalCls = t.signal_type === 'BUY' ? 'trades-signal-buy' : 'trades-signal-sell';
+    const sent = t.sent_at ? formatTradeTime(t.sent_at) : '—';
+    return `<tr>
+      <td>${i + 1}</td>
+      <td class="${signalCls}">${t.signal_type}</td>
+      <td class="trades-ticker">${escapeHtml(t.symbol)}</td>
+      <td class="trades-tf">${escapeHtml(t.timeframe)}</td>
+      <td class="trades-price">${formatPrice(t.entry)}</td>
+      <td class="trades-price">${formatPrice(t.sl)}</td>
+      <td class="trades-price">${formatPrice(t.tp)}</td>
+      <td class="trades-sent">${sent}</td>
+    </tr>`;
+  }).join('');
+}
+
+function formatTradeTime(isoStr) {
+  try {
+    const d = new Date(isoStr);
+    const day = d.getUTCDate().toString().padStart(2, '0');
+    const month = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+    const hours = d.getUTCHours().toString().padStart(2, '0');
+    const mins = d.getUTCMinutes().toString().padStart(2, '0');
+    return `${day}.${month} ${hours}:${mins}`;
+  } catch {
+    return '—';
+  }
+}
+
+async function fetchOpenTrades() {
+  try {
+    const res = await fetch('/api/open-trades');
+    const data = await res.json();
+    renderOpenTrades(data.trades || []);
+  } catch (err) {
+    console.error('Failed to load open trades:', err);
+  }
+}
+
 // ── Start ──────────────────────────────────────────
 connect();
 loadFilters();
+fetchOpenTrades();

@@ -218,6 +218,57 @@ class ExchangeClient:
             logger.warning(f"Failed to fetch taker buy volumes for {symbol}: {e}")
             return None
 
+    async def fetch_ticker_price(self, symbol: str) -> Optional[float]:
+        """Получаем текущую цену через ticker (real-time bid/last)."""
+        await self._ensure_markets_loaded()
+        ccxt_symbol = self._resolve_symbol(symbol)
+        if ccxt_symbol not in self._available_symbols:
+            logger.warning(f"Symbol {symbol} not available for ticker fetch")
+            return None
+        try:
+            async with self._semaphore:
+                ticker = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self._exchange.fetch_ticker(ccxt_symbol)
+                )
+                return ticker.get("last")
+        except Exception as e:
+            logger.warning(f"Failed to fetch ticker for {symbol}: {e}")
+            return None
+
+    async def fetch_ticker_full(self, symbol: str) -> Optional[dict]:
+        """Получаем полный ticker с bid/ask/last."""
+        await self._ensure_markets_loaded()
+        ccxt_symbol = self._resolve_symbol(symbol)
+        if ccxt_symbol not in self._available_symbols:
+            return None
+        try:
+            async with self._semaphore:
+                ticker = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self._exchange.fetch_ticker(ccxt_symbol)
+                )
+                return {
+                    "last": ticker.get("last"),
+                    "bid": ticker.get("bid"),
+                    "ask": ticker.get("ask"),
+                    "timestamp": ticker.get("timestamp"),
+                }
+        except Exception as e:
+            logger.warning(f"Failed to fetch full ticker for {symbol}: {e}")
+            return None
+
+    def get_tick_size(self, symbol: str) -> Optional[float]:
+        """Получаем минимальный шаг цены (tick size) из market info."""
+        ccxt_symbol = self._resolve_symbol(symbol)
+        market = self._exchange.markets.get(ccxt_symbol)
+        if market is None:
+            return None
+        # precision.price — количество десятичных знаков
+        # tick_size = 10^(-precision.price)
+        precision = market.get("precision", {}).get("price")
+        if precision is None:
+            return None
+        return 10 ** (-precision)
+
     async def fetch_ohlcv(
         self,
         symbol: str,
@@ -255,6 +306,90 @@ class ExchangeClient:
 
         logger.debug(f"Fetched {len(df)} candles: {symbol} {timeframe}")
         return df
+
+    async def fetch_ohlcv_paginated(
+        self,
+        symbol: str,
+        timeframe: str,
+        total_limit: int = 4000,
+        page_size: int = 998,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch OHLCV with pagination to overcome exchange per-request limits.
+
+        Uses BingX endTime parameter to page backwards in time.
+        Returns up to total_limit candles (minus 1 dropped for open candle).
+        """
+        await self._ensure_markets_loaded()
+
+        ccxt_symbol = self._resolve_symbol(symbol)
+        if ccxt_symbol not in self._available_symbols:
+            logger.warning(f"Symbol {symbol} not available for paginated fetch")
+            return None
+
+        all_dfs: list[pd.DataFrame] = []
+        end_time_ms: Optional[int] = None
+        remaining = total_limit
+
+        while remaining > 0:
+            batch_limit = min(remaining + 1, page_size)  # +1 for dropped last candle
+            params = {}
+            if end_time_ms is not None:
+                params["endTime"] = end_time_ms
+
+            async with self._semaphore:
+                raw = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda bl=batch_limit, p=params, tf=timeframe: self._exchange.fetch_ohlcv(
+                        ccxt_symbol, tf, limit=bl, params=p,
+                    ),
+                )
+
+            if not raw:
+                break
+
+            df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            df = df.set_index("timestamp")
+            df = df.astype(float).dropna()
+
+            if df.empty:
+                break
+
+            all_dfs.append(df)
+            remaining -= len(df)
+
+            # Set end_time to just before the oldest candle in this batch
+            end_time_ms = int(df.index[0].timestamp() * 1000) - 1
+
+            logger.debug(
+                f"Paginated fetch {symbol}: got {len(df)} candles, "
+                f"oldest={df.index[0]}, remaining={remaining}"
+            )
+
+            # Safety: stop if we got a full batch (no more历史 data available)
+            if len(raw) < batch_limit - 5:
+                break
+
+            # Small delay between pages
+            await asyncio.sleep(0.3)
+
+        if not all_dfs:
+            return None
+
+        # Concatenate and sort (newest first from each batch, need to reverse)
+        result = pd.concat(all_dfs).sort_index()
+        result = result[~result.index.duplicated(keep="first")]
+
+        # Take the most recent total_limit candles
+        if len(result) > total_limit:
+            result = result.iloc[-total_limit:]
+
+        # Drop last candle (currently forming)
+        result = result.iloc[:-1]
+
+        logger.debug(f"Paginated fetch {symbol}: total {len(result)} candles, "
+                      f"{result.index[0]} to {result.index[-1]}")
+        return result
 
     async def fetch_all_symbols(
         self,

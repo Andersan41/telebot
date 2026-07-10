@@ -632,142 +632,225 @@ async def _do_full_analysis(symbol: str) -> str:
         if ind is None:
             return f"❌ Ошибка расчёта индикаторов для <b>{html.escape(symbol)}</b>"
 
+        # --- Liquidity & Structure ---
+        sweeps = []
+        order_blocks = []
+        structure = None
+        fvgs = []
+        candle_quality = None
+
+        try:
+            from liquidity.sweep import detect_sweeps
+            from liquidity.order_blocks import detect_order_blocks
+            from liquidity.fvg import detect_fvg
+            from liquidity.candle_quality import analyze_last_candle
+            from market_structure.structure import analyze_structure
+
+            _df_clean = df.dropna(subset=["open", "high", "low", "close", "volume"])
+            if len(_df_clean) >= 10:
+                sweeps = detect_sweeps(_df_clean, lookback=50)
+                order_blocks = detect_order_blocks(_df_clean, lookback=100)
+                structure = analyze_structure(_df_clean, lookback=50)
+                fvgs = detect_fvg(_df_clean, lookback=getattr(config, "liquidity_fvg_lookback", 100))
+                candle_quality = analyze_last_candle(_df_clean, atr_value=ind.atr)
+        except Exception as e:
+            logger.warning(f"Liquidity analysis failed for {symbol}: {e}")
+
+        # --- Pattern Engine ---
+        from strategy.pattern_engine import pattern_engine
+
+        setup = pattern_engine.detect(
+            sweeps=sweeps,
+            order_blocks=order_blocks,
+            structure=structure,
+            fvgs=fvgs,
+            candle_quality=candle_quality,
+            current_price=ind.close,
+        )
+
+        # --- Regime ---
         regime = _detect_regime(ind, df)
-        result = _light_evaluate(ind, regime=regime)
 
-        # --- Подтверждение на confirm_tf ---
-        confirm_tf = cfg.confirm_timeframe
-        entry_price = result.close if result.close is not None else ind.close
-        if entry_price is None:
-            entry_price = 0.0
-        entry_price = float(entry_price)
+        # --- Build SignalResult for format_message ---
+        if setup.detected:
+            from strategy.trade_engine import trade_engine
 
-        if config.trading.confirm_tf_enabled and result.is_actionable and confirm_tf and confirm_tf != primary_tf:
-            ind_confirm = await _get_indicators(symbol, confirm_tf)
-            if ind_confirm is not None:
-                confirm_result = _light_evaluate(ind_confirm)
-                if confirm_result.signal == result.signal:
-                    entry_price = float(confirm_result.close if confirm_result.close is not None else ind_confirm.close)
-                    result._confirmed_tf = confirm_tf
-                    result.reasons.append(f"✅ Подтверждение на {confirm_tf}")
-                else:
-                    result.reasons.append(f"❌ {confirm_tf}: {confirm_result.signal.value} — не подтверждено")
-
-        result.entry_price = entry_price
-
-        # --- Уровни S/R ---
-        sr_levels = {}
-        for sr_tf in ['1h', '4h']:
-            try:
-                sr_df = await exchange_client.fetch_ohlcv(symbol, sr_tf, limit=100)
-                if sr_df is not None and len(sr_df) > 0:
-                    levels = get_support_resistance(sr_df, entry_price)
-                    if levels['resistance'] or levels['support']:
-                        sr_levels[sr_tf] = levels
-            except Exception as e:
-                logger.warning(f"S/R levels error {symbol} {sr_tf}: {e}")
-
-        if sr_levels:
-            result.sr_levels = sr_levels
-            is_buy = result.signal == SignalType.BUY
-            sl_val = result.sl if result.sl is not None else 0.0
-            tp_val = result.tp if result.tp is not None else 0.0
-            result.level_warnings = validate_levels_vs_trade(
-                sr_levels, entry_price, sl_val, tp_val, is_buy
+            trade_plan = trade_engine.build_trade_plan(
+                ind=ind,
+                direction=setup.direction,
+                structure=structure,
+                order_blocks=order_blocks,
+                sweeps=sweeps,
+                fvgs=fvgs,
+                df=_df_clean,
+                timeframe=primary_tf,
             )
 
-        # --- Рыночный контекст ---
-        context_verdict = None
+            signal_type = SignalType.BUY if setup.direction == "buy" else SignalType.SELL
+            result = SignalResult(
+                signal=signal_type, symbol=symbol, timeframe=primary_tf,
+                close=float(ind.close), sl=trade_plan.sl, tp=trade_plan.tp,
+                score=setup.components_count, reasons=setup.components_found,
+            )
+            result._has_trigger = True
+            result._sl_source = trade_plan.sl_source
+        else:
+            result = _light_evaluate(ind, regime=regime)
+
+        result.entry_price = float(ind.close) if ind.close else 0.0
+
+        # --- Context ---
+        context_block = ""
         if config.context_enabled:
             try:
                 snapshot = await asyncio.wait_for(
                     context_engine.get_snapshot(symbol),
                     timeout=10.0,
                 )
-
                 if result.is_actionable:
                     context_verdict = context_scorer.score(result.signal.value, snapshot)
                     result._context_score = context_verdict.score
                 else:
                     context_verdict = ContextVerdict(
-                        verdict="NEUTRAL",
-                        confidence=0.0,
-                        score=0.0,
-                        snapshot=snapshot,
+                        verdict="NEUTRAL", confidence=0.0, score=0.0, snapshot=snapshot,
                     )
-
-                snap = snapshot
-                dir_for_emoji = result.signal.value if result.is_actionable else None
-                if snap:
-                    ctx_items = []
-                    if snap.fear_greed_value is not None:
-                        try:
-                            fg_val = int(snap.fear_greed_value)
-                            if dir_for_emoji:
-                                fg_score = context_scorer._score_fear_greed(fg_val, dir_for_emoji)
-                                fg_emoji = "✅" if fg_score > 0 else ("⚠️" if fg_score == 0 else "🔴")
-                            else:
-                                fg_emoji = "📊"
-                            ctx_items.append(f"{fg_emoji} Fear & Greed: {fg_val} ({snap.fear_greed_label})")
-                        except (ValueError, TypeError):
-                            ctx_items.append(f"⚠️ Fear & Greed: invalid value")
-                    if snap.funding_rate is not None:
-                        try:
-                            fr_val = float(snap.funding_rate)
-                            if dir_for_emoji:
-                                fr_score = context_scorer._score_funding_rate(fr_val, dir_for_emoji)
-                                fr_emoji = "✅" if fr_score > 0 else ("⚠️" if fr_score == 0 else "🔴")
-                            else:
-                                fr_emoji = "📊"
-                            ctx_items.append(f"{fr_emoji} Funding: {fr_val * 100:.3f}%")
-                        except (ValueError, TypeError):
-                            ctx_items.append(f"⚠️ Funding: invalid value")
-                    if snap.long_short_ratio is not None:
-                        try:
-                            ls_val = float(snap.long_short_ratio)
-                            if dir_for_emoji:
-                                ls_score = context_scorer._score_long_short(ls_val, dir_for_emoji)
-                                ls_emoji = "✅" if ls_score > 0 else ("⚠️" if ls_score == 0 else "🔴")
-                            else:
-                                ls_emoji = "📊"
-                            ctx_items.append(f"{ls_emoji} Long/Short: {ls_val:.2f}")
-                        except (ValueError, TypeError):
-                            ctx_items.append(f"⚠️ Long/Short: invalid value")
-                    if snap.open_interest_delta is not None:
-                        try:
-                            oi_val = float(snap.open_interest_delta)
-                            if dir_for_emoji:
-                                oi_score = context_scorer._score_oi(oi_val, dir_for_emoji)
-                                oi_emoji = "✅" if oi_score > 0 else ("⚠️" if oi_score == 0 else "🔴")
-                            else:
-                                oi_emoji = "📊"
-                            ctx_items.append(f"{oi_emoji} OI: {oi_val:+.1f}%")
-                        except (ValueError, TypeError):
-                            ctx_items.append(f"⚠️ OI: invalid value")
-                    result._context_items = ctx_items
+                if context_verdict is not None:
+                    from bot.notifier import format_context_block
+                    context_block = format_context_block(context_verdict)
             except asyncio.TimeoutError:
                 logger.warning(f"Context timeout for {symbol}")
             except Exception as e:
                 logger.warning(f"Context error for {symbol}: {e}")
 
-        # --- Формируем сообщение через format_message() ---
-        text = result.format_message()
+        # ═══ Формируем详细 Telegram-отчёт ═══
+        sym_esc = html.escape(symbol)
+        entry = result.entry_price
 
-        # --- Добавляем блок контекста рынка ---
-        if context_verdict is not None:
-            from bot.notifier import format_context_block
-            text += format_context_block(context_verdict)
+        # --- Header ---
+        if result.signal == SignalType.BUY:
+            header = f"🟢 ПОКУПКА — {sym_esc}"
+        elif result.signal == SignalType.SELL:
+            header = f"🔴 ПРОДАЖА — {sym_esc}"
+        else:
+            header = f"⚪ НЕТ СИГНАЛА — {sym_esc}"
 
-        # --- Добавляем ссылку на TradingView ---
+        lines = [header, f"Таймфрейм: {primary_tf.upper()}", ""]
+
+        # --- Indicators ---
+        lines.append("📊 <b>Индикаторы</b>")
+        ema_fast = f"{ind.ema_fast:.6f}" if ind.ema_fast else "—"
+        ema_slow = f"{ind.ema_slow:.6f}" if ind.ema_slow else "—"
+        ema_trend = f"{ind.ema_trend:.6f}" if ind.ema_trend else "—"
+        rsi_val = f"{ind.rsi:.2f}" if ind.rsi else "—"
+        macd_val = f"{ind.macd_hist:.6f}" if ind.macd_hist else "—"
+        adx_val = f"{ind.adx:.2f}" if ind.adx else "—"
+        dmi_plus = f"{ind.dmi_plus:.2f}" if ind.dmi_plus else "—"
+        dmi_minus = f"{ind.dmi_minus:.2f}" if ind.dmi_minus else "—"
+        st_val = f"{ind.supertrend:.6f}" if ind.supertrend else "—"
+        st_dir = "↑" if ind.supertrend_direction == 1 else ("↓" if ind.supertrend_direction == -1 else "—")
+        atr_val = f"{ind.atr:.6f}" if ind.atr else "—"
+        vol_val = f"{ind.volume:.2f}" if ind.volume else "—"
+        vol_sma = f"{ind.volume_sma:.2f}" if ind.volume_sma else "—"
+
+        lines.append(f"  Close: <code>{ind.close}</code>")
+        lines.append(f"  EMA fast/slow/trend: {ema_fast} / {ema_slow} / {ema_trend}")
+        lines.append(f"  RSI: {rsi_val}")
+        lines.append(f"  MACD hist: {macd_val}")
+        lines.append(f"  ADX: {adx_val}  DMI+: {dmi_plus}  DMI-: {dmi_minus}")
+        lines.append(f"  Supertrend: {st_val} dir={st_dir}")
+        lines.append(f"  ATR: {atr_val}")
+        lines.append(f"  Volume: {vol_val}  Vol SMA: {vol_sma}")
+        lines.append("")
+
+        # --- Market Structure ---
+        lines.append("🏗 <b>Структура рынка</b>")
+        if structure:
+            trend = getattr(structure, "trend", "unknown")
+            bos_list = getattr(structure, "bos", []) or []
+            choch_list = getattr(structure, "choch", []) or []
+            swing_highs = getattr(structure, "swing_highs", []) or []
+            swing_lows = getattr(structure, "swing_lows", []) or []
+            lines.append(f"  Trend: {trend}")
+            lines.append(f"  Swing highs: {len(swing_highs)} points")
+            lines.append(f"  Swing lows: {len(swing_lows)} points")
+            if bos_list:
+                last_bos = bos_list[-1]
+                lines.append(f"  Last BOS: {last_bos.type} @ {last_bos.level:.6f}")
+            if choch_list:
+                last_choch = choch_list[-1]
+                lines.append(f"  Last CHoCH: {last_choch.type} @ {last_choch.level:.6f}")
+        else:
+            lines.append("  Нет данных")
+        lines.append("")
+
+        # --- Liquidity ---
+        lines.append("💧 <b>Ликвидность</b>")
+        lines.append(f"  FVGs: {len(fvgs)}")
+        for f in fvgs[-3:]:
+            fvg_type = "bearish" if f.type == "bearish" else "bullish"
+            lines.append(f"    {fvg_type} top=<code>{f.top:.6f}</code> bottom=<code>{f.bottom:.6f}</code> filled={f.filled}")
+        lines.append(f"  Sweeps: {len(sweeps)}")
+        for s in sweeps[-3:]:
+            lines.append(f"    {s.type} level=<code>{s.swept_level:.6f}</code>")
+        lines.append(f"  Order Blocks: {len(order_blocks)}")
+        for ob in order_blocks[-3:]:
+            lines.append(f"    {ob.type} level=<code>{ob.level:.6f}</code>")
+        if candle_quality:
+            cq = candle_quality
+            lines.append(f"  Candle: body={cq.body_pct:.1%} upper_wick={cq.upper_wick_pct:.1%} lower_wick={cq.lower_wick_pct:.1%}")
+        lines.append("")
+
+        # --- Pattern Engine ---
+        lines.append("🎯 <b>Pattern Engine</b>")
+        if setup.detected:
+            lines.append(f"  ✅ Setup: {setup.direction.upper()}")
+            lines.append(f"  Тип: {setup.setup_type}")
+            lines.append(f"  Компоненты: {setup.components_count}")
+            for c in setup.components_found:
+                lines.append(f"    • {c}")
+            lines.append(f"  Entry: <code>{entry}</code>")
+            if result.sl:
+                sl_pct = (result.sl - entry) / entry * 100 if entry else 0
+                lines.append(f"  🔴 SL: <code>{result.sl}</code> ({sl_pct:+.2f}%)")
+            if result.tp:
+                tp_pct = (result.tp - entry) / entry * 100 if entry else 0
+                lines.append(f"  🟢 TP: <code>{result.tp}</code> ({tp_pct:+.2f}%)")
+            if result.sl and result.tp and entry:
+                rr = abs(result.tp - entry) / abs(entry - result.sl) if entry != result.sl else 0
+                lines.append(f"  R/R: 1:{rr:.1f}")
+        else:
+            lines.append(f"  ❌ Не обнаружен: {html.escape(setup.rejection_reason or 'нет чёткого направления')}")
+        lines.append("")
+
+        # --- Regime ---
+        if regime:
+            lines.append(f"📈 <b>Режим:</b> {regime.regime}")
+            lines.append("")
+
+        # --- Context ---
+        if context_block:
+            lines.append(context_block.replace("\n", "\n"))
+            lines.append("")
+
+        # --- TradingView ---
         tv_exchange = config.exchange.name.upper()
         chart_url = f"https://www.tradingview.com/chart/?symbol={tv_exchange}:{ind.symbol.replace('/', '')}"
-        text += f"\n\n📈 <a href='{chart_url}'>Открыть график</a>"
+        lines.append(f"📈 <a href='{chart_url}'>Открыть график</a>")
+
+        text = "\n".join(lines)
+
+        # Telegram limit: 4096 chars
+        if len(text) > 4000:
+            text = text[:3950] + "\n\n... (обрезано)"
 
         logger.debug(f"Do_full_analysis output for {symbol}:\n{text}")
         return text
     except Exception as e:
         logger.error(f"Analysis error {symbol}: {e}", exc_info=True)
         return f"❌ Ошибка анализа <b>{html.escape(symbol)}</b>: {html.escape(str(e))}"
+
+
+
 
 
 async def _indicator_view(symbol: str) -> str:

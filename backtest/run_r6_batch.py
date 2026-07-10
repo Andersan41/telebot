@@ -117,6 +117,12 @@ PRESETS = {
         "enable_rr_filter": True, "enable_news_filter": True, "enable_stop_hunt_buffer": False,
         "min_score_for_signal": 5,
     },
+    "full_new_sell_no_sweep": {
+        "enable_unified_entry": True, "enable_confirm_tf_gate": False,
+        "enable_structural_sl": True, "enable_sl_distance_guard": True,
+        "enable_rr_filter": True, "enable_news_filter": True, "enable_stop_hunt_buffer": False,
+        "sell_sweep_block": True,
+    },
 }
 PRESET_ORDER = list(PRESETS.keys())
 
@@ -167,6 +173,7 @@ def result_to_record(symbol: str, preset: str, r: BacktestResult) -> dict:
         "exposure_time_pct": r.exposure_time_pct, "avg_trade_duration": r.avg_trade_duration,
         "reject_rr": rs.rr_rejected, "reject_sl_dist": rs.sl_distance_rejected,
         "reject_confirm_tf": rs.confirm_tf_rejected, "reject_news": rs.news_rejected,
+        "reject_sell_sweep": rs.sell_sweep_rejected,
         "exit_sl": 0, "exit_tp": 0, "exit_eob": 0,
         "src_atr": 0, "src_bos": 0, "src_structural": 0,
         "trades": [],
@@ -179,6 +186,17 @@ def result_to_record(symbol: str, preset: str, r: BacktestResult) -> dict:
             "net_pnl_pct": t.net_pnl_pct, "rr": t.rr, "sl_source": t.sl_source,
             "regime": t.regime, "entry_timestamp": t.entry_timestamp,
             "exit_timestamp": t.exit_timestamp,
+            "signal_score": t.signal_score,
+            "confidence": t.confidence,
+            "factor_strengths": t.factor_strengths,
+            "factor_present": t.factor_present,
+            "verdict": t.verdict,
+            "confidence_v2_score": t.confidence_v2_score,
+            "confidence_v2_quality": t.confidence_v2_quality,
+            "sl_price": t.sl,
+            "tp_price": t.tp,
+            "sl_distance_pct": t.sl_distance_pct,
+            "theoretical_rr": t.theoretical_rr,
         })
         if t.exit_reason == "sl": rec["exit_sl"] += 1
         elif t.exit_reason == "tp": rec["exit_tp"] += 1
@@ -483,6 +501,14 @@ async def run_symbol_batch(symbol: str, df: pd.DataFrame, confirm_df: Optional[p
                 if not (result.is_actionable and result.sl is not None and result.tp is not None):
                     continue
 
+                # TEMP: sell_sweep_block — reject SELL signals where sweep was present
+                if cfg.sell_sweep_block and result.signal == SignalType.SELL:
+                    sweep_in_reasons = any("sweep" in r.lower() for r in (result.reasons or []))
+                    if sweep_in_reasons:
+                        state.reject_stats.sell_sweep_rejected += 1
+                        state.reject_stats.total_rejected += 1
+                        continue
+
                 is_buy = result.signal == SignalType.BUY
 
                 # TP recalc with FVGs
@@ -569,6 +595,17 @@ async def run_symbol_batch(symbol: str, df: pd.DataFrame, confirm_df: Optional[p
                     regime=snap.regime_obj.regime if hasattr(snap.regime_obj, 'regime') else "",
                     signal_score=result.score, confidence=result.confidence,
                     reasons=list(result.reasons),
+                    # Enriched factor data
+                    factor_strengths=dict(result._factor_strengths),
+                    factor_present={k: v > 0 for k, v in result._factor_strengths.items()
+                                    if k not in ("BUY", "SELL")},
+                    verdict=result.score_verdict,
+                    confidence_v2_score=result._confidence_v2.confidence_pct if result._confidence_v2 else 0.0,
+                    confidence_v2_quality=result._confidence_v2.quality if result._confidence_v2 else "",
+                    sl_distance_pct=abs(entry_price - result.sl) / entry_price * 100
+                        if result.sl and entry_price else 0.0,
+                    theoretical_rr=abs(result.tp - entry_price) / abs(entry_price - result.sl)
+                        if result.sl and result.tp and entry_price and result.sl != entry_price else 0.0,
                 )
                 state.in_trade = True
                 state.ct = ct

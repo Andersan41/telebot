@@ -112,8 +112,35 @@ python main.py
 
 ### SL/TP:
 
-- Stop Loss = цена ± ATR × 1.5
-- Take Profit = цена ± ATR × 3.0
+- Stop Loss = цена ± ATR × 1.5 (или BOS-based / structural)
+- Take Profit = цена ± ATR × 3.0 (или structural)
+- Комиссия: 0.05% за сторону + 0.05% проскальзывание
+
+---
+
+## 📊 Backtesting
+
+Единый backtest engine: `backtest/engine.py`
+
+```bash
+# Console output
+python -m backtest.engine BTC/USDT 1h 336
+
+# With Telegram output
+python -m backtest.engine BTC/USDT 1h 336 --telegram
+
+# Future market type
+python -m backtest.engine BTC/USDT 1h 336 --market future
+```
+
+Backtest engine реализует полный паритет с live-пайплайном (scheduler/scanner.py):
+- Regime detection через `RegimeDetector`
+- Structural SL/TP через `calculate_structural_sl/tp`
+- Stop hunt buffer
+- SL distance guard (min/max)
+- RR filter
+- Confirmation timeframe
+- Комиссия и проскальзывание
 
 ---
 

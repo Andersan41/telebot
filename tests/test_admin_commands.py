@@ -352,7 +352,7 @@ class TestScannerDisabledFilter:
             scanned.append((symbol, tf))
             return None
 
-        with patch("scheduler.scanner.scan_symbol", mock_scan):
+        with patch("scheduler.scanner.scan_symbol_v2", mock_scan):
             await run_scan_cycle(lambda *a, **k: None)
 
         # ETH/USDT should NOT appear in scanned symbols
@@ -379,7 +379,7 @@ class TestScannerDisabledFilter:
             scanned.append((symbol, tf))
             return None
 
-        with patch("scheduler.scanner.scan_symbol", mock_scan):
+        with patch("scheduler.scanner.scan_symbol_v2", mock_scan):
             await run_scan_cycle(lambda *a, **k: None)
 
         symbols_scanned = set(s for s, _ in scanned)
