@@ -430,10 +430,7 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
                             result.rejection_reasons.get(f"htf_bias_{setup.direction}_vs_{htf_bias.value}", 0) + 1
                         continue
                     elif setup.setup_type == "reversal":
-                        result.signals_rejected += 1
-                        result.rejection_reasons[f"htf_reversal_{setup.direction}_vs_{htf_bias.value}"] = \
-                            result.rejection_reasons.get(f"htf_reversal_{setup.direction}_vs_{htf_bias.value}", 0) + 1
-                        continue
+                        _htf_bias_penalty = 0.85
         except Exception:
             pass
 

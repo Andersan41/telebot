@@ -1,4 +1,4 @@
-# New Pipeline Backtest — 2026-07-11 01:00
+# New Pipeline Backtest — 2026-07-11 01:54
 
 **Symbols:** BTC/USDT, ETH/USDT, ZRO/USDT
 **Timeframe:** 4h | **Days:** 90
@@ -8,129 +8,106 @@
 
 | Metric | Value |
 |---|---|
-| Total trades | 156 |
-| Winrate | 28.8% |
-| Profit Factor | 1.40 |
-| Sharpe Ratio | 12.11 |
-| Total PnL (net) | +82.16% |
+| Total trades | 134 |
+| Winrate | 24.6% |
+| Profit Factor | 1.14 |
+| Sharpe Ratio | 4.58 |
+| Total PnL (net) | +26.84% |
 
 ## Setup Type Breakdown (aggregate)
 
 | Setup | Trades | WR% | PF | Avg R | PnL% |
 |---|---|---|---|---|---|
-| MSS Reversal | 9 | 22.2% | 1.32 | -0.03 | +3.85% |
-| BOS Continuation LONG | 108 | 27.8% | 1.43 | +0.37 | +68.68% |
-| BOS Continuation SHORT | 39 | 33.3% | 1.28 | -0.08 | +9.63% |
-| BOS Continuation ALL | 147 | 29.3% | 1.4 | +0.25 | +78.31% |
+| MSS Reversal | 9 | 22.2% | 1.59 | -0.03 | +5.93% |
+| BOS Continuation LONG | 85 | 25.9% | 1.36 | +0.33 | +45.06% |
+| BOS Continuation SHORT | 40 | 22.5% | 0.6 | -0.31 | -24.15% |
+| BOS Continuation ALL | 125 | 24.8% | 1.11 | +0.12 | +20.91% |
 
 ## Per-Symbol Overview
 
 | Symbol | Trades | WR% | PF | PnL% | Sharpe | MaxDD | Rev | Cont |
 |---|---|---|---|---|---|---|---|---|
-| BTC/USDT | 90 | 28.9% | 1.45 | +40.76% | 13.16 | 23.58% | 7 | 83 |
-| ETH/USDT | 66 | 28.8% | 1.36 | +41.40% | 11.75 | 52.43% | 2 | 64 |
-| ZRO/USDT | 0 | 0% | 0 | +0.00% | 0 | 0.00% | 0 | 0 |
+| BTC/USDT | 65 | 27.7% | 1.45 | +29.71% | 13.12 | 20.45% | 7 | 58 |
+| ETH/USDT | 53 | 26.4% | 1.32 | +28.81% | 10.33 | 34.98% | 1 | 52 |
+| ZRO/USDT | 16 | 6.2% | 0.25 | -31.69% | -54.73 | 35.07% | 1 | 15 |
 
 ## Per-Symbol × Setup Type
 
 | Symbol | Setup | Trades | WR% | PF | Avg R | PnL% |
 |---|---|---|---|---|---|---|
 | BTC/USDT | MSS Reversal | 7 | 28.6% | 2.4 | +0.25 | +9.27% |
-| BTC/USDT | BOS LONG | 46 | 23.9% | 1.32 | +0.09 | +17.80% |
-| BTC/USDT | BOS SHORT | 37 | 35.1% | 1.45 | -0.03 | +13.68% |
-| ETH/USDT | MSS Reversal | 2 | 0.0% | 0.0 | -1.00 | -5.43% |
-| ETH/USDT | BOS LONG | 62 | 30.6% | 1.48 | +0.57 | +50.88% |
-| ETH/USDT | BOS SHORT | 2 | 0.0% | 0.0 | -1.00 | -4.05% |
+| BTC/USDT | BOS LONG | 33 | 24.2% | 1.38 | +0.15 | +14.79% |
+| BTC/USDT | BOS SHORT | 25 | 32.0% | 1.28 | -0.03 | +5.65% |
+| ETH/USDT | MSS Reversal | 1 | 0.0% | 0.0 | -1.00 | -1.46% |
+| ETH/USDT | BOS LONG | 52 | 26.9% | 1.35 | +0.44 | +30.28% |
+| ZRO/USDT | MSS Reversal | 1 | 0.0% | 0.0 | -1.00 | -1.89% |
+| ZRO/USDT | BOS SHORT | 15 | 6.7% | 0.26 | -0.78 | -29.80% |
 
 ## MSS Score Bucket Attribution
 
 | Bucket | Trades | WR% | PF | Avg R | PnL% |
 |---|---|---|---|---|---|
-| 0-30 | 147 | 29.3% | 1.4 | +0.25 | +78.31% |
-| 30-50 | 9 | 22.2% | 1.32 | -0.03 | +3.85% |
+| 0-30 | 125 | 24.8% | 1.11 | +0.12 | +20.91% |
+| 30-50 | 8 | 25.0% | 1.96 | +0.09 | +7.81% |
+| 50-70 | 1 | 0.0% | 0.0 | -1.00 | -1.89% |
 
 ## Regime Attribution
 
 | Regime | Trades | WR% | PF | Avg R | PnL% |
 |---|---|---|---|---|---|
-| bullish | 112 | 26.8% | 1.35 | +0.32 | +59.39% |
-| bearish | 44 | 34.1% | 1.62 | +0.02 | +22.76% |
+| bullish | 88 | 25.0% | 1.3 | +0.28 | +39.74% |
+| bearish | 46 | 23.9% | 0.8 | -0.21 | -12.90% |
 
 ## Regime × Setup Type
 
 | Regime | Setup | Trades | WR% | PF | Avg R | PnL% |
 |---|---|---|---|---|---|---|
-| bullish | MSS Reversal | 4 | 0.0% | 0.0 | -1.00 | -9.29% |
-| bullish | BOS LONG | 108 | 27.8% | 1.43 | +0.37 | +68.68% |
-| bearish | MSS Reversal | 5 | 40.0% | 5.72 | +0.75 | +13.13% |
-| bearish | BOS SHORT | 39 | 33.3% | 1.28 | -0.08 | +9.63% |
+| bullish | MSS Reversal | 3 | 0.0% | 0.0 | -1.00 | -5.32% |
+| bullish | BOS LONG | 85 | 25.9% | 1.36 | +0.33 | +45.06% |
+| bearish | MSS Reversal | 6 | 33.3% | 3.41 | +0.46 | +11.24% |
+| bearish | BOS SHORT | 40 | 22.5% | 0.6 | -0.31 | -24.15% |
 
 ## Asset Type Clustering
 
 | Asset Type | Symbols | Trades | WR% | PF | Avg R | PnL% |
 |---|---|---|---|---|---|---|
-| L1 | ZRO/USDT | 0 | 0.0% | 0.0 | +0.00 | +0.00% |
-| major | BTC/USDT, ETH/USDT | 156 | 28.8% | 1.4 | +0.23 | +82.16% |
+| L1 | ZRO/USDT | 16 | 6.2% | 0.25 | -0.80 | -31.69% |
+| major | BTC/USDT, ETH/USDT | 118 | 27.1% | 1.38 | +0.24 | +58.53% |
 
 ## MSS Reversal by Asset Type
 
 | Asset Type | Trades | WR% | PF | Avg R | PnL% |
 |---|---|---|---|---|---|
-| major | 9 | 22.2% | 1.32 | -0.03 | +3.85% |
+| L1 | 1 | 0.0% | 0.0 | -1.00 | -1.89% |
+| major | 8 | 25.0% | 1.96 | +0.09 | +7.81% |
 
 ## BOS Continuation by Asset Type × Direction
 
 | Asset Type | Dir | Trades | WR% | PF | Avg R | PnL% |
 |---|---|---|---|---|---|---|
-| major | LONG | 108 | 27.8% | 1.43 | +0.37 | +68.68% |
-| major | SHORT | 39 | 33.3% | 1.28 | -0.08 | +9.63% |
+| L1 | SHORT | 15 | 6.7% | 0.26 | -0.78 | -29.80% |
+| major | LONG | 85 | 25.9% | 1.36 | +0.33 | +45.06% |
+| major | SHORT | 25 | 32.0% | 1.28 | -0.03 | +5.65% |
 
 ## Rejection Reasons
 
 | Reason | Count |
 |---|---|
-| reversal: no MSS (strong CHoCH) | 1350 |
-| low_p_tp | 1140 |
-| continuation: ranging market | 881 |
-| continuation: no BOS | 293 |
-| continuation: BOS bearish vs trend bullish | 16 |
-| continuation: BOS bullish vs trend bearish | 9 |
-| RR=1.08 < 1.5 | 4 |
+| low_p_tp | 2139 |
+| reversal: no MSS (strong CHoCH) | 1588 |
+| continuation: ranging market | 1554 |
+| continuation: no BOS | 641 |
+| continuation: BOS bearish vs trend bullish | 67 |
+| continuation: BOS bullish vs trend bearish | 13 |
 | SL too wide: 6.51% > 5.0% | 2 |
-| RR=1.27 < 1.5 | 2 |
-| RR=1.45 < 1.5 | 2 |
-| RR=1.14 < 1.5 | 1 |
+| SL too wide: 7.16% > 5.0% | 2 |
 | SL too wide: 5.58% > 5.0% | 1 |
 | SL too wide: 5.19% > 5.0% | 1 |
 | SL too wide: 5.30% > 5.0% | 1 |
 | SL too wide: 5.09% > 5.0% | 1 |
-| RR=1.42 < 1.5 | 1 |
-| SL too tight: 0.23% < 0.25% | 1 |
-| RR=1.29 < 1.5 | 1 |
-| RR=1.20 < 1.5 | 1 |
-| RR=1.28 < 1.5 | 1 |
-| RR=0.95 < 1.5 | 1 |
-| RR=0.41 < 1.5 | 1 |
-| SL too wide: 7.31% > 5.0% | 1 |
-| SL too wide: 7.47% > 5.0% | 1 |
-| SL too wide: 7.70% > 5.0% | 1 |
-| SL too wide: 7.52% > 5.0% | 1 |
-| SL too wide: 7.06% > 5.0% | 1 |
-| RR=0.70 < 1.5 | 1 |
 | SL too wide: 5.75% > 5.0% | 1 |
 | SL too wide: 7.01% > 5.0% | 1 |
 | SL too wide: 7.17% > 5.0% | 1 |
-| SL too wide: 7.34% > 5.0% | 1 |
-| SL too wide: 7.37% > 5.0% | 1 |
-| SL too wide: 5.65% > 5.0% | 1 |
-| SL too wide: 5.47% > 5.0% | 1 |
-| SL too wide: 7.27% > 5.0% | 1 |
-| SL too wide: 6.70% > 5.0% | 1 |
-| SL too wide: 6.61% > 5.0% | 1 |
-| SL too wide: 7.09% > 5.0% | 1 |
-| SL too wide: 7.03% > 5.0% | 1 |
-| SL too wide: 5.57% > 5.0% | 1 |
-| RR=1.06 < 1.5 | 1 |
 | RR=0.78 < 1.5 | 1 |
 | SL too wide: 6.25% > 5.0% | 1 |
 | SL too wide: 6.12% > 5.0% | 1 |
@@ -138,21 +115,16 @@
 | SL too wide: 6.36% > 5.0% | 1 |
 | SL too wide: 5.83% > 5.0% | 1 |
 | SL too wide: 5.87% > 5.0% | 1 |
-| RR=1.21 < 1.5 | 1 |
-| RR=1.24 < 1.5 | 1 |
-| RR=1.17 < 1.5 | 1 |
-| SL too wide: 5.86% > 5.0% | 1 |
-| SL too wide: 5.78% > 5.0% | 1 |
-| SL too wide: 5.73% > 5.0% | 1 |
-| SL too wide: 6.02% > 5.0% | 1 |
-| SL too wide: 5.72% > 5.0% | 1 |
-| RR=1.03 < 1.5 | 1 |
-| RR=1.22 < 1.5 | 1 |
 | SL too wide: 6.00% > 5.0% | 1 |
-| RR=1.31 < 1.5 | 1 |
-| RR=1.43 < 1.5 | 1 |
-| RR=1.38 < 1.5 | 1 |
 | SL too wide: 5.98% > 5.0% | 1 |
 | SL too wide: 6.01% > 5.0% | 1 |
-| RR=1.10 < 1.5 | 1 |
-| RR=1.05 < 1.5 | 1 |
+| SL too wide: 19.88% > 5.0% | 1 |
+| SL too wide: 6.17% > 5.0% | 1 |
+| SL too wide: 8.14% > 5.0% | 1 |
+| SL too wide: 11.04% > 5.0% | 1 |
+| SL too wide: 9.35% > 5.0% | 1 |
+| SL too wide: 6.71% > 5.0% | 1 |
+| SL too wide: 7.13% > 5.0% | 1 |
+| SL too wide: 5.84% > 5.0% | 1 |
+| SL too wide: 7.72% > 5.0% | 1 |
+| RR=1.21 < 1.5 | 1 |
