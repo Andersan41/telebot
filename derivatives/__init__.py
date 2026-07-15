@@ -1,3 +1,3 @@
 """
-derivatives/ — Derivatives data: funding, open interest, BTC/ETH correlation.
+derivatives/ — Derivatives data: funding, open interest, SMT divergence.
 """

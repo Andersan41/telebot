@@ -18,7 +18,10 @@ async def _ensure_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
         return False
     from config.settings import config
-    if update.effective_user.id not in config.telegram.admin_ids:
+    from loguru import logger
+    uid = update.effective_user.id
+    logger.warning(f"_ensure_admin: user_id={uid}, admin_ids={config.telegram.admin_ids}, chat_type={update.effective_chat.type if update.effective_chat else 'N/A'}")
+    if uid not in config.telegram.admin_ids:
         await update.message.reply_text("\u26d4\ufe0f \u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d.")
         return False
     return True

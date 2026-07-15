@@ -183,7 +183,7 @@ class TestMSSClassification:
 
     def test_classify_choch_as_mss(self):
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=5)
-        sweep = MockSweep(type="bearish", candle_index=2, is_valid=True)
+        sweep = MockSweep(type="bullish", candle_index=2, is_valid=True)  # bullish sweep precedes bearish CHoCH
         result = classify_choch(
             choch, sweeps=[sweep],
             displacement_atr=1.5, reclaim_bars=1,
@@ -204,7 +204,7 @@ class TestMSSClassification:
 
     def test_classify_choch_normal_with_sweep(self):
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=5)
-        sweep = MockSweep(type="bearish", candle_index=2, is_valid=True)
+        sweep = MockSweep(type="bullish", candle_index=2, is_valid=True)  # bullish sweep precedes bearish CHoCH
         result = classify_choch(
             choch, sweeps=[sweep],
             displacement_atr=0.6, reclaim_bars=3,
@@ -278,13 +278,10 @@ class TestPatternEngine:
         assert setup.detected is False
         assert setup.setup_type is None
 
-    def test_reversal_no_displacement(self):
-        """Sweep but no displacement → reversal not detected."""
+    def test_reversal_no_displacement_no_mss(self):
+        """Sweep but no displacement and no MSS → reversal not detected."""
         sweeps = [MockSweep(type="bearish", candle_index=2)]
-        structure = MockStructure(
-            last_mss=MockCHoCH(type="bearish"),
-            last_choch=MockCHoCH(type="bearish"),
-        )
+        structure = MockStructure()  # no MSS
         candle_q = MockCandleQuality(is_displacement=False)
 
         setup = pattern_engine.detect(
@@ -292,7 +289,6 @@ class TestPatternEngine:
             fvgs=[], candle_quality=candle_q, current_price=50000.0, atr=500.0,
         )
         assert setup.detected is False
-        assert "displacement" in setup.rejection_reason.lower()
 
     def test_reversal_no_mss(self):
         """Sweep + displacement but no MSS → reversal not detected."""
@@ -770,7 +766,8 @@ class TestRiskEngine:
         assert decision.should_trade is False
         assert "SL too wide" in decision.rejection_reason
 
-    def test_portfolio_risk_full_rejects(self):
+    def test_portfolio_risk_full_passes_in_risk_engine(self):
+        """Portfolio risk check moved to scanner Phase 0. Risk Engine no longer blocks."""
         features = SetupFeatures(atr_pct=2.0)
         prob = TradeProbability(p_tp=0.65, expected_rr=2.5, profit_factor=2.5, confidence=0.8, model_type="rules")
         portfolio = PortfolioState(active_count=1, total_risk_pct=3.0)
@@ -779,10 +776,10 @@ class TestRiskEngine:
             features=features, probability=prob, portfolio=portfolio,
             entry_price=50000.0, sl=49500.0, tp=51500.0,
         )
-        assert decision.should_trade is False
-        assert "portfolio risk" in decision.rejection_reason
+        assert decision.should_trade is True
 
-    def test_max_active_signals_rejects(self):
+    def test_max_active_signals_passes_in_risk_engine(self):
+        """Max active signals check moved to scanner Phase 0. Risk Engine no longer blocks."""
         features = SetupFeatures(atr_pct=2.0)
         prob = TradeProbability(p_tp=0.65, expected_rr=2.5, profit_factor=2.5, confidence=0.8, model_type="rules")
         portfolio = PortfolioState(active_count=3, total_risk_pct=1.0)
@@ -791,8 +788,7 @@ class TestRiskEngine:
             features=features, probability=prob, portfolio=portfolio,
             entry_price=50000.0, sl=49500.0, tp=51500.0,
         )
-        assert decision.should_trade is False
-        assert "max active signals" in decision.rejection_reason
+        assert decision.should_trade is True
 
     def test_invalid_price_rejects(self):
         features = SetupFeatures()

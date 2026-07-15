@@ -63,40 +63,40 @@ class TestGetOBState:
     def test_fresh_ob(self):
         """Price never touched zone → FRESH."""
         df = _make_df_fresh()
-        state = get_ob_state(df, 60200, 60000)
+        state = get_ob_state(df, 60200, 60000, "bullish")
         assert state == OBState.FRESH
 
     def test_tested_ob(self):
         """Wick only → TESTED."""
         df = _make_df_tested()
-        state = get_ob_state(df, 60200, 60000)
+        state = get_ob_state(df, 60200, 60000, "bullish")
         assert state == OBState.TESTED
 
     def test_partial_mitigated(self):
         """Close inside, penetration < 50% → PARTIAL."""
         df = _make_df_partial()
-        state = get_ob_state(df, 60200, 60000)
+        state = get_ob_state(df, 60200, 60000, "bullish")
         assert state == OBState.PARTIAL
 
     def test_mitigated(self):
         """Close inside, penetration > 50% → MITIGATED."""
         df = _make_df_mitigated()
-        state = get_ob_state(df, 60200, 60000)
+        state = get_ob_state(df, 60200, 60000, "bullish")
         assert state == OBState.MITIGATED
 
 
 class TestGetOBMultiplier:
     def test_fresh_multiplier(self):
-        assert get_ob_multiplier(OBState.FRESH) == 1.2
+        assert get_ob_multiplier(OBState.FRESH) == 1.25
 
     def test_tested_multiplier(self):
         assert get_ob_multiplier(OBState.TESTED) == 1.0
 
     def test_partial_multiplier(self):
-        assert get_ob_multiplier(OBState.PARTIAL) == 0.8
+        assert get_ob_multiplier(OBState.PARTIAL) == 0.75
 
     def test_mitigated_multiplier(self):
-        assert get_ob_multiplier(OBState.MITIGATED) == 0.6
+        assert get_ob_multiplier(OBState.MITIGATED) == 0.5
 
     def test_broken_multiplier(self):
         assert get_ob_multiplier(OBState.BROKEN) == 0.0

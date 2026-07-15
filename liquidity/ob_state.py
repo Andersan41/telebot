@@ -221,6 +221,55 @@ def get_fvg_tracker(
     return _fvg_registry[fvg_id]
 
 
+def get_ob_state(
+    df: pd.DataFrame,
+    ob_high: float,
+    ob_low: float,
+    ob_type: Optional[str] = None,
+) -> OBState:
+    """Convenience wrapper: classify OB state from a DataFrame without tracker.
+
+    Checks the last N candles in the DataFrame to classify OB state:
+    - BROKEN: close beyond zone against OB type (requires ob_type)
+    - MITIGATED: close inside zone with penetration >= 50%
+    - PARTIAL: close inside zone with penetration < 50%
+    - TESTED: wick only touched the zone
+    - FRESH: no touches at all
+    """
+    if df is None or len(df) == 0:
+        return OBState.FRESH
+
+    zone_height = ob_high - ob_low
+    zone_center = (ob_high + ob_low) / 2
+
+    # Look at last N candles
+    lookback = min(len(df), 10)
+    recent = df.tail(lookback)
+
+    for _, candle in recent.iterrows():
+        wick_touch = candle["low"] <= ob_high and candle["high"] >= ob_low
+        close_inside = ob_low <= candle["close"] <= ob_high
+
+        if not wick_touch:
+            continue
+
+        # Check BROKEN first (close beyond zone against OB type)
+        if ob_type == "bullish" and candle["close"] < ob_low:
+            return OBState.BROKEN
+        if ob_type == "bearish" and candle["close"] > ob_high:
+            return OBState.BROKEN
+
+        if close_inside and zone_height > 0:
+            penetration = abs(candle["close"] - zone_center) / (zone_height / 2)
+            if penetration >= 0.5:
+                return OBState.MITIGATED
+            return OBState.PARTIAL
+
+        return OBState.TESTED
+
+    return OBState.FRESH
+
+
 def get_ob_multiplier(state: OBState) -> float:
     """Get probability multiplier for OB state."""
     return OB_MULTIPLIERS.get(state, 1.0)

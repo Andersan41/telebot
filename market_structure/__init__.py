@@ -22,6 +22,18 @@ from market_structure.tp_path import (
     TPEvaluation,
     evaluate_tp_path,
 )
+from market_structure.htf_bias_v2 import (
+    BiasStrength,
+    HTFBiasResult,
+    get_htf_bias_v2,
+    get_tf_bias,
+)
+from market_structure.premium_discount import (
+    ZoneType,
+    ZoneResult,
+    classify_zone,
+    get_entry_zone_quality,
+)
 
 __all__ = [
     "SwingPoint",
@@ -38,4 +50,12 @@ __all__ = [
     "Obstacle",
     "TPEvaluation",
     "evaluate_tp_path",
+    "BiasStrength",
+    "HTFBiasResult",
+    "get_htf_bias_v2",
+    "get_tf_bias",
+    "ZoneType",
+    "ZoneResult",
+    "classify_zone",
+    "get_entry_zone_quality",
 ]

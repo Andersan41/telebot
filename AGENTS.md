@@ -51,6 +51,11 @@ when behavior changes, not this one.
 - Context never blocks: `ContextScore` provides a score [-1, 1] for the Probability Engine.
 - BTC/ETH correlation removed as gates — become secondary features.
 - 15m confirmation TF removed entirely.
+- **HTF Bias V2** is ON by default (`config.htf_bias_v2 = True`). A/B validated:
+  PF 1.10→1.28, WR 29.6%→31.1%, PnL x2.1 on 90d/1h BTC+ETH.
+  Blocks buy continuations against bearish HTF bias (W1→D1→H4→H1 EMA).
+- **Premium/Discount zones** are OFF (`config.premium_discount = False`). A/B showed
+  they hurt performance (PF 1.28→0.91). Revisit after 500+ live trades with v2.
 
 ## Scheduler
 

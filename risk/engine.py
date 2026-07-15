@@ -69,6 +69,7 @@ class RiskEngine:
         max_risk_pct: float = 1.0,
         max_active_signals: int = 3,
         max_portfolio_risk_pct: float = 3.0,
+        sl_min_atr_multiplier: float = 2.0,
     ):
         self.min_rr_ratio = min_rr_ratio
         self.sl_absolute_min_pct = sl_absolute_min_pct
@@ -78,6 +79,7 @@ class RiskEngine:
         self.max_risk_pct = max_risk_pct
         self.max_active_signals = max_active_signals
         self.max_portfolio_risk_pct = max_portfolio_risk_pct
+        self.sl_min_atr_multiplier = sl_min_atr_multiplier
 
     def evaluate(
         self,
@@ -91,6 +93,7 @@ class RiskEngine:
         scenario_stability: float = 0.0,
         hypothesis: Optional[object] = None,
         mss_quality: float = 0.0,
+        atr: float = 0.0,
     ) -> RiskDecision:
         """Evaluate risk and size the position.
 
@@ -152,21 +155,16 @@ class RiskEngine:
                 rejection_reason=f"SL too wide: {sl_distance_pct:.2f}% > {self.sl_absolute_max_pct}%",
             )
 
-        # 4. Portfolio risk
-        if portfolio.total_risk_pct >= self.max_portfolio_risk_pct:
-            return RiskDecision(
-                should_trade=False,
-                rr_ratio=rr_ratio,
-                rejection_reason=f"portfolio risk {portfolio.total_risk_pct:.1f}% >= {self.max_portfolio_risk_pct}%",
-            )
-
-        # 5. Max active signals
-        if portfolio.active_count >= self.max_active_signals:
-            return RiskDecision(
-                should_trade=False,
-                rr_ratio=rr_ratio,
-                rejection_reason=f"max active signals reached ({portfolio.active_count}/{self.max_active_signals})",
-            )
+        # 3b. SL minimum ATR multiplier (prevent tight SL on volatile symbols)
+        if atr > 0 and entry_price > 0:
+            atr_pct = atr / entry_price * 100
+            min_sl_from_atr = atr_pct * self.sl_min_atr_multiplier
+            if sl_distance_pct < min_sl_from_atr:
+                return RiskDecision(
+                    should_trade=False,
+                    rr_ratio=rr_ratio,
+                    rejection_reason=f"SL too tight vs ATR: {sl_distance_pct:.2f}% < {self.sl_min_atr_multiplier}x ATR ({min_sl_from_atr:.2f}%)",
+                )
 
         # === POSITION SIZING ===
 

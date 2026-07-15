@@ -388,3 +388,171 @@ class TestFetchETHContext:
             result = await fetch_eth_context()
 
         assert result is None
+
+
+# === SMT Divergence Tests ===
+
+class TestSMTDivergence:
+    def test_smt_result_allows_long_bullish(self):
+        from derivatives.smt_divergence import SMTResult
+        r = SMTResult(
+            direction="bullish",
+            btc_swing_high=100, btc_swing_low=90,
+            alt_swing_high=50, alt_swing_low=45,
+            btc_trend="bearish", alt_trend="bullish",
+        )
+        assert r.allows_long() is True
+        assert r.allows_short() is False
+
+    def test_smt_result_allows_short_bearish(self):
+        from derivatives.smt_divergence import SMTResult
+        r = SMTResult(
+            direction="bearish",
+            btc_swing_high=100, btc_swing_low=90,
+            alt_swing_high=50, alt_swing_low=45,
+            btc_trend="bullish", alt_trend="bearish",
+        )
+        assert r.allows_long() is False
+        assert r.allows_short() is True
+
+    def test_smt_result_neutral_allows_both(self):
+        from derivatives.smt_divergence import SMTResult
+        r = SMTResult(
+            direction="neutral",
+            btc_swing_high=100, btc_swing_low=90,
+            alt_swing_high=50, alt_swing_low=45,
+            btc_trend="ranging", alt_trend="ranging",
+        )
+        assert r.allows_long() is True
+        assert r.allows_short() is True
+
+    def test_detect_swing_points_uptrend(self):
+        import pandas as pd
+        from derivatives.smt_divergence import _detect_swing_points
+
+        # Create uptrend with enough spread for EMA to detect
+        closes = [100 + i * 5 for i in range(25)]
+        highs = [c + 3 for c in closes]
+        lows = [c - 1 for c in closes]
+        df = pd.DataFrame({
+            "close": closes, "high": highs, "low": lows, "open": closes,
+        })
+        sh, sl, trend = _detect_swing_points(df)
+        assert sh > sl
+        assert trend in ("bullish", "ranging")  # trend detection is heuristic
+
+    def test_detect_swing_points_downtrend(self):
+        import pandas as pd
+        from derivatives.smt_divergence import _detect_swing_points
+
+        closes = [200 - i * 5 for i in range(25)]
+        highs = [c + 3 for c in closes]
+        lows = [c - 1 for c in closes]
+        df = pd.DataFrame({
+            "close": closes, "high": highs, "low": lows, "open": closes,
+        })
+        sh, sl, trend = _detect_swing_points(df)
+        assert sh > sl
+        assert trend in ("bearish", "ranging")  # trend detection is heuristic
+
+    def test_detect_swing_points_insufficient_data(self):
+        import pandas as pd
+        from derivatives.smt_divergence import _detect_swing_points
+
+        df = pd.DataFrame({
+            "close": [100, 101], "high": [102, 103],
+            "low": [99, 100], "open": [100, 101],
+        })
+        sh, sl, trend = _detect_swing_points(df)
+        assert trend == "ranging"
+
+    def test_detect_bullish_smt(self):
+        from derivatives.smt_divergence import _detect_bullish_smt
+
+        # BTC bearish, alt bullish → bullish SMT
+        result = _detect_bullish_smt(
+            btc_sh=100, btc_sl=90, btc_trend="bearish",
+            alt_sh=50, alt_sl=45, alt_trend="bullish",
+            btc_price=91, alt_price=49,
+        )
+        assert result is True
+
+    def test_detect_bearish_smt(self):
+        from derivatives.smt_divergence import _detect_bearish_smt
+
+        # BTC bullish, alt bearish → bearish SMT
+        result = _detect_bearish_smt(
+            btc_sh=100, btc_sl=90, btc_trend="bullish",
+            alt_sh=50, alt_sl=45, alt_trend="bearish",
+            btc_price=99, alt_price=46,
+        )
+        assert result is True
+
+    def test_no_smt_when_aligned(self):
+        from derivatives.smt_divergence import _detect_bullish_smt, _detect_bearish_smt
+
+        # Both bullish → no divergence
+        bullish = _detect_bullish_smt(
+            btc_sh=100, btc_sl=90, btc_trend="bullish",
+            alt_sh=50, alt_sl=45, alt_trend="bullish",
+            btc_price=99, alt_price=49,
+        )
+        bearish = _detect_bearish_smt(
+            btc_sh=100, btc_sl=90, btc_trend="bullish",
+            alt_sh=50, alt_sl=45, alt_trend="bullish",
+            btc_price=99, alt_price=49,
+        )
+        assert bullish is False
+        assert bearish is False
+
+    @pytest.mark.asyncio
+    async def test_fetch_smt_skips_btc(self):
+        from derivatives.smt_divergence import fetch_smt_divergence
+
+        result = await fetch_smt_divergence("BTC/USDT")
+        assert result is not None
+        assert result.direction == "neutral"
+        assert "skipped" in result.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_fetch_smt_cache(self):
+        from derivatives.smt_divergence import fetch_smt_divergence, reset_smt_cache
+        reset_smt_cache()
+
+        btc_df = pd.DataFrame({
+            "close": [100000 + i * 100 for i in range(60)],
+            "high": [100100 + i * 100 for i in range(60)],
+            "low": [99900 + i * 100 for i in range(60)],
+            "open": [100000 + i * 100 for i in range(60)],
+            "volume": [1000] * 60,
+        }, index=pd.date_range("2024-01-01", periods=60, freq="4h"))
+
+        eth_df = pd.DataFrame({
+            "close": [3000 + i * 10 for i in range(60)],
+            "high": [3010 + i * 10 for i in range(60)],
+            "low": [2990 + i * 10 for i in range(60)],
+            "open": [3000 + i * 10 for i in range(60)],
+            "volume": [500] * 60,
+        }, index=pd.date_range("2024-01-01", periods=60, freq="4h"))
+
+        call_count = 0
+        async def fetch_side_effect(symbol, tf, limit=100):
+            nonlocal call_count
+            call_count += 1
+            if "BTC" in symbol:
+                return btc_df
+            return eth_df
+
+        mock_client = AsyncMock()
+        mock_client.fetch_ohlcv = AsyncMock(side_effect=fetch_side_effect)
+
+        with patch("derivatives.smt_divergence.config") as mock_config:
+            mock_config.derivatives.btc_symbol = "BTC/USDT"
+            with patch("data.exchange_client.exchange_client", mock_client):
+                result1 = await fetch_smt_divergence("ETH/USDT")
+                result2 = await fetch_smt_divergence("ETH/USDT")
+
+        assert result1 is not None
+        assert result2 is not None
+        # Second call should be cached (fewer API calls)
+        assert call_count <= 2  # First call: 2 fetches (BTC + ETH), second: cached

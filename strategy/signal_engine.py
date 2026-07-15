@@ -59,6 +59,12 @@ class SignalResult:
     _swing_lows_1h: List[float] = field(default_factory=list)
     _rejection_reason: Optional[str] = None
 
+    # Phase 2 — HTF Bias V2 + Premium/Discount
+    _htf_result: Optional[Any] = None  # HTFBiasResult
+    _zone_type: Optional[str] = None   # "premium" / "discount" / "equilibrium"
+    _fib_level: Optional[float] = None
+    _zone_quality_multiplier: float = 1.0
+
     @property
     def is_actionable(self) -> bool:
         return self.signal != SignalType.NO_SIGNAL
@@ -119,34 +125,56 @@ class SignalResult:
         else:
             signal_word = ""
         header = f"{self.signal.value} — {signal_word}" if signal_word else self.signal.value
+        emoji = "\U0001f7e2" if self.signal == SignalType.BUY else "\U0001f534"
         lines = [
-            header,
-            f"Инструмент: {self.symbol}",
+            f"{emoji} {header} — {self.symbol}",
         ]
+
+        # HTF Context (Phase 2)
+        if self._htf_result is not None:
+            hr = self._htf_result
+            strength_label = hr.strength.value.upper() if hasattr(hr.strength, 'value') else str(hr.strength)
+            tf_checks = []
+            if hr.weekly_bias != 'neutral':
+                tf_checks.append(f"W1{'\u2713' if hr.weekly_bias == hr.direction else '\u2717'}")
+            if hr.daily_bias != 'neutral':
+                tf_checks.append(f"D1{'\u2713' if hr.daily_bias == hr.direction else '\u2717'}")
+            if hr.h4_bias != 'neutral':
+                tf_checks.append(f"H4{'\u2713' if hr.h4_bias == hr.direction else '\u2717'}")
+            tf_str = " ".join(tf_checks) if tf_checks else "neutral"
+            lines.append(f"HTF Context: {strength_label} {hr.direction.upper()} ({tf_str})")
+
+        # Zone info (Phase 2)
+        if self._zone_type is not None:
+            zone_upper = self._zone_type.upper()
+            fib_str = f" (fib {self._fib_level:.2f})" if self._fib_level is not None else ""
+            lines.append(f"Zone: {zone_upper}{fib_str}")
 
         lines.append(f"Таймфрейм: {self.timeframe.upper()}")
 
         entry = self.entry_price if self.entry_price is not None else self.close
-        lines.append(f"Цена входа: <code>{entry}</code>")
+        lines.append(f"Entry: <code>{entry}</code>")
 
         if self.sl is not None:
             sl_pct = (self.sl - entry) / entry * 100 if entry else 0
-            lines.append(f"\U0001f534 Stop Loss: <code>{self.sl}</code> ({sl_pct:+.2f}%)")
+            lines.append(f"SL: <code>{self.sl}</code> ({sl_pct:+.2f}%)")
         if self.tp is not None:
             tp_pct = (self.tp - entry) / entry * 100 if entry else 0
-            lines.append(f"\U0001f7e2 Take Profit: <code>{self.tp}</code> ({tp_pct:+.2f}%)")
+            lines.append(f"TP: <code>{self.tp}</code> ({tp_pct:+.2f}%)")
         if self.sl is not None and self.tp is not None and entry:
             rr = abs(self.tp - entry) / abs(entry - self.sl) if entry != self.sl else 0
-            lines.append(f"R/R: 1:{rr:.1f}")
+            lines.append(f"RR: 1:{rr:.1f}")
 
-        lines.append(f"\nКомпоненты: {self.score}")
+        # Zone quality multiplier
+        if self._zone_quality_multiplier != 1.0:
+            lines.append(f"Zone Quality: {self._zone_quality_multiplier:.1f}x ({self._zone_type or 'neutral'} entry)")
 
         if self._confidence_v2 is not None:
             quality_map = {"strong": "высокая", "moderate": "средняя", "weak": "низкая"}
             q = quality_map.get(self._confidence_v2.quality, self._confidence_v2.quality)
-            lines.append(f"Качество: {q} | Уверенность: {self.confidence:.1f}%")
+            lines.append(f"Confidence: {self.confidence:.0f}/100")
         else:
-            lines.append(f"Уверенность: {self.confidence:.1f}%")
+            lines.append(f"Confidence: {self.confidence:.0f}/100")
         return "\n".join(lines)
 
 

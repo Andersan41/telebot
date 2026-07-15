@@ -82,6 +82,7 @@ class SetupFeatures:
     volume_delta_pct: float = 0.0  # taker buy delta
 
     # === Volatility ===
+    atr: float = 0.0        # raw ATR value
     atr_pct: float = 0.0     # ATR / close * 100
     regime: str = "unknown"   # "trend" / "range" / "compression" / "expansion"
 
@@ -119,6 +120,7 @@ class SetupFeatures:
     premium_discount_score: Optional[float] = None  # price location vs equilibrium [0.0–1.0]
     htf_bias_penalty: float = 1.0  # 0.8 if reversal mismatches HTF bias, 1.0 otherwise
     ob_state_multiplier: float = 1.0  # OB mitigation factor (0.0 = broken, 0.6-1.2)
+    smt_divergence_score: float = 0.0  # -1.0 (bearish SMT) to 1.0 (bullish SMT), 0 = neutral
 
     # === Additional ===
     nearest_support_pct: float = 0.0
@@ -192,6 +194,7 @@ class SetupFeatures:
             # Soft multipliers
             "htf_alignment_score": self.htf_alignment_score if self.htf_alignment_score is not None else 0.5,
             "premium_discount_score": self.premium_discount_score if self.premium_discount_score is not None else 0.5,
+            "smt_divergence_score": self.smt_divergence_score,
         }
 
     def to_reasoning(self) -> List[str]:
@@ -274,6 +277,7 @@ class FeatureBuilder:
         premium_discount_score: Optional[float] = None,
         htf_bias_penalty: float = 1.0,
         ob_state_multiplier: float = 1.0,
+        smt_divergence_score: float = 0.0,
     ) -> SetupFeatures:
         """Build feature vector from all available data.
 
@@ -329,8 +333,10 @@ class FeatureBuilder:
 
         # --- Volatility ---
         atr_pct = 0.0
+        atr_raw = 0.0
         if ind and ind.close and ind.close > 0 and ind.atr:
             atr_pct = ind.atr / ind.close * 100
+            atr_raw = ind.atr
         regime_name = regime.regime if regime else "unknown"
 
         # --- Indicators (raw ML features) ---
@@ -421,6 +427,7 @@ class FeatureBuilder:
             volume_delta_pct=volume_delta,
             volume_above_avg=volume_above_avg,
             # Volatility
+            atr=atr_raw,
             atr_pct=atr_pct,
             regime=regime_name,
             # Indicators (raw ML features)
@@ -455,6 +462,8 @@ class FeatureBuilder:
             # S/R
             nearest_support_pct=nearest_sup,
             nearest_resistance_pct=nearest_res,
+            # SMT
+            smt_divergence_score=smt_divergence_score,
         )
 
 

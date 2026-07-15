@@ -406,6 +406,10 @@ class DerivativesConfig:
     def eth_correlation_symbols(self) -> list[str]:
         return [s.strip() for s in self.eth_correlation_symbols_str.split(",") if s.strip()]
 
+    # SMT divergence gate
+    smt_enabled: bool = os.getenv("SMT_ENABLED", "true").lower() == "true"
+    smt_lookback: int = int(os.getenv("SMT_LOOKBACK", "20"))
+
 
 @dataclass
 class ScoringConfig:
@@ -536,7 +540,7 @@ class WebConfig:
     """Параметры веб-сервера (дашборд)."""
 
     # Порт веб-сервера
-    port: int = int(os.getenv("WEB_PORT", "3001"))
+    port: int = int(os.getenv("WEB_PORT", "3002"))
     # Хост веб-сервера
     host: str = os.getenv("WEB_HOST", "0.0.0.0")
     # Включить веб-сервер
@@ -615,6 +619,10 @@ class AppConfig:
     ob_mitigation: bool = os.getenv("OB_MITIGATION", "true").lower() == "true"
     confidence_cap: bool = os.getenv("CONFIDENCE_CAP", "true").lower() == "true"
     shadow_mode: bool = os.getenv("SHADOW_MODE", "true").lower() == "true"
+
+    # ─── Feature Flags (Phase 2 — HTF Bias V2 + Premium/Discount) ──────
+    htf_bias_v2: bool = os.getenv("HTF_BIAS_V2", "true").lower() == "true"
+    premium_discount: bool = os.getenv("PREMIUM_DISCOUNT", "false").lower() == "true"
 
     # URL базы данных
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/signals.db")

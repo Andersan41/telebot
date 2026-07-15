@@ -24,7 +24,7 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "signals.db"
 GATE_ORDER = [
     "cooldown", "portfolio_risk", "btc_global_trend", "indicators",
     "confirm_tf", "signal_engine", "distance_filter", "tp_path",
-    "mtf_alignment", "btc_correlation", "eth_correlation", "volatility",
+    "mtf_alignment", "smt_divergence", "volatility",
     "context_timeout", "context_block", "context_min_verdict",
     "news", "sl_distance", "rr_guard", "no_trade_zones",
     "dynamic_risk", "confidence_v2", "dedup", "compression_block",
@@ -40,8 +40,7 @@ GATE_COL_MAP = {
     "distance_filter": "gate_distance_filter",
     "tp_path": "gate_tp_path",
     "mtf_alignment": "gate_mtf_alignment",
-    "btc_correlation": "gate_btc_correlation",
-    "eth_correlation": "gate_eth_correlation",
+    "smt_divergence": "gate_smt_divergence",
     "volatility": "gate_volatility",
     "context_timeout": "gate_context_timeout",
     "context_block": "gate_context_block",
@@ -58,6 +57,8 @@ GATE_COL_MAP = {
     "structure_alignment": "gate_structure_alignment",
     "sweep_required": "gate_sweep_required",
     "regime_block": "gate_regime_block",
+    "htf_bias": "gate_htf_bias",
+    "btc_trend": "gate_btc_trend",  # legacy — kept for historical data
 }
 
 

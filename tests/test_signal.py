@@ -158,7 +158,7 @@ class TestFormatMessage:
             score=5, reasons=[],
         )
         msg = sig.format_message()
-        assert "Цена входа" in msg
+        assert "Entry:" in msg or "entry" in msg
         assert "49950" in msg
 
 

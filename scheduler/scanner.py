@@ -18,6 +18,7 @@ from context.scorer import context_scorer, ContextVerdict
 from monitoring.metrics import scan_duration_seconds, signals_total
 from market_structure.structure import check_mtf_alignment, get_htf_directional_bias
 from market_structure.htf_bias import get_htf_bias, HTFBias, extract_structure_dict
+from market_structure.htf_bias_v2 import get_htf_bias_v2, HTFBiasResult
 from risk.market_regime import RegimeDetector, MarketRegime
 from scheduler.circuit_breaker import is_circuit_breaker_active, check_recent_losses
 from storage.trace import DecisionTraceBuilder, ExecutionSnapshot
@@ -38,6 +39,25 @@ _TF_MINUTES = {
     "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
     "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440,
 }
+
+
+def _smt_to_score(smt_result) -> float:
+    """Convert SMTResult to numeric score for Probability Engine.
+
+    Returns: -1.0 (bearish SMT) to 1.0 (bullish SMT), 0.0 for None/neutral.
+    """
+    if smt_result is None:
+        return 0.0
+    if smt_result.direction == "bullish":
+        return 1.0
+    elif smt_result.direction == "bearish":
+        return -1.0
+    return 0.0
+
+# ── EMA Spread History for Regime Detection ────────────────────────────
+# Stores rolling EMA spread values per symbol/timeframe across scan cycles.
+# Used by _detect_regime() to compute ema_spread_trend (rising/falling/stable).
+_ema_spread_history: dict[str, list[float]] = {}
 
 
 def get_cooldown_minutes(timeframe: str, base_minutes: int, multiplier: float) -> int:
@@ -137,8 +157,12 @@ async def _get_indicators(symbol: str, timeframe: str):
     return ind, df
 
 
-def _detect_regime(ind: IndicatorValues, df) -> Optional[MarketRegime]:
-    """Detect market regime from indicator values and OHLCV data."""
+def _detect_regime(ind: IndicatorValues, df, symbol: str = "", timeframe: str = "") -> Optional[MarketRegime]:
+    """Detect market regime from indicator values and OHLCV data.
+
+    Maintains a rolling EMA spread history per symbol/timeframe across scan cycles
+    to accurately detect rising/falling EMA spread trends.
+    """
     try:
         adx = float(ind.adx) if ind.adx is not None else 20.0
         current_atr = float(ind.atr) if ind.atr is not None else 0.0
@@ -155,7 +179,16 @@ def _detect_regime(ind: IndicatorValues, df) -> Optional[MarketRegime]:
         ema_fast = float(ind.ema_fast) if ind.ema_fast is not None else 0.0
         ema_slow = float(ind.ema_slow) if ind.ema_slow is not None else 0.0
         current_spread = abs(ema_fast - ema_slow) if ema_slow > 0 else 0.0
-        ema_spread_history = [current_spread] * 5
+
+        # Rolling EMA spread history across scan cycles
+        history_key = f"{symbol}_{timeframe}" if symbol and timeframe else "_global"
+        if history_key not in _ema_spread_history:
+            _ema_spread_history[history_key] = []
+        _ema_spread_history[history_key].append(current_spread)
+        # Keep last N values based on config window
+        max_history = max(config.risk.regime_ema_spread_window * 2, 10)
+        _ema_spread_history[history_key] = _ema_spread_history[history_key][-max_history:]
+        ema_spread_history = list(_ema_spread_history[history_key])
 
         if len(df) >= 10:
             volume_history = [float(row['volume']) for _, row in df.tail(20).iterrows()]
@@ -311,8 +344,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         # Continuation: BOS + trend alignment (all hard gates)
         # Entry armed (OB/FVG proximity) — soft, log only
 
-        # Detect regime early (needed for regime gate)
-        _regime_for_gates = _detect_regime(ind, df)
+        # Detect regime (used later for analytics)
+        _regime_for_gates = _detect_regime(ind, df, symbol, timeframe)
 
         if setup.setup_type == "reversal":
             # ── Reversal Gates ──
@@ -360,23 +393,6 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             _current_funnel.log_gate(symbol, timeframe, "bos_gate", "PASS",
                                      f"bos_type={setup.bos_type}")
 
-            # Trend alignment required for continuation
-            _structure_trend = structure.trend if structure else "ranging"
-            _trend_aligned = (
-                (setup.direction == "buy" and _structure_trend == "bullish") or
-                (setup.direction == "sell" and _structure_trend == "bearish")
-            )
-            if not _trend_aligned:
-                reason = f"continuation: BOS {setup.bos_type} vs trend {_structure_trend}"
-                _current_funnel.log_gate(symbol, timeframe, "trend_alignment", "BLOCKED", reason)
-                trace.blocked("trend_alignment", reason)
-                trace.set_version(VERSION, build_config_snapshot())
-                await trace.save(db)
-                return None
-            trace.passed("trend_alignment")
-            _current_funnel.log_gate(symbol, timeframe, "trend_alignment", "PASS",
-                                     f"aligned ({setup.direction} + {_structure_trend})")
-
         # ── Entry Armed (soft — log but don't block) ──
         if not setup.entry_armed:
             logger.debug(
@@ -386,23 +402,19 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         else:
             _current_funnel.log_gate(symbol, timeframe, "entry_armed", "PASS")
 
-        # ── Range Regime Gate (split by setup type) ──
-        if _regime_for_gates and _regime_for_gates.regime == "range":
-            if setup.setup_type == "continuation":
-                reason = "range regime — continuation not allowed"
-                _current_funnel.log_gate(symbol, timeframe, "regime_block", "BLOCKED", reason)
-                trace.blocked("regime_block", reason)
-                trace.set_version(VERSION, build_config_snapshot())
-                await trace.save(db)
-                return None
-            # Reversal ALLOWED in range — range is factory for liquidity
-            logger.debug(
-                f"Range regime: reversal allowed for {symbol} {timeframe}"
-            )
-        trace.passed("regime_block")
-        _current_funnel.log_gate(symbol, timeframe, "regime_block", "PASS")
+        # ═══ Phase 1.44: SMT Divergence (soft feature — no blocking) ═══
+        _smt_result = None
+        if config.derivatives.smt_enabled:
+            try:
+                from derivatives.smt_divergence import fetch_smt_divergence
+                _smt_result = await fetch_smt_divergence(symbol)
+            except Exception as e:
+                logger.debug(f"SMT divergence check failed for {symbol}: {e}")
+        _smt_detail = _smt_result.detail if _smt_result else "SMT disabled or no data"
+        trace.record("smt_divergence", True)
+        logger.debug(f"SMT {symbol}: {_smt_detail}")
 
-        # ═══ Phase 1.45: HTF Bias Hard Gate ═══
+        # ═══ Phase 1.45: HTF Bias + Premium/Discount Zones ═══
 
         try:
             df_1d = await exchange_client.fetch_ohlcv(symbol, "1d", limit=60)
@@ -412,58 +424,150 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             df_4h = None
 
         _htf_bias_penalty = 1.0
+        _htf_result = None
+        _zone_type = None
+        _fib_level = None
+        _zone_quality_multiplier = 1.0
 
-        # Use structure-aware HTF bias (priority: structure > EMA > neutral)
-        _struct_1d = extract_structure_dict(structure) if structure else None
-        _struct_4h = None
-        if df_4h is not None and len(df_4h) >= 60:
+        if config.htf_bias_v2:
+            # ── HTF Bias V2: W1 → D1 → H4 → H1 ──
             try:
-                from market_structure.structure import analyze_structure as _analyze_4h
-                _htf_struct = _analyze_4h(df_4h, lookback=50, atr_value=ind.atr if ind.atr else 0.0)
-                _struct_4h = extract_structure_dict(_htf_struct)
+                df_1w = await exchange_client.fetch_ohlcv(symbol, "1w", limit=60)
             except Exception:
-                pass
+                df_1w = None
+            try:
+                df_1h = await exchange_client.fetch_ohlcv(symbol, "1h", limit=60)
+            except Exception:
+                df_1h = None
 
-        htf_bias = get_htf_bias(df_1d, df_4h, _struct_1d, _struct_4h)
+            _htf_result = get_htf_bias_v2(df_1w, df_1d, df_4h, df_1h)
+            htf_bias_str = _htf_result.direction
 
-        if htf_bias != HTFBias.NEUTRAL:
-            direction_map = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
+            if htf_bias_str == 'bullish':
+                _bias_enum = HTFBias.BULLISH
+            elif htf_bias_str == 'bearish':
+                _bias_enum = HTFBias.BEARISH
+            else:
+                _bias_enum = HTFBias.NEUTRAL
 
-            if setup.setup_type == "continuation":
-                setup_bias = direction_map.get(setup.direction)
-                if setup_bias != htf_bias:
-                    reason = f"HTF bias gate: continuation {setup.direction} vs HTF {htf_bias.value}"
-                    _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
-                    trace.blocked("htf_bias", reason)
-                    trace.set_version(VERSION, build_config_snapshot())
-                    await trace.save(db)
-                    return None
-                trace.passed("htf_bias")
-                _current_funnel.log_gate(
-                    symbol, timeframe, "htf_bias", "PASS",
-                    f"continuation {setup.direction} aligned with HTF {htf_bias.value}",
-                )
+            if _bias_enum != HTFBias.NEUTRAL:
+                direction_map = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
 
-            elif setup.setup_type == "reversal":
-                setup_bias = direction_map.get(setup.direction)
-                if setup_bias != htf_bias:
-                    _htf_bias_penalty = 0.85
-                    _current_funnel.log_gate(
-                        symbol, timeframe, "htf_bias", "PASS",
-                        f"reversal mismatch penalty {_htf_bias_penalty}",
-                    )
-                    trace.record("htf_bias", True)
-                else:
-                    _current_funnel.log_gate(
-                        symbol, timeframe, "htf_bias", "PASS",
-                        f"reversal aligned with HTF {htf_bias.value}",
-                    )
+                if setup.setup_type == "continuation":
+                    setup_bias = direction_map.get(setup.direction)
+                    if setup_bias != _bias_enum:
+                        reason = f"HTF bias gate: continuation {setup.direction} vs HTF {htf_bias_str}"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
                     trace.passed("htf_bias")
+                    _current_funnel.log_gate(
+                        symbol, timeframe, "htf_bias", "PASS",
+                        f"continuation {setup.direction} aligned with HTF {htf_bias_str}",
+                    )
+
+                elif setup.setup_type == "reversal":
+                    setup_bias = direction_map.get(setup.direction)
+                    if setup_bias != _bias_enum:
+                        _htf_bias_penalty = 0.85
+                        _current_funnel.log_gate(
+                            symbol, timeframe, "htf_bias", "PASS",
+                            f"reversal mismatch penalty {_htf_bias_penalty}",
+                        )
+                        trace.record("htf_bias", True)
+                    else:
+                        _current_funnel.log_gate(
+                            symbol, timeframe, "htf_bias", "PASS",
+                            f"reversal aligned with HTF {htf_bias_str}",
+                        )
+                        trace.passed("htf_bias")
+            else:
+                _current_funnel.log_gate(
+                    symbol, timeframe, "htf_bias", "PASS", "HTF neutral — no bias applied",
+                )
+                trace.passed("htf_bias")
+
         else:
-            _current_funnel.log_gate(
-                symbol, timeframe, "htf_bias", "PASS", "HTF neutral — no bias applied",
-            )
-            trace.passed("htf_bias")
+            # ── Fallback: HTF Bias V1 ──
+            _struct_1d = extract_structure_dict(structure) if structure else None
+            _struct_4h = None
+            if df_4h is not None and len(df_4h) >= 60:
+                try:
+                    from market_structure.structure import analyze_structure as _analyze_4h
+                    _htf_struct = _analyze_4h(df_4h, lookback=50, atr_value=ind.atr if ind.atr else 0.0)
+                    _struct_4h = extract_structure_dict(_htf_struct)
+                except Exception:
+                    pass
+
+            _bias_enum = get_htf_bias(df_1d, df_4h, _struct_1d, _struct_4h)
+            htf_bias_str = _bias_enum.value
+
+            if _bias_enum != HTFBias.NEUTRAL:
+                direction_map = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
+
+                if setup.setup_type == "continuation":
+                    setup_bias = direction_map.get(setup.direction)
+                    if setup_bias != _bias_enum:
+                        reason = f"HTF bias gate: continuation {setup.direction} vs HTF {_bias_enum.value}"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
+                    trace.passed("htf_bias")
+                    _current_funnel.log_gate(
+                        symbol, timeframe, "htf_bias", "PASS",
+                        f"continuation {setup.direction} aligned with HTF {_bias_enum.value}",
+                    )
+
+                elif setup.setup_type == "reversal":
+                    setup_bias = direction_map.get(setup.direction)
+                    if setup_bias != _bias_enum:
+                        _htf_bias_penalty = 0.85
+                        _current_funnel.log_gate(
+                            symbol, timeframe, "htf_bias", "PASS",
+                            f"reversal mismatch penalty {_htf_bias_penalty}",
+                        )
+                        trace.record("htf_bias", True)
+                    else:
+                        _current_funnel.log_gate(
+                            symbol, timeframe, "htf_bias", "PASS",
+                            f"reversal aligned with HTF {_bias_enum.value}",
+                        )
+                        trace.passed("htf_bias")
+            else:
+                _current_funnel.log_gate(
+                    symbol, timeframe, "htf_bias", "PASS", "HTF neutral — no bias applied",
+                )
+                trace.passed("htf_bias")
+
+        # ═══ Premium/Discount Zone Detection ═══
+        if config.premium_discount and df is not None and len(df) > 0:
+            try:
+                _swing_high = None
+                _swing_low = None
+                if structure and structure.recent_highs and structure.recent_lows:
+                    _swing_high = max(structure.recent_highs)
+                    _swing_low = min(structure.recent_lows)
+                if _swing_high is None or _swing_low is None or _swing_high <= _swing_low:
+                    _lookback = min(50, len(df))
+                    _swing_high = float(df['high'].tail(_lookback).max())
+                    _swing_low = float(df['low'].tail(_lookback).min())
+
+                from market_structure.premium_discount import (
+                    classify_zone as _classify_zone,
+                    get_entry_zone_quality as _get_zone_quality,
+                )
+                zone_result = _classify_zone(df, htf_bias_str, _swing_high, _swing_low)
+                _zone_type = zone_result.zone_type.value
+                _fib_level = zone_result.fib_level
+                _zone_quality_multiplier = _get_zone_quality(
+                    zone_result, htf_bias_str, setup.setup_type,
+                )
+            except Exception as e:
+                logger.debug(f"Zone classification failed for {symbol} {timeframe}: {e}")
 
         # ═══ Phase 1.5: Build Trade Plan (ICT-based) ═══
 
@@ -859,7 +963,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
 
         # ═══ Phase 2: Feature Builder ═══
 
-        regime = _detect_regime(ind, df)
+        regime = _detect_regime(ind, df, symbol, timeframe)
         from risk.volatility_regime import classify_volatility
         vol_regime = classify_volatility(ind.atr, ind.close)
 
@@ -908,7 +1012,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             if _rel_obs:
                 _nearest_ob = min(_rel_obs, key=lambda ob: abs(ob.midpoint - setup.ob_midpoint))
                 from liquidity.ob_state import get_ob_state, get_ob_multiplier, OBState
-                _ob_state = get_ob_state(_df_clean, _nearest_ob.high, _nearest_ob.low)
+                _ob_state = get_ob_state(_df_clean, _nearest_ob.high, _nearest_ob.low, _nearest_ob.type)
                 if _ob_state == OBState.BROKEN:
                     _ob_state_multiplier = 0.0
                 else:
@@ -933,11 +1037,16 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             is_reversal=is_reversal,
             htf_bias_penalty=_htf_bias_penalty,
             ob_state_multiplier=_ob_state_multiplier,
+            smt_divergence_score=_smt_to_score(_smt_result),
         )
 
         # ═══ Phase 3: Probability Engine ═══
 
         probability = probability_engine.predict(features)
+
+        # Apply zone quality multiplier
+        if config.premium_discount and _zone_quality_multiplier != 1.0:
+            probability.p_tp = min(probability.p_tp * _zone_quality_multiplier, 1.0)
 
         logger.info(
             f"Probability: P(TP)={probability.p_tp:.1%} | "
@@ -964,6 +1073,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             scenario_score=_thesis_score,
             scenario_stability=_thesis_stability,
             mss_quality=setup.mss_score,
+            atr=ind.atr if ind.atr else 0.0,
         )
 
         if not risk_decision.should_trade:
@@ -1036,6 +1146,10 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             _structure_trend=structure.trend if structure else None,
             _structure_bos=setup.bos_type,
             _sl_source=sl_source,
+            _htf_result=_htf_result,
+            _zone_type=_zone_type,
+            _fib_level=_fib_level,
+            _zone_quality_multiplier=_zone_quality_multiplier,
         )
 
         # Attach probability data for display (capped at 85%)
