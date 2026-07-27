@@ -9,6 +9,7 @@ pandas-ta>=0.4.0
 pandas>=2.2.0
 
 python-dotenv==1.0.0
+httpx<0.28
 python-telegram-bot==20.7
 pytz==2023.3
 sqlalchemy==2.0.23

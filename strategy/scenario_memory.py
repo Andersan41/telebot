@@ -256,6 +256,19 @@ class ScenarioMemory:
             )
         self.stats[key].total_seen += 1
 
+    def record_observation(self, symbol: str, scenario_name: str) -> None:
+        """Record that a scenario was detected by the ScenarioEngine (no trade taken).
+
+        Tracks detection frequency independent of whether a trade was taken.
+        """
+        key = self._key(symbol, scenario_name)
+        if key not in self.stats:
+            self.stats[key] = ScenarioStats(
+                scenario_name=scenario_name,
+                symbol=symbol,
+            )
+        self.stats[key].total_seen += 1
+
     def get_stats(
         self, symbol: str, narrative_type: str, direction: str = "",
     ) -> Optional[ScenarioStats]:

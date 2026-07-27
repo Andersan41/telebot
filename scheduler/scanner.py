@@ -359,8 +359,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             trace.passed("sweep_required")
             _current_funnel.log_gate(symbol, timeframe, "sweep_required", "PASS")
 
-            if not setup.has_displacement:
-                reason = "reversal: no displacement"
+            if config.reversal_require_displacement and not setup.has_displacement:
+                reason = "reversal: no displacement (reversal_require_displacement=true)"
                 _current_funnel.log_gate(symbol, timeframe, "displacement_gate", "BLOCKED", reason)
                 trace.blocked("displacement_gate", reason)
                 trace.set_version(VERSION, build_config_snapshot())
@@ -393,14 +393,24 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             _current_funnel.log_gate(symbol, timeframe, "bos_gate", "PASS",
                                      f"bos_type={setup.bos_type}")
 
-        # ── Entry Armed (soft — log but don't block) ──
+        # ── Entry Zone (soft by default, hard when require_entry_zone=true) ──
         if not setup.entry_armed:
-            logger.debug(
-                f"Entry not armed: {symbol} {timeframe} — "
-                f"price not in OB/FVG zone (signal will fire but entry may be suboptimal)"
-            )
+            if config.require_entry_zone:
+                reason = "price not in OB/FVG zone (require_entry_zone=true)"
+                _current_funnel.log_gate(symbol, timeframe, "entry_zone", "BLOCKED", reason)
+                trace.blocked("entry_zone", reason)
+                trace.set_version(VERSION, build_config_snapshot())
+                await trace.save(db)
+                logger.info(f"EntryZone BLOCKED: {symbol} {timeframe} — {reason}")
+                return None
+            else:
+                logger.debug(
+                    f"Entry not armed: {symbol} {timeframe} — "
+                    f"price not in OB/FVG zone (soft mode, signal fires anyway)"
+                )
         else:
-            _current_funnel.log_gate(symbol, timeframe, "entry_armed", "PASS")
+            _current_funnel.log_gate(symbol, timeframe, "entry_zone", "PASS")
+            trace.passed("entry_zone")
 
         # ═══ Phase 1.44: SMT Divergence (soft feature — no blocking) ═══
         _smt_result = None
@@ -456,17 +466,26 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 if setup.setup_type == "continuation":
                     setup_bias = direction_map.get(setup.direction)
                     if setup_bias != _bias_enum:
-                        reason = f"HTF bias gate: continuation {setup.direction} vs HTF {htf_bias_str}"
-                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
-                        trace.blocked("htf_bias", reason)
-                        trace.set_version(VERSION, build_config_snapshot())
-                        await trace.save(db)
-                        return None
-                    trace.passed("htf_bias")
-                    _current_funnel.log_gate(
-                        symbol, timeframe, "htf_bias", "PASS",
-                        f"continuation {setup.direction} aligned with HTF {htf_bias_str}",
-                    )
+                        if config.htf_hard_gate:
+                            reason = f"HTF bias gate: continuation {setup.direction} vs HTF {htf_bias_str}"
+                            _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                            trace.blocked("htf_bias", reason)
+                            trace.set_version(VERSION, build_config_snapshot())
+                            await trace.save(db)
+                            return None
+                        else:
+                            _htf_bias_penalty = 0.85
+                            _current_funnel.log_gate(
+                                symbol, timeframe, "htf_bias", "PASS",
+                                f"continuation mismatch penalty {_htf_bias_penalty} (htf_hard_gate=false)",
+                            )
+                            trace.record("htf_bias", True)
+                    else:
+                        trace.passed("htf_bias")
+                        _current_funnel.log_gate(
+                            symbol, timeframe, "htf_bias", "PASS",
+                            f"continuation {setup.direction} aligned with HTF {htf_bias_str}",
+                        )
 
                 elif setup.setup_type == "reversal":
                     setup_bias = direction_map.get(setup.direction)
@@ -510,17 +529,26 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 if setup.setup_type == "continuation":
                     setup_bias = direction_map.get(setup.direction)
                     if setup_bias != _bias_enum:
-                        reason = f"HTF bias gate: continuation {setup.direction} vs HTF {_bias_enum.value}"
-                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
-                        trace.blocked("htf_bias", reason)
-                        trace.set_version(VERSION, build_config_snapshot())
-                        await trace.save(db)
-                        return None
-                    trace.passed("htf_bias")
-                    _current_funnel.log_gate(
-                        symbol, timeframe, "htf_bias", "PASS",
-                        f"continuation {setup.direction} aligned with HTF {_bias_enum.value}",
-                    )
+                        if config.htf_hard_gate:
+                            reason = f"HTF bias gate: continuation {setup.direction} vs HTF {_bias_enum.value}"
+                            _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                            trace.blocked("htf_bias", reason)
+                            trace.set_version(VERSION, build_config_snapshot())
+                            await trace.save(db)
+                            return None
+                        else:
+                            _htf_bias_penalty = 0.85
+                            _current_funnel.log_gate(
+                                symbol, timeframe, "htf_bias", "PASS",
+                                f"continuation mismatch penalty {_htf_bias_penalty} (htf_hard_gate=false)",
+                            )
+                            trace.record("htf_bias", True)
+                    else:
+                        trace.passed("htf_bias")
+                        _current_funnel.log_gate(
+                            symbol, timeframe, "htf_bias", "PASS",
+                            f"continuation {setup.direction} aligned with HTF {_bias_enum.value}",
+                        )
 
                 elif setup.setup_type == "reversal":
                     setup_bias = direction_map.get(setup.direction)
@@ -918,10 +946,16 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 if _new_scenarios:
                     # Estimate probability for each scenario
                     from strategy.probability_engine import probability_engine
+                    from strategy.weight_manager import weight_manager
                     for scenario in _new_scenarios[:5]:  # top 5
                         eval_result = probability_engine.estimate_scenario(
                             features=features,
                             scenario=scenario,
+                        )
+                        # WeightManager adjusts P(TP) based on historical stats
+                        eval_result = weight_manager.adjust(
+                            eval_result, symbol, scenario.name,
+                            regime=regime.regime if regime else None,
                         )
                         _new_evaluations.append(eval_result)
 
@@ -1042,11 +1076,32 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
 
         # ═══ Phase 3: Probability Engine ═══
 
-        probability = probability_engine.predict(features)
+        # Build scenario name for memory lookup
+        _scenario_name = ""
+        if _decision and _decision.hypothesis:
+            _scenario_name = _decision.hypothesis.narrative_type
+        elif setup.setup_type == "reversal":
+            _scenario_name = "reversal"
+        elif setup.setup_type == "continuation":
+            _scenario_name = "continuation"
+
+        probability = probability_engine.predict(features, symbol=symbol, scenario_name=_scenario_name)
 
         # Apply zone quality multiplier
         if config.premium_discount and _zone_quality_multiplier != 1.0:
             probability.p_tp = min(probability.p_tp * _zone_quality_multiplier, 1.0)
+
+        # ═══ Phase 3.1: min_p_tp gate ═══
+        if config.probability.min_p_tp > 0 and probability.p_tp < config.probability.min_p_tp:
+            reason = f"P(TP)={probability.p_tp:.1%} < min_p_tp {config.probability.min_p_tp:.0%}"
+            _current_funnel.log_gate(symbol, timeframe, "min_p_tp", "BLOCKED", reason)
+            trace.blocked("min_p_tp", reason)
+            trace.set_version(VERSION, build_config_snapshot())
+            await trace.save(db)
+            logger.info(f"min_p_tp BLOCKED: {symbol} {timeframe} — {reason}")
+            return None
+        trace.passed("min_p_tp")
+        _current_funnel.log_gate(symbol, timeframe, "min_p_tp", "PASS")
 
         logger.info(
             f"Probability: P(TP)={probability.p_tp:.1%} | "

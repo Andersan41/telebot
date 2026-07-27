@@ -571,6 +571,8 @@ class ProbabilityConfig:
     min_samples_for_ml: int = int(os.getenv("PROBABILITY_MIN_SAMPLES_FOR_ML", "100"))
     # Fallback winrate when no historical data
     fallback_winrate: float = float(os.getenv("PROBABILITY_FALLBACK_WINRATE", "50.0"))
+    # Minimum P(TP) to pass the gate (0.0 = gate disabled, 0.40+ recommended)
+    min_p_tp: float = float(os.getenv("MIN_P_TP", "0.0"))
 
 
 @dataclass
@@ -623,6 +625,10 @@ class AppConfig:
     # ─── Feature Flags (Phase 2 — HTF Bias V2 + Premium/Discount) ──────
     htf_bias_v2: bool = os.getenv("HTF_BIAS_V2", "true").lower() == "true"
     premium_discount: bool = os.getenv("PREMIUM_DISCOUNT", "false").lower() == "true"
+
+    # ─── Feature Flags (Phase 3 — Signal Recovery) ────────────────────
+    require_entry_zone: bool = os.getenv("REQUIRE_ENTRY_ZONE", "false").lower() == "true"
+    reversal_require_displacement: bool = os.getenv("REVERSAL_REQUIRE_DISPLACEMENT", "true").lower() == "true"
 
     # URL базы данных
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/signals.db")
@@ -735,6 +741,10 @@ FILTER_TOGGLE_KEYS: dict[str, tuple[str, type]] = {
     "confidence_v2": ("scoring.confidence_v2_enabled", bool),
     "signal_block": ("signal_block_notify", bool),
     "dynamic_risk": ("risk.dynamic_risk_enabled", bool),
+    # Phase 3 signal-recovery flags
+    "require_entry_zone": ("require_entry_zone", bool),
+    "reversal_require_displacement": ("reversal_require_displacement", bool),
+    "htf_hard_gate": ("htf_hard_gate", bool),
 }
 
 FILTER_PARAM_KEYS: dict[str, tuple[str, type]] = {
@@ -784,6 +794,8 @@ FILTER_PARAM_KEYS: dict[str, tuple[str, type]] = {
     "confidence_moderate_threshold": ("scoring.confidence_moderate_threshold", float),
     "quality_strong_threshold": ("scoring.quality_strong_threshold", float),
     "quality_moderate_threshold": ("scoring.quality_moderate_threshold", float),
+    # Probability engine
+    "min_p_tp": ("probability.min_p_tp", float),
 }
 
 # ─── Singleton ────────────────────────────────────────────────────────────

@@ -147,6 +147,24 @@ async def check_open_outcomes() -> None:
                 outcome.id, "EXPIRED",
                 close_price=signal.close_price, pnl_pct=0.0,
             )
+            try:
+                from storage.database import DecisionTrace
+                from sqlalchemy import select
+                async with db._session_factory() as session:
+                    result = await session.execute(
+                        select(DecisionTrace).where(DecisionTrace.signal_id == signal.id)
+                    )
+                    trace_row = result.scalar_one_or_none()
+                    if trace_row:
+                        trace_row.outcome = "EXPIRED"
+                        trace_row.pnl_pct = 0.0
+                        await session.commit()
+                        _record_hypothesis_outcome(
+                            trace_row, signal, "EXPIRED", 0.0,
+                            0.0, 0.0, 0,
+                        )
+            except Exception:
+                pass
             continue
 
         # Skip if current candle is the same as the entry candle.

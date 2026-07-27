@@ -1,330 +1,282 @@
-# bot_audit.md — Полный аудит архитектуры торгового бота
+# 🏗 Бот-аудит: Trading Signal Bot
 
-Дата: 2026-07-10
-Версия стратегии: 2.4.0
-Бот: Trading Signal Bot (ICT-based)
+**Версия стратегии:** 2.4.0 (`config/settings.py:15`)  
+**Дата аудита:** 2026-07-27  
+**Цель:** Инвентаризация архитектуры и параметров для последующего анализа/оптимизации
 
 ---
 
 ## 1. Общая архитектура
 
-### 1.1 Схема потока данных
+### 1.1 Поток данных (v2 — ICT Core Pipeline)
 
 ```
-Биржа (ccxt) → fetch_ohlcv() → DataFrame OHLCV
-    ↓
-IndicatorEngine (pandas-ta) → IndicatorValues
-    ↓
-Liquidity модули (sweep, OB, FVG, candle_quality)
-    ↓
-MarketStructure (structure.py) → StructureState (BOS/CHoCH/MSS)
-    ↓
-PatternEngine → ICTSetup (reversal/continuation)
-    ↓
-FeatureBuilder → SetupFeatures (~35 features)
-    ↓
-ProbabilityEngine → TradeProbability (P(TP), RR)
-    ↓
-RiskEngine → RiskDecision (should_trade, risk_pct)
-    ↓
-SignalResult → format_message() → Telegram канал
+Exchange (ccxt)
+  │
+  ▼ fetch_ohlcv()
+ExchangeClient ──► IndicatorEngine ──► IndicatorValues (EMA/RSI/MACD/ADX/ATR/Supertrend)
+  │                     │
+  │                     ▼
+  │               PatternEngine (ICT Setup)
+  │               ┌─ Reversal: Sweep → Displacement → MSS → OB/FVG
+  │               └─ Continuation: Trend → BOS → OB/FVG
+  │                     │
+  │                     ▼
+  │               FeatureBuilder ──► SetupFeatures (~35 raw features)
+  │                     │
+  │                     ▼
+  │               ProbabilityEngine (Rules или ML)
+  │                     │
+  │                     ▼
+  │               RiskEngine (Capital protection + Kelly sizing)
+  │                     │
+  │                     ▼
+  │               SignalResult ──► DB (signals) ──► Telegram (notifier)
+  │                     │
+  │               OutcomeTracker (фон: SL/TP трекинг)
 ```
-
-**Параллельные shadow-процессы (логируются, НЕ влияют на сигнал):**
-- MarketPhaseEngine → PhaseAssessment
-- MarketThesisEngine → LiquidityGraph + DynamicTradeThesis
-- HypothesisEngine + DecisionEngine → Hypothesis + Decision
-- ScenarioEngine → ScenarioEvaluation
 
 ### 1.2 Модули и зависимости
 
-| Модуль | Файл | Назначение | Зависимости |
-|--------|------|------------|-------------|
-| **Точка входа** | `main.py:58` | Инициализация БД, exchange, Telegram, scheduler | Все модули |
-| **Конфиг** | `config/settings.py:591` | AppConfig — 15 dataclass-секций, ~170 параметров | .env |
-| **Exchange Client** | `data/exchange_client.py:16` | OHLCV, ticker, market data через ccxt sync | ccxt≥4.2.15 |
-| **Indicator Engine** | `indicators/engine.py:114` | EMA, RSI, MACD, ADX, ATR, Supertrend, Volume | pandas-ta≥0.4.0 |
-| **Pattern Engine** | `strategy/pattern_engine.py:104` | ICT reversal/continuation detection | liquidity/* |
-| **Feature Builder** | `strategy/feature_builder.py:250` | ~35 фич в плоский вектор | pattern_engine |
-| **Probability Engine** | `strategy/probability_engine.py:61` | P(TP), RR, PF (rules/ML) | feature_builder |
-| **Risk Engine** | `risk/engine.py:56` | Hard gates + position sizing | feature_builder + probability |
-| **Signal Engine** | `strategy/signal_engine.py:152` | _calculate_sl_tp — ICT priority chain | indicators |
-| **Scanner** | `scheduler/scanner.py:182` | scan_symbol_v2 — полный конвейер | Все модули |
-| **Task Scheduler** | `scheduler/tasks.py:13` | APScheduler: каждые 15 мин сканирование | scanner |
-| **Outcome Tracker** | `scheduler/outcome_tracker.py:332` | Фоновый трекинг TP/SL каждые 5 мин | exchange_client + db |
-| **DB** | `storage/database.py:286` | SQLAlchemy + SQLite, 6 таблиц | SQLAlchemy≥2.0.23 |
-| **Context** | `context/fetcher.py + analyzer.py + scorer.py` | F&G, funding, news sentiment | CoinGecko, CryptoPanic |
-| **Notifier** | `bot/notifier.py:14` | Telegram отправка с HTML-экранированием | python-telegram-bot |
-| **Web Dashboard** | `web/server.py` | aiohttp дашборд на порту 3001 | aiohttp |
-| **Monitoring** | `monitoring/metrics.py` | Prometheus метрики | prometheus_client |
+| Модуль | Назначение | Ключевые файлы |
+|--------|-----------|----------------|
+| `main.py` | Точка входа, lock, init | `main.py:1-188` |
+| `config/` | Централизованная конфигурация | `settings.py:1-958`, `logger.py:1-74` |
+| `data/` | Получение OHLCV через ccxt | `exchange_client.py:1-415` |
+| `indicators/` | Расчёт индикаторов | `engine.py:1-240` |
+| `strategy/` | Ядро стратегии (22 файла) | `pattern_engine.py`, `feature_builder.py`, `probability_engine.py`, `signal_engine.py`, `decision_engine.py`, `hypothesis.py`, `trade_engine.py`, `trade_plan.py`, `market_phase_engine.py`, `market_thesis_engine.py`, `scenario_engine.py`, `scenario_memory.py`, `scenario_invalidator.py`, `entry_trigger.py`, `invalidation.py`, `levels.py`, `transition_model.py`, `weight_manager.py`, `weights.py`, `trade_thesis.py` |
+| `scheduler/` | Планировщик и сканер | `tasks.py:1-110`, `scanner.py:1-1399`, `core_v2.py:1-337`, `outcome_tracker.py:1-415`, `circuit_breaker.py:1-87`, `shadow.py` |
+| `risk/` | Управление рисками | `engine.py:1-266`, `dynamic_risk.py`, `market_regime.py`, `volatility_regime.py`, `no_trade_zones.py`, `news_filter.py` |
+| `context/` | Контекст рынка | `fetcher.py`, `analyzer.py`, `scorer.py` |
+| `liquidity/` | Анализ ликвидности | `sweep.py`, `order_blocks.py`, `fvg.py`, `candle_quality.py`, `equal_levels.py`, `external.py`, `ob_state.py` |
+| `market_structure/` | Рыночная структура | `structure.py`, `htf_bias.py`, `htf_bias_v2.py`, `premium_discount.py` |
+| `storage/` | SQLite БД | `database.py:1-1169+`, `trace.py` |
+| `bot/` | Telegram | `handlers.py:1-170`, `notifier.py:1-246`, `admin.py`, `rate_limit.py`, `menu.py` |
+| `monitoring/` | Prometheus метрики | `metrics.py:1-37` |
+| `analytics/` | Аналитика (16 файлов) | `daily_report.py`, `gate_funnel.py`, `performance.py`, `entry_delay.py`, `counterfactual.py`, `calibration.py` и др. |
+| `ml/` | ML модели | `train_model.py`, `auto_retrain.py`, `build_dataset.py`, `triple_barrier.py`, `validate_oos.py` |
+| `derivatives/` | Funding/OI/SMT | `smt_divergence.py` |
+| `web/` | Веб-дашборд | `server.py` |
 
-### 1.3 Внешние зависимости
+### 1.3 Зависимости (requirements.txt:1-21)
 
-| Зависимость | Версия | Назначение |
-|-------------|--------|------------|
-| ccxt | 4.2.15 | Биржевой API (Binance/BingX/Bybit) |
-| pandas | ≥2.2.0 | DataFrames |
-| pandas-ta | ≥0.4.0 | Технические индикаторы |
-| python-telegram-bot | 20.7 | Telegram Bot API |
-| sqlalchemy | 2.0.23 | ORM + SQLite |
-| aiosqlite | 0.19.0 | Async SQLite |
-| apscheduler | 3.10.4 | Cron-расписание |
-| loguru | 0.7.2 | Логирование |
-| aiohttp | 3.9.5 | HTTP + Web Server |
-| feedparser | ≥6.0.0 | RSS новости |
-| python-dotenv | 1.0.0 | .env загрузка |
-| prometheus_client | ≥0.20 | Метрики Prometheus |
-| aiolimiter | ≥1.1 | Rate limiting |
+| Библиотека | Версия | Назначение |
+|-----------|--------|-----------|
+| `ccxt` | 4.2.15 | Биржевой API |
+| `python-telegram-bot` | 20.7 | Telegram |
+| `pandas` / `pandas-ta` | 2.2+ / 0.4+ | OHLCV + индикаторы |
+| `apscheduler` | 3.10.4 | Планировщик |
+| `sqlalchemy` + `aiosqlite` | 2.0.23 / 0.19 | SQLite |
+| `loguru` | 0.7.2 | Логирование |
+| `prometheus_client` | 0.20+ | Метрики |
+| `aiolimiter` | 1.1+ | Rate limiting |
+| `aiohttp` | 3.9.5 | HTTP |
+| `httpx` | <0.28 | Telegram transport |
+| `numpy` | 2.2.6+ | Научные вычисления |
 
-**Биржи:** BingX (по умолчанию), Binance, Bybit (через ccxt, `config/settings.py:39`)
-**Тип рынка:** swap (perpetual futures) по умолчанию, также spot/future
+### 1.4 Точки входа
 
-### 1.4 Точки входа и планировщик
-
-- **main.py:58** — `async def main()`: инициализация, старт Telegram polling
-- **scheduler/tasks.py:18** — `TaskScheduler.setup()`:
-  - `scan_all_tfs`: CronTrigger `minute=2,17,32,47` (каждые 15 мин) → `run_scan_cycle()`
-  - `daily_report`: CronTrigger `hour=0, minute=5` → ежедневный отчёт
-- **Админ-команды:** `/scan` — ручной запуск `run_scan_cycle()` (`bot/admin.py`)
-- **outcome_tracker_loop():** фоновая задача, запускается в `main.py:130`, проверка каждые 300 секунд (`scheduler/outcome_tracker.py:21-23`)
+| Путь | Тип | Описание |
+|------|-----|---------|
+| `main.py:178` | Entry | Запуск бота (asyncio) |
+| `scheduler/scanner.py:1369` | Scan cycle | `run_scan_cycle()` — вызывается планировщиком |
+| `scheduler/tasks.py:26-33` | Cron | Сканирование каждые 15 мин (:02, :17, :32, :47) |
+| `scheduler/outcome_tracker.py:350` | Background | Фоновый трекинг исходов каждые 300с |
+| `scheduler/tasks.py:36-43` | Cron | Ежедневный отчёт в 00:05 UTC |
+| `scheduler/tasks.py:46-53` | Cron | ML retrain в 03:00 UTC |
+| `backtest/engine.py` | CLI | Бэктест (console / telegram) |
 
 ---
 
 ## 2. Данные и рынок
 
-### 2.1 Инструменты (Symbols)
+### 2.1 Инструменты
 
-| Параметр | Значение | Источник |
-|----------|----------|----------|
-| SYMBOLS | BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT | `.env.example:23` |
-| Динамическое добавление | через `/addsymbol` в Telegram | `config/settings.py:842-858` |
-| Отключение символов | через `/removesymbol`, хранится в `disabled_symbols` | `storage/database.py:658-666` |
-
-Итоговый список = env SYMBOLS + dynamic (из БД) − disabled (из БД).
+- **Источник:** `.env` `SYMBOLS` + динамические через `/addsymbol` (`config/settings.py:66-68`)
+- **По умолчанию:** `BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,XRP/USDT` (из `.env.example:23`)
+- **Рынок:** Perpetual swap (BingX/Bybit), реже spot/future (`config/settings.py:47`)
+- **Формат ccxt:** маппинг `BTC/USDT` → `BTC/USDT:USDT` (`exchange_client.py:25-41`)
 
 ### 2.2 Таймфреймы
 
-| Параметр | Значение | Источник |
-|----------|----------|----------|
-| PRIMARY_TIMEFRAMES | 1h, 4h | `.env.example:24` |
-| CONFIRM_TIMEFRAME | 15m (отключён как gate, `confirm_tf_enabled: true`) | `.env.example:25` |
-| MTF_TIMEFRAMES | 1d, 4h, 1h (для аналитики, не gate) | `.env.example:89` |
-| CANDLES_LIMIT | 200 свечей на запрос | `.env.example:67` |
+| Параметр | Значение | Откуда |
+|---------|----------|--------|
+| `PRIMARY_TIMEFRAMES` | `1h,4h` | `.env.example:24` |
+| `CONFIRM_TIMEFRAME` | `15m` | `.env.example:25` |
+| `CANDLES_LIMIT` | 200 | `.env.example:67` |
+| MTF lookback | 1d,4h,1h | `.env.example:89` |
 
-### 2.3 Глубина истории и тип данных
+### 2.3 Тип данных
 
-- **OHLCV:** fetch_ohlcv с лимитом 200 (`data/exchange_client.py:276-308`)
-- **Paginated fetch:** до 4000 свечей (`fetch_ohlcv_paginated`, `data/exchange_client.py:310-392`)
-- **Дроп последней свечи:** `df.iloc[:-1]` — защита от сигнала на открытой свече (`data/exchange_client.py:305`)
-- **Дополнительно:** ticker (bid/ask/last), tick_size (`fetch_ticker_full`, `get_tick_size`)
-- **Taker buy volume:** только Binance futures (`_fetch_taker_buy_volumes`, `data/exchange_client.py:192-219`)
+- **OHLCV** — основной источник (`exchange_client._fetch_ohlcv_raw:122-190`)
+- **Taker buy volume** — только Binance futures (`exchange_client._fetch_taker_buy_volumes:192-219`)
+- **Funding rate** — отдельный запрос (context/fetcher)
+- **Open Interest** — отдельный запрос (derivatives)
 
-### 2.4 Частота опроса и обработка ошибок
+### 2.4 Частота и обработка ошибок
 
-- **Semaphore(1)** — сериализация всех запросов к ccxt (`data/exchange_client.py:92`)
-- **3 retries** с exponential backoff для fetch_ohlcv (`data/exchange_client.py:126-190`)
-- **Rate limits:** специальная обработка RateLimitExceeded/DDoSProtection с backoff 5×2^attempt
-- **Markets reload:** при ошибке и перед каждым fetch_ohlcv (`_ensure_markets_loaded`, `data/exchange_client.py:100-120`)
-- **Outcome tracker:** после 3 последовательных ошибок — cooldown 10 мин для символа (`scheduler/outcome_tracker.py:31-34`)
+- **Опрос:** каждые 15 мин по крону (`scheduler/tasks.py:28`)
+- **Cooldown дублей:** 45 мин in-memory (`config/settings.py:641`)
+- **Retry OHLCV:** до 3 попыток с exponential backoff (`exchange_client.py:126-190`)
+- **Rate limit:** ccxt `enableRateLimit=True` + Semaphore(1) (`exchange_client.py:53,92`)
+- **Drop последней свечи:** `df.iloc[:-1]` (`exchange_client.py:305`)
+- **Fallback при недоступности символа:** `skip` с логом (`exchange_client.py:136-141`)
+- **Paginated OHLCV:** для больших датасетов (`exchange_client.fetch_ohlcv_paginated:310-392`)
 
 ---
 
-## 3. Система фильтров (конвейер scan_symbol_v2)
+## 3. Система фильтров (порядок в pipeline)
 
-Конвейер в `scheduler/scanner.py:182-1113`. Порядок строгий — последовательные gates.
+### 3.1 Pipeline v2 (scan_symbol_v2) — `scheduler/scanner.py:216-1362`
 
-### 3.1 Таблица фильтров (hard gates)
+Pipeline — **последовательный** (AND). Каждый гейт — **hard block**. Порядок:
 
-| # | Фильтр | Логика | Параметры | Хардкод/Конфиг | path:line |
-|---|--------|--------|-----------|-----------------|-----------|
-| 1 | **Cooldown** | Проверка `_is_cooldown_active()`: delta < effective_cooldown = max(base, tf_minutes × multiplier) | `SIGNAL_COOLDOWN_MINUTES=45`, `SIGNAL_COOLDOWN_TF_MULTIPLIER=2.0` | Конфиг | `scanner.py:96-107` |
-| 2 | **Portfolio Risk** | `active_count >= max_active_signals` или `portfolio_risk >= max_portfolio_risk_pct` | `MAX_ACTIVE_SIGNALS=3`, `MAX_PORTFOLIO_RISK_PCT=3.0` | Конфиг | `scanner.py:212-229` |
-| 3 | **Data Integrity** | OHLCV + IndicatorValues не None | `CANDLES_LIMIT=200` | Конфиг | `scanner.py:232-240` |
-| 4 | **Pattern Engine (hard)** | `ICTSetup.detected == True` | `PATTERN_REQUIRE_BOS_OR_SWEEP=true`, `PATTERN_REQUIRE_OB_OR_FVG=true` | Конфиг | `scanner.py:284-306` |
-| 5 | **Reversal Gates** | sweep → displacement → MSS (all required) | — | Хардкод (логика) | `scanner.py:316-347` |
-| 6 | **Continuation Gates** | BOS + trend alignment (both required) | — | Хардкод (логика) | `scanner.py:349-377` |
-| 7 | **Regime Gate** | range regime → continuation BLOCKED; reversal allowed | `REGIME_TREND_ADX=25`, `REGIME_RANGE_ADX=20`, `REGIME_COMPRESSION_ATR_PCT=20` | Конфиг | `scanner.py:389-402` |
-| 8 | **SL/TP Calculation** | SL и TP не None после trade_engine | Параметры ATR/SL/TP | Конфиг | `scanner.py:423-427` |
-| 9 | **Entry Trigger** | Price near entry zone + spread check | `entry_proximity_pct=0.5`, `max_spread_pct=0.1` | Хардкод (default) | `scanner.py:904-933` |
-| 10 | **Risk Engine** | R:R ≥ 1.5, SL min 0.25%, SL max 5.0%, portfolio gates | `RISK_ENGINE_MIN_RR=1.5`, `RISK_ENGINE_SL_MIN_PCT=0.25`, `RISK_ENGINE_SL_MAX_PCT=5.0` | Конфиг | `scanner.py:869-900` |
-| 11 | **Dedup (cooldown)** | Same direction within cooldown → block. Cross-dir within cooldown/2 → block | `SIGNAL_COOLDOWN_MINUTES=45` | Конфиг | `scanner.py:970-998` |
+| № | Фильтр/Гейт | Логика | Параметры | Откуда | Строка |
+|---|---|---|---|---|---|
+| 0.1 | **Cooldown** | Если `signal_cooldown_minutes` не прошёл → BLOCK | `SIGNAL_COOLDOWN_MINUTES=45`, `SIGNAL_COOLDOWN_TF_MULTIPLIER=2.0` | `.env`, DB `bot_settings` | `scanner.py:235-241` |
+| 0.2 | **Portfolio Risk** | `active_count >= max_active_signals (3)` или `portfolio_risk >= max_portfolio_risk_pct (3%)` → BLOCK | `MAX_ACTIVE_SIGNALS=3`, `MAX_PORTFOLIO_RISK_PCT=3.0` | `.env` | `scanner.py:246-263` |
+| 0.3 | **Data Integrity** | OHLCV/indicators unavailable → BLOCK | — | — | `scanner.py:266-274` |
+| 1 | **Pattern Engine** | Не обнаружен ICT setup (reversal или continuation) → BLOCK | `PATTERN_REQUIRE_BOS_OR_SWEEP=true`, `PATTERN_REQUIRE_OB_OR_FVG=true` | `.env` | `scanner.py:328-336` |
+| 1.4a | **Sweep Required** (reversal) | Нет sweep → BLOCK | — | — | `scanner.py:350-360` |
+| 1.4b | **Displacement Required** (reversal) | Нет displacement при `reversal_require_displacement=true` → BLOCK | `REVERSAL_REQUIRE_DISPLACEMENT=true` | `.env` | `scanner.py:362-370` |
+| 1.4c | **MSS Required** (reversal) | Нет MSS (CHoCH) → BLOCK | — | — | `scanner.py:372-381` |
+| 1.4d | **BOS Required** (continuation) | Нет BOS → BLOCK | — | — | `scanner.py:383-394` |
+| 1.4e | **Entry Zone** (soft) | Если `require_entry_zone=true` и `entry_armed=false` → BLOCK | `REQUIRE_ENTRY_ZONE=false` | `.env` | `scanner.py:397-413` |
+| 1.45 | **HTF Bias** (continuation) | Если continuation против HTF bias и `htf_hard_gate=true` → BLOCK, иначе penalty 0.85x | `HTF_BIAS_V2=true`, `HTF_HARD_GATE=true` | `.env` | `scanner.py:442-572` |
+| 3 | **min_p_tp** | `P(TP) < MIN_P_TP (0.0)` → BLOCK (отключено) | `MIN_P_TP=0.0` | `.env` | `scanner.py:1094-1104` |
+| 4 | **Risk Engine** | R:R < min (1.5), SL вне лимитов (0.25-5.0%), SL vs ATR → BLOCK | `RISK_ENGINE_MIN_RR=1.5`, `RISK_ENGINE_SL_MIN_PCT=0.25`, `RISK_ENGINE_SL_MAX_PCT=5.0` | `.env` | `scanner.py:1113-1141` |
+| 4.5 | **Entry Trigger** | Цена вне entry-зоны hypothesis → BLOCK (только для DecisionEngine) | — | — | `scanner.py:1147-1178` |
+| 6 | **Dedup** | Тот же direction в течение cooldown → BLOCK | `SIGNAL_COOLDOWN_MINUTES=45` | `.env` | `scanner.py:1218-1248` |
 
-### 3.2 Комбинирование фильтров
+### 3.2 Pipeline v2 (core_v2) — `scheduler/core_v2.py:225-337`
 
-- **AND-последовательность:** все gates выполняются строго по порядку. FAIL на любом → "BLOCKED" → return None
-- **Funnel логгирование:** `_FunnelCounter` (`scanner.py:56-80`) трекает проходимость каждого gate
-- **DecisionTrace:** каждый gate сохраняется в БД (`storage/database.py:163-284`), что позволяет пост-анализ воронки
+Альтернативный pipeline: 5 фаз → Market Structure → Liquidity Event → Execution Window → Risk Check → Send.  
+Не вызывается из `run_scan_cycle()` — вероятно резервный/экспериментальный.
 
-### 3.3 Устаревшие / shadow-фильтры (не блокируют)
+### 3.3 Фильтры в SignalEngine (старый pipeline)
 
-| Фильтр | Статус | path:line |
-|--------|--------|-----------|
-| MTF Alignment | analytics (soft) | `scanner.py:803-819` |
-| Context Enrichment | soft (score только для информации) | `scanner.py:822-837` |
-| Market Phase | SHADOW MODE — только логи | `scanner.py:433-463` |
-| Market Thesis | SHADOW MODE — только логи | `scanner.py:470-637` |
-| Hypothesis Engine | SHADOW MODE — только логи | `scanner.py:646-735` |
-| Scenario Engine | SHADOW MODE — только логи | `scanner.py:741-794` |
+Старый pipeline `scan_symbol()` всё ещё существует (`AGENTS.md:46-47`), но не используется — `run_scan_cycle()` вызывает `scan_symbol_v2()`.
+
+### 3.4 Комбинация фильтров
+
+Все гейты — **AND** (последовательные hard gates). Никаких весов или скоринга между гейтами — либо PASS (идём дальше), либо BLOCK (возврат None).  
+Scoring происходит ТОЛЬКО внутри FeatureBuilder/ProbabilityEngine (для ранжирования, не для блокировки).
 
 ---
 
 ## 4. Условия сигнала
 
-### 4.1 Точные условия входа
+### 4.1 Вход — ICT Setup Detection (`strategy/pattern_engine.py:117-213`)
 
-Сигнал генерируется **только** при прохождении PatternEngine + setup-type gates.
+**REVERSAL** (сначала проверяется):
+1. **Sweep** — свип ликвидности (`pattern_engine.py:225-244`)
+2. **Displacement** — свеча с большим телом (информационно, не гейт) (`pattern_engine.py:249-258`)
+3. **MSS (CHoCH)** — Market Structure Shift после sweep (`pattern_engine.py:261-296`)
+4. **Entry zone** — OB или FVG (мягкая проверка, не гейт) (`pattern_engine.py:379-406`)
 
-**For REVERSAL (приоритетный):**
-1. **Sweep** ликвидности (swing high/low с reclaim) — `pattern_engine.py:224-244`
-2. **Displacement** (тело свечи ≥ 1 ATR) — `pattern_engine.py:249-258`
-3. **MSS** (Market Structure Shift = CHoCH после sweep, causality decay) — `pattern_engine.py:260-296`
+**CONTINUATION** (fallback, если reversal не найден):
+1. **Trend required** — не ranging (`pattern_engine.py:326-331`)
+2. **BOS** — Break of Structure (`pattern_engine.py:339-354`)
+3. **Trend alignment** — BOS совпадает с trend (`pattern_engine.py:357-368`)
+4. **Entry zone** — OB или FVG (мягкая проверка)
 
-**For CONTINUATION (fallback):**
-1. Тренд не ranging — `pattern_engine.py:326-331`
-2. **BOS** (Break of Structure) — `pattern_engine.py:334-348`
-3. Trend alignment (BOS направление совпадает с трендом) — `pattern_engine.py:357-368`
+### 4.2 SL/TP — ICT Priority Chain (`strategy/signal_engine.py:181-398`)
 
-**Entry zones (NOT gates — только для info):**
-- OB (Order Block) proximity — `pattern_engine.py:389-397`
-- FVG (Fair Value Gap) — `pattern_engine.py:399-406`
+**SL Priority:**
+1. Order Block (OB.low для BUY, OB.high для SELL + buffer 0.5%)
+2. Fractal/Swing Point
+3. BOS level
+4. ATR fallback (entry ± ATR × 1.5)
 
-### 4.2 Индикаторы
+**TP Priority:**
+1. External Liquidity (EQH/EQL)
+2. Opposing Order Block
+3. Active FVG
+4. Swing structure (противоположный swing)
+5. ATR fallback (entry ± ATR × 3.0)
 
-Индикаторы **НЕ являются gates** в ICT Core pipeline. Они используются только как:
-1. **ML features** в FeatureBuilder (raw values → ProbabilityEngine)
-2. **SL/TP calculation** (ATR)
-3. **Regime detection** (ADX, ATR, Volume)
+**Validation:** SL/TP всегда на правильной стороне от entry.
 
-Список индикаторов (`indicators/engine.py:114-237`):
+### 4.3 Анти-дубли / Cooldown
 
-| Индикатор | Период (по умолч.) | Назначение |
-|-----------|-------------------|------------|
-| EMA fast | 8 | Тренд/ML feature |
-| EMA slow | 21 | Тренд/ML feature |
-| EMA trend | 55 | Тренд/ML feature |
-| RSI | 10 | ML feature |
-| MACD | 8/21/5 | ML feature |
-| ADX | 14 (min 26) | Regime detection + ML feature |
-| ATR | 14 | SL/TP calc + volatility |
-| Supertrend | 10/2.5 | ML feature |
-| Volume SMA | 20 | ML feature |
-
-### 4.3 Подтверждения
-
-- **Мультитаймфрейм:** MTF alignment проверяется (soft, не блокирует) через `check_mtf_alignment()` (`market_structure/structure.py`)
-- **Context:** Fear & Greed, funding rate, news sentiment (soft)
-- **Candle close:** последняя свеча дропается (`df.iloc[:-1]`) — защита от open candle
-- **Entry Trigger:** проверка proximity к entry zone + spread (new pipeline, `strategy/entry_trigger.py`)
-
-### 4.4 Cooldown / Анти-дубль
-
-- **Per `symbol:timeframe`:** in-memory + DB (`scanner.py:96-111`)
-- **Базовый:** `SIGNAL_COOLDOWN_MINUTES=45` мин
-- **С учётом TF:** `max(base, tf_minutes × multiplier)` = для 1h: max(45, 60×2)=120 мин, для 4h: max(45, 240×2)=480 мин
-- **Cross-direction cooldown:** cooldown/2 (22.5 мин) при смене направления
-- **Сброс при рестарте:** in-memory часть сбрасывается
+- **Per `symbol_timeframe`** (`scanner.py:117-132`): проверяется из DB (`bot_settings` таблица)
+- **Базовая длительность:** `SIGNAL_COOLDOWN_MINUTES=45` (`config/settings.py:641`)
+- **TF-множитель:** `SIGNAL_COOLDOWN_TF_MULTIPLIER=2.0` → effective = `max(base, tf_minutes × 2.0)` (`scanner.py:63-66`)
+- **Cross-direction cooldown:** половина от базового (`scanner.py:1241-1246`)
+- **Сброс при рестарте:** in-memory (1.5 bucket) — в DB не сбрасывается? Нет, cooldown ПИШЕТСЯ в DB (`db.set_cooldown`), так что живёт между рестартами.
 
 ---
 
 ## 5. Параметры сигнала
 
-### 5.1 SL/TP Формирование
+### 5.1 Формат Telegram-сообщения
 
-ICT Priority Chain (`strategy/signal_engine.py:152-359`):
-
-**SL (приоритет):**
-1. Order Block (+ buffer 0.5%)
-2. Fractal/Swing Point (+ buffer 0.5%)
-3. BOS level (±0.5% buffer)
-4. ATR fallback (entry ± ATR × 1.5)
-
-**TP (приоритет):**
-1. Opposing Order Block (midpoint)
-2. Active FVG (boundary)
-3. Swing structure (nearest swing high/low)
-4. ATR fallback (entry ± ATR × 3.0)
-
-### 5.2 Position Sizing
-
-Рассчитывается в `risk/engine.py:171-250`:
-
-- **Kelly fraction:** `f = (p × b − q) / b`, capped at 25% (half-Kelly)
-- **Kelly scaling:** `kelly × probability.confidence`
-- **Risk base:** `min(kelly × 100, 1.0%)` → затем масштабируется:
-  - Scenario score adjustment: [0.6, 1.2]
-  - Stability adjustment: [0.7, 1.15]
-  - Volatility adjustment: 0.5 (>4% ATR), 0.75 (>2.5% ATR), 1.0
-  - MSS quality: [0.8, 1.1]
-  - SL distance: 1.1 (<1%), 0.8 (>3%)
-- **Итоговый clamp:** [0.1%, 2.0%]
-
-### 5.3 Формат сообщения в Telegram
-
-Шаблон формируется в `strategy/signal_engine.py:113-149`:
+Формируется в `SignalResult.format_message()` (`signal_engine.py:120-178`):
 
 ```
-BUY — ПОКУПКА
-Инструмент: BTC/USDT
-Таймфрейм: 4H
-Цена входа: <code>65432.10</code>
-🔴 Stop Loss: <code>64800.00</code> (-1.12%)
-🟢 Take Profit: <code>67800.00</code> (+2.89%)
-R/R: 1:2.6
+{🟢/🔴} {BUY/SELL} — {ПОКУПКА/ПРОДАЖА} — BTC/USDT
+HTF Context: STRONG BULLISH (W1✓ D1✓ H4✓)
+Zone: DISCOUNT (fib 0.62)
+Таймфрейм: 1H
+Entry: <code>12345.67</code>
+SL: <code>12200.00</code> (-1.18%)
+TP: <code>12800.00</code> (+3.68%)
+RR: 1:3.1
+Confidence: 68/100
 
-Компоненты: 5
-Качество: высокая | Уверенность: 72.3%
-
-📊 Контекст рынка:
+📊 <b>Контекст рынка:</b>
 ├ Fear & Greed: 45 (Neutral) 😐
 ├ Funding: -0.003% ✅
-├ Long/Short: 0.65 ✅
+├ Long/Short: 1.02 ⚠️
+├ OI: +2.1% ✅
 └ Новости: нейтральные 😐
 
 🔍 Вердикт: CONFIRMED (уверенность 85%)
-  ✅ HTF trend aligned
-  ✅ Volume confirms
+  ✅ Bullish order flow
 ```
 
-HTML escaping обязателен для динамических подстрок (`html.escape()`), иначе Telegram API падает с `BadRequest`.
+### 5.2 Размер позиции
+
+Рассчитывается в `risk/engine.py:98-262`:
+- **Kelly fraction:** `max(0, min((p × b - q) / b, 0.20))` (half-Kelly с cap)
+- **Масштабирование:** confidence модели → scenario score → stability → volatility → MSS quality → SL distance
+- **Базовый риск:** 1.0% (`RISK_ENGINE_BASE_RISK_PCT=1.0`)
+- **Клиппинг:** `[0.1%, 2.0%]` (`config/risk_engine.py:591-593`)
+- **Portfolio constraint:** max 3 открытых сигнала, max 3% суммарного риска
 
 ---
 
 ## 6. Учёт результатов
 
-### 6.1 Что логируется
+### 6.1 Есть — развёрнутая система
 
-| Таблица | Содержимое | path:line |
-|---------|-----------|-----------|
-| `signals` | Каждый отправленный сигнал (SL, TP, score, reasons, execution snapshot) | `storage/database.py:17-55` |
-| `signal_outcomes` | Результат закрытия (HIT_TP/HIT_SL/EXPIRED, PnL%, MFE/MAE) | `storage/database.py:83-96` |
-| `signal_candidates` | Каждый проход evaluate() — pass или fail, все индикаторы | `storage/database.py:98-161` |
-| `decision_traces` | Полная воронка: результат каждого gate, features, config snapshot | `storage/database.py:163-284` |
-| `context_snapshots` | F&G, funding, OI, sentiment на момент сигнала | `storage/database.py:65-81` |
-| `bot_settings` | Cooldown, dynamic_symbols, filter_toggles | `storage/database.py:57-63` |
+| Компонент | Что хранит | Таблица |
+|----------|-----------|--------|
+| `Signal` | Все сигналы (BUY/SELL) | `signals` |
+| `SignalOutcome` | Результат (HIT_TP/HIT_SL/EXPIRED) | `signal_outcomes` |
+| `SignalCandidate` | Каждый прогон (pass/fail) | `signal_candidates` |
+| `DecisionTrace` | Полный трейс каждого прогона | `decision_traces` |
+| `ContextSnapshotModel` | Контекстные снимки | `context_snapshots` |
+| `BotSetting` | Ключ-значение (настройки, коулдауны) | `bot_settings` |
+| `ScenarioMemory` | In-memory статистика сценариев | — |
 
 ### 6.2 Outcome Tracker
 
-- **Фоновый процесс:** `scheduler/outcome_tracker.py:332-338`
-- **Интервал:** 300 секунд (5 мин) — `OUTCOME_CHECK_INTERVAL_SECONDS`
-- **TTL:** 7 дней (`OUTCOME_TTL_DAYS`)
-- **Метод:** ticker + candle high/low для определения TP/SL касания
-- **PnL:** net после commission (0.05% × 2) + slippage (0.05% × 2) + funding (0.01%/8h)
-- **MFE/MAE:** рассчитываются при закрытии
+**Фоновый процесс** (`outcome_tracker.py:350-356`):
+- Проверка каждые 300 секунд (`OUTCOME_CHECK_INTERVAL_SECONDS=300`)
+- TTL 7 дней → EXPIRED
+- **PnL рассчитывается с вычетом:** комиссия (0.05% × 2), проскальзывание (0.05% × 2), funding (0.01%/8h)
+- **MFE/MAE** — рассчитывается и сохраняется
+- **Telegram-уведомление** при закрытии (TP/SL)
+- **ScenarioMemory** — запись исхода для ML
 
-### 6.3 ScenarioMemory
+### 6.3 Статистический анализ
 
-- `strategy/scenario_memory.py` — запоминает ожидаемые параметры и фактические исходы гипотез
-- Используется для обучения ProbabilityEngine (ML) в будущем
-
-### 6.4 Отчёты
-
-- **Ежедневный отчёт:** `analytics/daily_report.py` → сохраняется в `reports/daily/` → отправляется в Telegram
-- **Gate analysis:** `db.get_trace_stats()` — воронка проходимости
-- **Counterfactual:** `db.get_counterfactual()` — что было бы при отключении gate
-
-### 6.5 Критический пробел
-
-**НЕТ автоматического бэктестинга в production-цикле.** Walk-forward и симуляции есть в скриптах (`scripts/walk_forward.py`, `scripts/gate_simulator.py`), но они не интегрированы в основной цикл. ML-модель ProbabilityEngine существует как заглушка (`try: load model; except: rules fallback`) — модель не обучена и не используется.
+- `analytics/performance.py` — метрики WR, PF, Sharpe и т.д.
+- `analytics/gate_funnel.py` — воронка гейтов (какой гейт сколько режет)
+- `analytics/counterfactual.py` — «что если отключить гейт X?»
+- `analytics/calibration.py` — калибровка моделей
+- `analytics/daily_report.py` — ежедневный отчёт в Telegram
 
 ---
 
@@ -332,265 +284,206 @@ HTML escaping обязателен для динамических подстр�
 
 ### 7.1 Look-ahead bias / Repaint
 
-- **`df.iloc[:-1]`** — дроп последней свечи. Это правильная защита от open candle bias.
-- **Sweep detection** использует `lookback=50` и `swing_window=5` — при правильной реализации repaint не должно быть.
-- **MSS causality:** экспоненциальный decay (half-life=3) — корректно.
-- **Risk:** SUPRETREND, MACD и другие индикаторы с лагом не перерисовываются (pandas-ta стандартный).
-- **Потенциальная проблема:** расчет `displacement_atr_ratio` на `current_candle` (`pattern_engine.py:254-258`) может использовать незакрытую свечу, если датасет не был корректно обрезан.
+| Риск | Статус | Комментарий |
+|------|--------|-------------|
+| **Drop последней свечи** | ✅ Исправлено | `df.iloc[:-1]` в `exchange_client.py:305` |
+| **Swing-детекция** | ⚠️ **Частично** | Использует последнюю цену, но BOS/CHoCH определяются по закрытым свечам |
+| **Использование будущих данных в OB/FVG** | ⚠️ **Возможно** | `ob_bos_lookahead=20`, `ob_retest_max_lookahead=30` — смотрят ВПЕРЁД в свечах |
+| **SuperTrend repaint** | ⚠️ | pandas-ta SuperTrend не repaint на закрытых данных, но нужно верифицировать |
+| **Sweep detection** | ⚠️ | Использует `sweep_lookback=50` — корректно, если только по закрытым свечам |
 
-### 7.2 Захардкоженные магические числа
+### 7.2 Магические числа и hardcoded значения
 
-| Число | Где | Проблема |
-|-------|-----|----------|
-| `base=50.0` | `probability_engine.py:136` | Стартовый winrate 50% — hardcoded |
-| `half_life=3.0` | `market_structure/structure.py:74` | Экспоненциальный decay MSS |
-| `capped at 25%` | `risk/engine.py:178` | Kelly cap (half-Kelly) |
-| `volume_factor=1.5` | `config/settings.py:170` | Порог объёма выше SMA |
-| `MIN_RR_THRESHOLD=1.5` | `.env.example:62` | Минимальный R:R |
+| Где | Значение | Проблема |
+|-----|---------|----------|
+| `exchange_client.py:305` | `df.iloc[:-1]` | Захардкожено (разумно) |
+| `scheduler/scanner.py:38-41` | `_TF_MINUTES` словарь | Захардкожен |
+| `strategy/probability_engine.py:340` | clamp [20, 85] | Магические числа |
+| `risk/engine.py:190` | kelly cap 0.20 | Half-Kelly hardcoded |
+| `scheduler/circuit_breaker.py:20-22` | 3 losses, 30 min pause, 60 min window | Hardcoded, не в `.env` |
+| `scheduler/scanner.py:466-477` | htf_bias_penalty = 0.85 | Магическое число |
+| `strategy/probability_engine.py:220-251` | Веса компонент (3.0, 4.0, 1.5...) | Hardcoded rules weights |
+| `strategy/pattern_engine.py:113` | `ob_proximity_pct: float = 2.0` | Можно в `.env` (уже есть `PATTERN_OB_PROXIMITY_PCT`) |
 
-Большинство чисел вынесены в конфиг, но логика их комбинирования (веса, пороги в ProbabilityEngine rules) — **не настраиваема через .env**.
+### 7.3 Проблемы надёжности
 
-### 7.3 Отсутствие бэктеста и метрик
+| Проблема | Серьёзность | Описание |
+|----------|-------------|----------|
+| **Circuit breaker** hardcoded params | Низкая | Параметры не в `.env`, требуют правки кода |
+| **Cooldown** не для cross-direction | Средняя | Cross-direction использует `/2` от cooldown — неконфигурируемо |
+| **Windows asyncio** | Низкая | `WindowsSelectorEventLoopPolicy()` — workaround |
+| **Telegram HTML** | Средняя | Баги с `<` в строках — `html.escape()` (документировано в `AGENTS.md`) |
+| **singleton state** в context | Средняя | Кэши не сбрасываются между тестами (`AGENTS.md:76-78`) |
+| **Outcome tracker race** | Низкая | `SignalOutcome` может дублироваться при быстрых закрытиях |
 
-- **ML-модель не обучена:** `probability_engine.py:83-101` — загружает модель, если файл существует. Файла нет → rules fallback.
-- **Rules fallback** — ~200 строк невалидированных эвристик с hand-tuned весами.
-- **Walk-forward анализ** существует как отдельный скрипт (`scripts/walk_forward.py`), не интегрирован.
-- **Survivorship bias:** нет, данные live с биржи.
-- **Selection bias:** DecisionTrace логирует все кандидаты, включая заблокированные — корректно.
+### 7.4 Отсутствие
 
-### 7.4 Проблемы надёжности
-
-| Проблема | Риск | Комментарий |
-|----------|------|-------------|
-| **Lock-файл** | Защита от дублей | `.trading_bot.lock` с PID — корректно |
-| **Telegram conflict retries** | 5 попыток с backoff | `main.py:138-149` |
-| **Send retries** | 3 попытки, exponential backoff | `bot/notifier.py:95-113` |
-| **Exchange rate limit** | Semaphore(1) + retries | `data/exchange_client.py:92` |
-| **Circuit breaker** | Потери > N подряд → пропуск скана | `scheduler/circuit_breaker.py` |
-| **Windows compat** | `WindowsSelectorEventLoopPolicy()` | `main.py:180` |
-| **Outcome tracker skip** | Пропуск при ошибках fetch | `outcome_tracker.py:192-207` |
-| **Context timeout** | 10s timeout на внешние API | `scanner.py:828-830` |
-| **Logger error sink** | Telegram оповещение об ошибках | `main.py:111-112` |
-
-### 7.5 Дубли сигналов
-
-Система cooldown защищает от дублей, но:
-1. **Только in-memory** для cooldown (сбрасывается при рестарте)
-2. **Dedup gate** проверяет `db.get_last_signal()` — корректно
-3. **Cross-direction cooldown** = cooldown/2 — может пропустить флип
+| Пробел | Критичность |
+|--------|-------------|
+| **Production-бэктеста нет** — backtest engine есть, но нет регулярного walk-forward | Средняя |
+| **Нет стоп-лосса на уровне портфеля** (только суммарный риск) | Низкая |
+| **Нет интеграции с реальным исполнением** — только сигналы | Критическая (для реальной торговли) |
+| **Нет проверки корреляции между одновременно открытыми сигналами** | Средняя |
 
 ---
 
 ## 8. Сводная таблица ВСЕХ настраиваемых параметров
 
-### 8.1 Telegram
+### 8.1 Торговые параметры
 
-| Параметр | Значение по умолч. | Где задан | На что влияет | Оптимизация? |
-|----------|-------------------|-----------|---------------|:---:|
-| TELEGRAM_BOT_TOKEN | — | .env | Авторизация | Нет |
-| TELEGRAM_CHANNEL_ID | — | .env | Канал сигналов | Нет |
-| TELEGRAM_ADMIN_IDS | — | .env | Админ-доступ | Нет |
-| RATE_LIMIT_MAX_RATE | 5 | .env | Telegram throttle | Нет |
-| RATE_LIMIT_TIME_PERIOD | 10 | .env | Telegram throttle | Нет |
-| SEND_RETRIES | 3 | .env | Надёжность отправки | Нет |
-| SIGNAL_BLOCK_NOTIFY | true | .env | Уведомления о блокировках | Да |
+| Параметр | Текущее значение | Файл:строка | Влияет | Оптимизировать? |
+|----------|-----------------|-------------|--------|:---:|
+| `EMA_FAST` | 8 | `config/settings.py:80` | EMA fast period | Да |
+| `EMA_SLOW` | 21 | `config/settings.py:82` | EMA slow period | Да |
+| `EMA_TREND` | 55 | `config/settings.py:84` | EMA trend period | Да |
+| `MIN_EMA_SPREAD_PCT` | 0.20 | `config/settings.py:86` | Мин. разброс EMA | Да |
+| `RSI_PERIOD` | 10 | `config/settings.py:96` | RSI period | Да |
+| `RSI_OVERBOUGHT` | 72 | `config/settings.py:98` | Уровень перекупленности | Да |
+| `RSI_OVERSOLD` | 28 | `config/settings.py:100` | Уровень перепроданности | Да |
+| `RSI_BULL_MIN` | 55 | `config/settings.py:102` | Мин. RSI для бычьей зоны | Да |
+| `RSI_BEAR_MAX` | 45 | `config/settings.py:104` | Макс. RSI для медвежьей зоны | Да |
+| `MACD_FAST` | 8 | `config/settings.py:108` | Быстрая MACD | Да |
+| `MACD_SLOW` | 21 | `config/settings.py:110` | Медленная MACD | Да |
+| `MACD_SIGNAL` | 5 | `config/settings.py:112` | Сигнальная MACD | Да |
+| `ADX_PERIOD` | 14 | `config/settings.py:122` | ADX period | Да |
+| `ADX_MIN` | 26 | `config/settings.py:124` | ADX мин. (тренд/флэт) | Да |
+| `ATR_PERIOD` | 14 | `config/settings.py:136` | ATR period | Да |
+| `ATR_MULTIPLIER_SL` | 1.5 | `config/settings.py:138` | ATR × SL | Да |
+| `ATR_MULTIPLIER_TP` | 3.0 | `config/settings.py:140` | ATR × TP | Да |
+| `SUPERTREND_PERIOD` | 10 | `config/settings.py:164` | SuperTrend period | Да |
+| `SUPERTREND_MULTIPLIER` | 2.5 | `config/settings.py:166` | SuperTrend multiplier | Да |
+| `VOLUME_FACTOR` | 1.5 | `config/settings.py:170` | Объём > SMA × factor | Да |
+| `VOLUME_SMA_PERIOD` | 20 | `config/settings.py:172` | SMA объёма | Да |
+| `CANDLES_LIMIT` | 200 | `config/settings.py:202` | Глубина OHLCV | Да |
+| `MIN_SL_DISTANCE_PCT` | 1.0 | `config/settings.py:148` | Мин. SL от entry | Да |
+| `MAX_SL_DISTANCE_PCT` | 10.0 | `config/settings.py:150` | Макс. SL от entry | Да |
+| `STOP_HUNT_BUFFER_PCT` | 0.5 | `config/settings.py:154` | Буфер за уровнем | Да |
+| `MAX_OB_DISTANCE_PCT` | 3.0 | `config/settings.py:156` | Макс. дист. OB от entry | Да |
+| `MIN_RR_THRESHOLD` | 1.5 | `config/settings.py:152` | Мин. R:R | Да |
 
-### 8.2 Exchange
+### 8.2 Риск-параметры
 
-| Параметр | Значение по умолч. | Где задан | На что влияет | Оптимизация? |
-|----------|-------------------|-----------|---------------|:---:|
-| EXCHANGE | bingx | .env | Выбор биржи | Нет |
-| MARKET_TYPE | swap | .env | Спот/фьючерсы | Нет |
-| USE_TESTNET | false | .env | Тестовый режим | Нет |
+| Параметр | Значение | Файл:строка | Влияет | Опт.? |
+|----------|---------|-------------|--------|:----:|
+| `VOLATILITY_LOW_THRESHOLD` | 0.8 | `config/settings.py:306` | Порог низкой волатильности | Да |
+| `VOLATILITY_HIGH_THRESHOLD` | 6.0 | `config/settings.py:308` | Порог высокой волатильности | Да |
+| `RISK_STRONG_PCT` | 1.0 | `config/settings.py:316` | Риск для strong сигнала | Да |
+| `RISK_MODERATE_PCT` | 0.5 | `config/settings.py:318` | Риск для moderate | Да |
+| `NO_TRADE_MIN_ATR_PCT` | 0.6 | `config/settings.py:324` | Мин. ATR для торговли | Да |
+| `MAX_ACTIVE_SIGNALS` | 3 | `config/settings.py:663` | Макс. открытых сигналов | Да |
+| `MAX_PORTFOLIO_RISK_PCT` | 3.0 | `config/settings.py:665` | Суммарный риск | Да |
+| `RISK_ENGINE_MIN_RR` | 1.5 | `config/settings.py:583` | R:R финальный гейт | Да |
+| `RISK_ENGINE_SL_MIN_PCT` | 0.25 | `config/settings.py:585` | Мин. SL % (hard) | Да |
+| `RISK_ENGINE_SL_MAX_PCT` | 5.0 | `config/settings.py:587` | Макс. SL % (hard) | Да |
+| `RISK_ENGINE_BASE_RISK_PCT` | 1.0 | `config/settings.py:589` | Базовый риск/сделку | Да |
 
-### 8.3 Trading
+### 8.3 Structurы и ликвидность
 
-| Параметр | Значение по умолч. | Где задан | На что влияет | Оптимизация? |
-|----------|-------------------|-----------|---------------|:---:|
-| SYMBOLS | BTC/USDT,ETH/USDT,SOL/USDT | .env | Что сканируем | **Да** |
-| PRIMARY_TIMEFRAMES | 1h,4h | .env | Таймфреймы сканирования | **Да** |
-| CONFIRM_TIMEFRAME | 15m | .env | Подтверждение (отключено) | Да |
-| CANDLES_LIMIT | 200 | .env | Глубина OHLCV | Да |
-| SIGNAL_COOLDOWN_MINUTES | 45 | .env | Анти-дубль | **Да** |
-| SIGNAL_COOLDOWN_TF_MULTIPLIER | 2.0 | .env | Cooldown для TF | **Да** |
-| MAX_ACTIVE_SIGNALS | 3 | .env | Portfolio risk gate | **Да** |
-| MAX_PORTFOLIO_RISK_PCT | 3.0 | .env | Portfolio risk gate | **Да** |
+| Параметр | Значение | Опт.? |
+|----------|---------|:----:|
+| `SWEEP_LOOKBACK` | 50 | Да |
+| `SWEEP_MIN_VOLUME_RATIO` | 1.8 | Да |
+| `SWEEP_MAX_RECLAIM_CANDLES` | 2 | Да |
+| `OB_MIN_DISPLACEMENT_PCT` | 2.5 | Да |
+| `OB_MIN_VOLUME_RATIO` | 1.8 | Да |
+| `OB_MAX_AGE_CANDLES` | 35 | Да |
+| `FVG_MIN_SIZE_PCT` | 0.4 | Да |
+| `DISTANCE_FILTER_MIN_PCT` | 1.2 | Да |
+| `MTF_REQUIRED_ALIGNMENT` | 2 | Да |
+| `STRUCTURE_LOOKBACK` | 50 | Да |
 
-### 8.4 EMA
+### 8.4 ML/Scoring
 
-| Параметр | Значение | Где задан | Оптимизация? |
-|----------|---------|-----------|:---:|
-| EMA_FAST | 8 | .env | **Да** |
-| EMA_SLOW | 21 | .env | **Да** |
-| EMA_TREND | 55 | .env | **Да** |
-| MIN_EMA_SPREAD_PCT | 0.20 | .env | Да |
-| EMA_SLOPE_CHECK | false | .env | Да |
+| Параметр | Значение | Опт.? |
+|----------|---------|:----:|
+| `CONFIDENCE_STRONG_THRESHOLD` | 65 | Да |
+| `CONFIDENCE_MODERATE_THRESHOLD` | 40 | Да |
+| `MIN_SCORE_FOR_SIGNAL` | 2 | Да |
+| `PROBABILITY_MIN_SAMPLES_FOR_ML` | 100 | Да |
+| `MIN_P_TP` | 0.0 (выкл) | Да |
+| `TECH_CONFIDENCE_BLEND` | 0.6 | Да |
+| `MARKET_CONFIDENCE_BLEND` | 0.4 | Да |
+| `HISTORICAL_WR_BLEND` | 0.4 | Да |
 
-### 8.5 RSI
+### 8.5 Filter toggles
 
-| Параметр | Значение | Оптимизация? |
-|----------|---------|:---:|
-| RSI_PERIOD | 10 | **Да** |
-| RSI_OVERBOUGHT | 72 | **Да** |
-| RSI_OVERSOLD | 28 | **Да** |
-| RSI_BULL_MIN | 55 | Да |
-| RSI_BEAR_MAX | 45 | Да |
+| Параметр | Значение | Опт.? |
+|----------|---------|:----:|
+| `ADX_FILTER_ENABLED` | true | Нет (on/off) |
+| `EMA_ALIGNMENT_ENABLED` | true | Нет (on/off) |
+| `TRIGGER_REQUIRED` | true | Нет (on/off) |
+| `CANDLE_CLOSE_ENABLED` | true | Нет (on/off) |
+| `COMPRESSION_ENABLED` | true | Нет (on/off) |
+| `BLOCK_COMPRESSION_REGIME` | true | Нет (on/off) |
+| `HTF_BIAS_V2` | true | **Да** (feature flag) |
+| `PREMIUM_DISCOUNT` | false | **Да** (рекомендовано) |
+| `REQUIRE_ENTRY_ZONE` | false | **Да** |
+| `USE_TESTNET` | false | Нет (on/off) |
 
-### 8.6 MACD
+### 8.6 Расписание
 
-| Параметр | Значение | Оптимизация? |
-|----------|---------|:---:|
-| MACD_FAST | 8 | **Да** |
-| MACD_SLOW | 21 | **Да** |
-| MACD_SIGNAL | 5 | **Да** |
-| MACD_SLOPE_CHECK | false | Да |
+| Параметр | Значение | Опт.? |
+|----------|---------|:----:|
+| `SCAN_MINUTES` | 2,17,32,47 | Да |
+| `SIGNAL_COOLDOWN_MINUTES` | 45 | Да |
+| `SIGNAL_COOLDOWN_TF_MULTIPLIER` | 2.0 | Да |
+| `OUTCOME_CHECK_INTERVAL_SECONDS` | 300 | Да |
 
-### 8.7 ADX/DMI
+### 8.7 Circuit Breaker (hardcoded, не в .env)
 
-| Параметр | Значение | Оптимизация? |
-|----------|---------|:---:|
-| ADX_PERIOD | 14 | **Да** |
-| ADX_MIN | 26 | **Да** (ключевой) |
-| ADX_STRONG | 22 | Да |
-
-### 8.8 ATR / SL / TP / Risk
-
-| Параметр | Значение | Оптимизация? |
-|----------|---------|:---:|
-| ATR_PERIOD | 14 | Да |
-| ATR_MULTIPLIER_SL | 1.5 | **Да** |
-| ATR_MULTIPLIER_TP | 3.0 | **Да** |
-| MIN_RR_THRESHOLD | 1.5 | **Да** |
-| MIN_SL_DISTANCE_PCT | 1.0 | Да |
-| MAX_SL_DISTANCE_PCT | 10.0 | Да |
-| STOP_HUNT_BUFFER_PCT | 0.5 | Да |
-| VOLATILITY_LOW_THRESHOLD | 0.8 | Да |
-| VOLATILITY_HIGH_THRESHOLD | 6.0 | Да |
-| RISK_STRONG_PCT | 1.0 | **Да** |
-| RISK_MODERATE_PCT | 0.5 | Да |
-| MIN_SCORE_FOR_SIGNAL | 2 | **Да** |
-| NO_TRADE_MIN_ATR_PCT | 0.6 | Да |
-| REGIME_TREND_ADX | 25 | **Да** |
-| REGIME_RANGE_ADX | 20 | Да |
-
-### 8.9 Liquidity / Sweep / OB / FVG
-
-| Параметр | Значение | Оптимизация? |
-|----------|---------|:---:|
-| SWEEP_LOOKBACK | 50 | Да |
-| SWEEP_SWING_WINDOW | 5 | Да |
-| SWEEP_MAX_RECLAIM_CANDLES | 2 | **Да** |
-| SWEEP_MIN_VOLUME_RATIO | 1.8 | Да |
-| OB_MIN_DISPLACEMENT_PCT | 2.5 | Да |
-| OB_MIN_DISPLACEMENT_ATR | 1.5 | Да |
-| OB_MIN_VOLUME_RATIO | 1.8 | Да |
-| OB_MAX_AGE_CANDLES | 35 | **Да** |
-| OB_LOOKBACK | 100 | Да |
-| FVG_MIN_SIZE_PCT | 0.4 | Да |
-| FVG_LOOKBACK | 100 | Да |
-
-### 8.10 Scoring Weights
-
-| Параметр | Значение | Оптимизация? |
-|----------|---------|:---:|
-| W_EMA | 10 | **Да** |
-| W_MACD | 10 | **Да** |
-| W_RSI | 5 | **Да** |
-| W_VOLUME | 15 | **Да** |
-| W_ADX | 5 | Да |
-| W_DMI | 5 | Да |
-| W_BOS | 15 | **Да** |
-| W_SWEEP | 10 | **Да** |
-| W_OB | 10 | **Да** |
-| W_BTC | 10 | **Да** |
-| W_FUNDING | 5 | Да |
-| W_OI | 10 | Да |
-| TECH_CONFIDENCE_BLEND | 0.6 | **Да** |
-| MARKET_CONFIDENCE_BLEND | 0.4 | Да |
-| HISTORICAL_WR_BLEND | 0.4 | **Да** |
-
-### 8.11 Filter Toggles
-
-| Параметр | По умолч. | Оптимизация? |
-|----------|----------|:---:|
-| ADX_FILTER_ENABLED | true | Да |
-| EMA_ALIGNMENT_ENABLED | true | Да |
-| TRIGGER_REQUIRED | true | Да |
-| CANDLE_CLOSE_ENABLED | true | Да |
-| MIN_SCORE_ENABLED | true | Да |
-| COMPRESSION_ENABLED | true | Да |
-| BLOCK_COMPRESSION_REGIME | true | **Да** |
-| MTF_ENABLED | true | Да |
-| BTC_GLOBAL_TREND_FILTER | true | **Да** |
-| BTC_CORRELATION_ENABLED | true | Да |
-| ETH_CORRELATION_ENABLED | true | Да |
-| VOLATILITY_FILTER_ENABLED | true | Да |
-| NO_TRADE_ZONES_ENABLED | true | Да |
-| DYNAMIC_RISK_ENABLED | true | Да |
-| NEWS_FILTER_ENABLED | false | Да |
-| CONFIDENCE_V2_ENABLED | true | Да |
+| Параметр | Значение | Где | Опт.? |
+|----------|---------|-----|:----:|
+| `CIRCUIT_BREAKER_LOSS_THRESHOLD` | 3 | `circuit_breaker.py:20` | **Да** (вынести в .env) |
+| `CIRCUIT_BREAKER_PAUSE_MINUTES` | 30 | `circuit_breaker.py:21` | **Да** (вынести в .env) |
+| `CIRCUIT_BREAKER_WINDOW_MINUTES` | 60 | `circuit_breaker.py:22` | **Да** (вынести в .env) |
+| `FUNDING_RATE_8H` | 0.0001 | `outcome_tracker.py:27` | **Да** |
+| `SYMBOL_FETCH_FAIL_THRESHOLD` | 3 | `outcome_tracker.py:31` | **Да** |
+| `SYMBOL_FETCH_COOLDOWN_SECONDS` | 600 | `outcome_tracker.py:32` | **Да** |
 
 ---
 
 ## 9. Вопросы к владельцу
 
-1. **[НЕЯСНО] Сколько времени бот работает в live-режиме?** Насколько репрезентативны данные в БД (signals.db)? Сколько сигналов было сгенерировано, какой winrate?
+### [НЕЯСНО]
 
-2. **[НЕЯСНО] Есть ли у вас файл `models/probability_model.pkl`?** ProbabilityEngine загружает ML-модель, если файл существует. Если да — какая точность на валидации?
+1. **Какой период работы бота в продакшене?** Сколько сигналов уже сгенерировано? Есть ли статистика winrate/performance?
 
-3. **[НЕЯСНО] Какие биржи реально используются?** Конфиг показывает BingX по умолчанию, но Binance API ключи также заданы.
+2. **Какой бэктест проводился?** `AGENTS.md` упоминает A/B тест HTF Bias V2 (90d/1h BTC+ETH), но нет общего бэктеста.
 
-4. **[НЕЯСНО] Есть ли верифицированная статистика winrate по `signal_outcomes`?** Сколько HIT_TP vs HIT_SL vs EXPIRED?
+3. **Бот торгует реально или только сигналит?** Из кода — только сигналы в Telegram. Никаких ордеров на бирже.
 
-5. **[НЕЯСНО] Используются ли скрипты в `scripts/` для оптимизации?** Там есть walk_forward, gate_simulator, sweep_weights — какой-то из них дал результаты, внедрённые в продакшн?
+4. **Какая биржа используется фактически?** `.env.example:11` — `EXCHANGE=bingx`, но ключи BINANCE. 
+   `exchange_client.py:203` — для taker buy volume только Binance. Реально BingX или Binance?
 
-6. **[НЕЯСНО] Какой тип аккаунта Binance/BingX?** Spot, USDT-M futures, Coin-M? MARKET_TYPE=swap предполагает perpetual futures.
+5. **Есть ли `PROBABILITY_MODEL_PATH` (models/probability_model.pkl)?** Если нет — используется rules fallback. Какое качество правил?
 
-7. **[НЕЯСНО] На каких символах реально были сигналы?** .env.example показывает 5 пар, но `get_active_symbols()` динамически расширяется.
+6. **Какие параметры Circuit Breaker оптимальны?** 3 losses → 30 min pause — не менялись? Может быть слишком агрессивно.
 
-8. **[НЕЯСНО] Как работает `risk/dynamic_risk.py`?** Параметр `DYNAMIC_RISK_ENABLED=true`, но я не нашёл его интеграции в `scanner.py`.
+7. **Используется ли `BLOCK_COMPRESSION_REGIME=true`?** В WR 37.7% compression не имеет edge — все compression-сигналы блокируются.
 
-9. **[НЕЯСНО] Есть ли ручной контроль размера позиции?** Risk Engine рассчитывает риск, но не отправляет ордера на биржу (только сигналы в Telegram). Как вы реально исполняете сделки?
+8. **`PREMIUM_DISCOUNT=false`** — из A/B показал PF 1.28 → 0.91. Планируется ли пересмотр после 500+ сделок?
 
-10. **[НЕЯСНО]** Параметр `CONFIRM_TIMEFRAME=15m` указан, но `confirm_tf_enabled` вероятно отключён в пользу ICT-пайплайна. Подтверждение на 15m реально используется?
+9. **Какой `MARKET_TYPE` используется?** swap (perpetual futures) или spot? Влияет на funding cost в трекинге.
+
+10. **`confirm_tf_enabled`** — в `AGENTS.md` написано, что 15m confirmation TF удалён. Но параметр остался в конфиге. Он активен?
 
 ---
 
 ## 10. Рекомендованные следующие шаги
 
-Ранжировано по ожидаемому эффекту / сложности:
+### Топ-5 гипотез по улучшению
 
-### 🔥 Шаг 1. Обучить ML-модель ProbabilityEngine (эффект: высокий, сложность: средняя)
-- Собрать `signal_outcomes` (win/loss) из БД
-- Подготовить датасет: features из `decision_traces` + target (HIT_TP=1, HIT_SL=0)
-- Обучить XGBoost/RandomForest → `models/probability_model.pkl`
-- Сравнить rules fallback vs ML на out-of-sample
-- **Ожидание:** +10-20% accuracy оценки P(TP) → better position sizing
+| # | Гипотеза | Ожидаемый эффект | Сложность | Обоснование |
+|---|----------|-----------------|-----------|-------------|
+| 1 | **ML-модель на historical outcomes** | Высокий (PF +20-40%) | Средняя | Правила в `probability_engine.py` — временные. Нужно накопить 100+ outcomes и обучить XGBoost. Код уже есть (`ml/`, `auto_retrain.py`). |
+| 2 | **Активировать `MIN_P_TP` (0.40+)** | Средний (WR +5-10pp) | Низкая | `MIN_P_TP=0.0` — гейт отключён. Даже 0.40 отсечёт низкокачественные сигналы. Начать с 0.30 и постепенно повышать. |
+| 3 | **Walk-forward оптимизация параметров** | Высокий (PF +15-30%) | Высокая | 50+ параметров, большинство не оптимизированы. Нужен walk-forward на 1-2 года данных. Особенно ADX_MIN, ATR_ множители, EMA периоды. |
+| 4 | **Добавить portfolio correlation check** | Средний (Sharpe +0.2-0.5) | Средняя | Нет проверки, что 3 открытых сигнала — не все по BTC и ETH. Добавить корреляционную матрицу портфеля. |
+| 5 | **Вынести Circuit Breaker в .env** | Низкий (надёжность) | Низкая | Hardcoded параметры `circuit_breaker.py:20-22`. Вынести в конфиг и подобрать через бэктест. |
 
-### 🔥 Шаг 2. Оптимизация cooldown per symbol/timeframe (эффект: высокий, сложность: низкая)
-- Текущий `SIGNAL_COOLDOWN_MINUTES=45` не дифференцирован
-- Для 4h сигналов 45 мин слишком мало (коулдаун должен быть ~480 мин)
-- Для 1h — 120 мин разумно
-- **Рекомендация:** `signal_cooldown_tf_multiplier=2.0` + пересмотр base_minutes
+### Второстепенные улучшения
 
-### 🔥 Шаг 3. Gate removal impact analysis (эффект: средний, сложность: низкая)
-- Использовать `db.get_counterfactual()` для всех gates
-- Определить, какие gates убивают профит (убирают прибыльные сигналы)
-- Особенно: `block_compression_regime`, `adx_filter_enabled`, `mtf_enabled`
-- **Ожидание:** 1-3 gates можно отключить, увеличив количество сигналов без потери WR
-
-### 🔥 Шаг 4. Backtest integration в CI/CD (эффект: средний, сложность: высокая)
-- Интегрировать walk-forward (`scripts/walk_forward.py`) в регулярный pipeline
-- Добавить автоматический прогон при изменении `config/settings.py`
-- Сравнение Sharpe, Profit Factor, Max DD между версиями
-- **Ожидание:** предотвращение регресса при изменениях
-
-### 🔥 Шаг 5. Scenario Engine — включить shadow → live (эффект: средний, сложность: высокая)
-- MarketPhaseEngine + DecisionEngine работают в shadow mode
-- Сравнить качество гипотез с текущим PatternEngine
-- Если DecisionEngine стабильно лучше — переключить как основной
-- **Ожидание:** улучшение отбора setups через narrative-weighted utility
-
----
-
-*Аудит выполнен 2026-07-10. Все ссылки на строки кода валидны для ревизии main.py:188 строк, scanner.py:1150 строк, settings.py ~920 строк.*
+- **Убрать hardcoded penalty 0.85** (`scanner.py:477,493,540,556`) — сделать параметром `.env`
+- **Сделать cross-direction cooldown** конфигурируемым (`scanner.py:1241`, сейчас `/2`)
+- **Добавить stop-loss на уровне портфеля** (максимальный дневной убыток)
+- **Верифицировать look-ahead** в `ob_bos_lookahead=20` и `ob_retest_max_lookahead=30`

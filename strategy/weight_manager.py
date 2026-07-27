@@ -1,15 +1,11 @@
 """
-strategy/weight_manager.py — Weight Manager (stub)
+strategy/weight_manager.py — Weight Manager
 
 Corrects Probability Engine outputs based on cumulative statistics.
 ProbabilityEngine outputs a raw probability → WeightManager adjusts.
 
-DEFERRED: Per-Symbol Weights require 300-500 closed scenarios per symbol.
-Currently a no-op stub that returns evaluations unchanged.
-
-Future flow:
-    ProbabilityEngine.estimate_scenario() → ScenarioEvaluation
-    WeightManager.adjust(evaluation, symbol, regime) → ScenarioEvaluation
+Activation: starts adjusting after 30+ closed scenarios per symbol+type.
+Full confidence after 100+ closed scenarios.
 """
 from __future__ import annotations
 
@@ -26,12 +22,10 @@ class WeightManager:
 
     Does NOT modify the Probability Engine — works as a separate layer.
     Probability outputs assessment → WeightManager corrects.
-
-    Currently a stub — returns evaluations unchanged.
-    Will activate after 300+ closed scenarios per symbol.
     """
 
-    MIN_SCENARIOS_FOR_ADJUSTMENT = 300
+    MIN_SCENARIOS_FOR_ADJUSTMENT = 30
+    FULL_CONFIDENCE_SCENARIOS = 100
 
     def adjust(
         self,
@@ -42,27 +36,50 @@ class WeightManager:
     ) -> ScenarioEvaluation:
         """Adjust evaluation based on historical scenario statistics.
 
-        Currently returns evaluation unchanged (stub).
-        Will adjust probability based on winrate and expectancy
-        when sufficient data is available.
+        Uses winrate and expectancy from ScenarioMemory to correct P(TP).
+        Scaling factor: linearly interpolates between 1.0 (no adjustment)
+        and full adjustment as sample size grows.
         """
         stats = scenario_memory.get_stats(symbol, scenario_name)
 
         if stats is None or stats.closed_count < self.MIN_SCENARIOS_FOR_ADJUSTMENT:
-            # Not enough data — return unchanged
             return evaluation
 
-        # Future: adjust based on stats
-        # adjustment = stats.winrate * stats.avg_rr
-        # evaluation.probability *= adjustment
-        # evaluation.confidence = min(1.0, evaluation.confidence * 1.1)
+        # Calculate adjustment factor
+        wr = stats.winrate
+        expectancy = stats.expectancy  # in R
 
-        logger.debug(
+        # Base adjustment: how much the historical WR differs from 50%
+        # If WR=60% → positive adjustment; if WR=35% → negative adjustment
+        wr_adjustment = (wr - 0.5) * 0.4  # [-0.2, +0.2] range
+
+        # Expectancy adjustment: positive expectancy → boost, negative → penalty
+        exp_adjustment = max(-0.15, min(0.15, expectancy * 0.05))
+
+        # Combined adjustment
+        total_adjustment = wr_adjustment + exp_adjustment
+
+        # Confidence scaling: linear interpolation based on sample size
+        if stats.closed_count >= self.FULL_CONFIDENCE_SCENARIOS:
+            confidence_scale = 1.0
+        else:
+            confidence_scale = (stats.closed_count - self.MIN_SCENARIOS_FOR_ADJUSTMENT) / (
+                self.FULL_CONFIDENCE_SCENARIOS - self.MIN_SCENARIOS_FOR_ADJUSTMENT
+            )
+
+        # Apply scaled adjustment
+        scaled_adjustment = total_adjustment * confidence_scale
+        new_probability = max(0.1, min(0.85, evaluation.probability + scaled_adjustment))
+
+        logger.info(
             f"WeightManager: {symbol} {scenario_name} "
-            f"stats available (n={stats.closed_count}, "
-            f"wr={stats.winrate:.0%}, E={stats.expectancy:.2f}R) "
-            f"— adjustment deferred"
+            f"P(TP) {evaluation.probability:.2f} → {new_probability:.2f} "
+            f"(wr={wr:.0%}, E={expectancy:.2f}R, n={stats.closed_count}, "
+            f"adj={scaled_adjustment:+.3f})"
         )
+
+        evaluation.probability = new_probability
+        evaluation.confidence = min(1.0, evaluation.confidence * (1.0 + 0.1 * confidence_scale))
 
         return evaluation
 

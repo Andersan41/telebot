@@ -81,6 +81,20 @@ class RiskEngine:
         self.max_portfolio_risk_pct = max_portfolio_risk_pct
         self.sl_min_atr_multiplier = sl_min_atr_multiplier
 
+    @classmethod
+    def from_config(cls) -> "RiskEngine":
+        """Create RiskEngine from config.risk_engine settings."""
+        from config.settings import config
+        rc = config.risk_engine
+        return cls(
+            min_rr_ratio=rc.min_rr_ratio,
+            sl_absolute_min_pct=rc.sl_absolute_min_pct,
+            sl_absolute_max_pct=rc.sl_absolute_max_pct,
+            base_risk_pct=rc.base_risk_pct,
+            min_risk_pct=rc.min_risk_pct,
+            max_risk_pct=rc.max_risk_pct,
+        )
+
     def evaluate(
         self,
         features: SetupFeatures,
@@ -249,4 +263,4 @@ class RiskEngine:
 
 
 # Singleton
-risk_engine = RiskEngine()
+risk_engine = RiskEngine.from_config()

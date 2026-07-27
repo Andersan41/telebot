@@ -16,6 +16,7 @@ import pickle
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 from loguru import logger
 
 from strategy.feature_builder import SetupFeatures
@@ -77,11 +78,18 @@ class ProbabilityEngine:
         self.historical_winrate = historical_winrate
         self.model = None
         self.rr_model = None
+        self.isotonic = None
+        self.model_type = "legacy"
         self.feature_names: List[str] = []
         self._load_model()
 
     def _load_model(self) -> None:
-        """Load trained ML model if available."""
+        """Load trained ML model if available.
+
+        Supports two formats:
+          - Legacy: {"classifier": ..., "regressor": ...}
+          - Expected return: {"regressor": ..., "isotonic": ..., "model_type": "expected_return"}
+        """
         if not os.path.exists(self.model_path):
             logger.debug(
                 f"No probability model at {self.model_path} — using rules fallback"
@@ -90,31 +98,56 @@ class ProbabilityEngine:
         try:
             with open(self.model_path, "rb") as f:
                 data = pickle.load(f)
-            self.model = data.get("classifier")
-            self.rr_model = data.get("regressor")
+
+            self.model_type = data.get("model_type", "legacy")
+
+            if self.model_type == "expected_return":
+                # New format: regressor predicts expected return, isotonic calibrates probability
+                self.model = data.get("regressor")
+                self.rr_model = None  # No separate RR model — regressor IS the return model
+                self.isotonic = data.get("isotonic")
+            else:
+                # Legacy format: classifier for P(TP), regressor for expected RR
+                self.model = data.get("classifier")
+                self.rr_model = data.get("regressor")
+                self.isotonic = None
+
             self.feature_names = data.get("feature_names", [])
             logger.info(
-                f"Loaded probability model: {self.model.__class__.__name__} "
+                f"Loaded probability model ({self.model_type}): "
+                f"{self.model.__class__.__name__} "
                 f"({len(self.feature_names)} features)"
             )
         except Exception as e:
             logger.warning(f"Failed to load probability model: {e}")
             self.model = None
 
-    def predict(self, features: SetupFeatures) -> TradeProbability:
+    def predict(
+        self,
+        features: SetupFeatures,
+        symbol: str = "",
+        scenario_name: str = "",
+    ) -> TradeProbability:
         """Predict trade probability from features.
 
         Args:
             features: SetupFeatures from FeatureBuilder
+            symbol: optional symbol for scenario memory lookup
+            scenario_name: optional scenario name for scenario memory lookup
 
         Returns:
             TradeProbability with P(TP), expected RR, profit factor.
         """
         if self.model is not None:
             return self._predict_ml(features)
-        return self._predict_rules(features)
+        return self._predict_rules(features, symbol=symbol, scenario_name=scenario_name)
 
-    def _predict_rules(self, f: SetupFeatures) -> TradeProbability:
+    def _predict_rules(
+        self,
+        f: SetupFeatures,
+        symbol: str = "",
+        scenario_name: str = "",
+    ) -> TradeProbability:
         """Rules-based probability estimation.
 
         This is a TEMPORARY bootstrap model. NOT hand-tuned weights.
@@ -132,8 +165,52 @@ class ProbabilityEngine:
 
         Common: volume, R:R, MTF, session, ATR, context
         """
-        # Base rate
+        # Base rate: prefer scenario_memory stats, fallback to historical, then 50
         base = self.historical_winrate if self.historical_winrate else 50.0
+        if symbol and scenario_name:
+            try:
+                from strategy.scenario_memory import scenario_memory
+                stats = scenario_memory.get_stats(symbol, scenario_name)
+                if stats and stats.closed_count >= 10:
+                    base = stats.winrate * 100.0
+            except Exception:
+                pass
+
+        # ═══ Regime-adaptive adjustment ═══
+        # Different regimes favor different setup types
+        regime_edge = 0.0
+        regime = f.regime if f.regime else ""
+        if regime == "expansion":
+            # Expansion: continuation works better, reversal worse
+            if f.setup_type == "continuation":
+                regime_edge += 2.0
+            elif f.setup_type == "reversal":
+                regime_edge -= 1.5
+        elif regime == "compression":
+            # Compression: breakout (continuation with BOS) works, reversal risky
+            if f.setup_type == "continuation" and f.has_bos:
+                regime_edge += 1.5
+            elif f.setup_type == "reversal":
+                regime_edge -= 1.0
+        elif regime == "trend":
+            # Strong trend: continuation aligned = good, reversal against trend = bad
+            if f.setup_type == "continuation" and f.structure_bos_aligned:
+                regime_edge += 2.5
+            elif f.setup_type == "reversal":
+                regime_edge -= 2.0
+        elif regime == "range":
+            # Range: reversal works better, continuation struggles
+            if f.setup_type == "reversal":
+                regime_edge += 1.5
+            elif f.setup_type == "continuation":
+                regime_edge -= 1.0
+        elif regime == "high_vol":
+            # High volatility: both directions risky, slight penalty
+            regime_edge -= 1.0
+        elif regime == "low_vol":
+            # Low volatility: tight ranges, breakout potential
+            if f.setup_type == "continuation" and f.has_bos:
+                regime_edge += 1.0
 
         # ═══ Setup-type-specific scoring ═══
         component_edge = 0.0
@@ -230,6 +307,7 @@ class ProbabilityEngine:
         winrate = (
             base + component_edge + structure_edge + volume_edge
             + rr_edge + mtf_edge + session_edge + atr_edge + ctx_edge
+            + regime_edge
         )
 
         # ═══ Soft multipliers ═══
@@ -278,7 +356,11 @@ class ProbabilityEngine:
         )
 
     def _predict_ml(self, f: SetupFeatures) -> TradeProbability:
-        """ML-based prediction from trained model."""
+        """ML-based prediction from trained model.
+
+        Legacy mode: classifier → P(TP), regressor → expected RR
+        Expected return mode: regressor → expected return, isotonic → P(TP)
+        """
         # OB mitigation hard gate (applied before ML)
         if f.ob_state_multiplier <= 0.0:
             return TradeProbability(
@@ -298,18 +380,45 @@ class ProbabilityEngine:
             if self.feature_names:
                 X = X.reindex(columns=self.feature_names, fill_value=0)
 
-            # Classifier: P(TP)
-            p_tp = float(self.model.predict_proba(X)[0][1])
+            if getattr(self, "model_type", "legacy") == "expected_return":
+                # Expected return mode: regressor predicts expected return
+                raw_return = float(self.model.predict(X)[0])
 
-            # Apply HTF bias penalty and OB mitigation
-            multiplier = f.htf_bias_penalty * f.ob_state_multiplier
-            p_tp = min(0.85, p_tp * multiplier)
+                # Convert to P(TP) via isotonic calibration
+                if self.isotonic is not None:
+                    # Isotonic expects a probability-like input; use sigmoid
+                    proba_input = 1.0 / (1.0 + np.exp(-raw_return))
+                    p_tp = float(self.isotonic.predict([proba_input])[0])
+                else:
+                    # Fallback: sigmoid normalization
+                    p_tp = 1.0 / (1.0 + np.exp(-raw_return))
 
-            # Regressor: expected RR
-            expected_rr = f.rr_ratio
-            if self.rr_model is not None:
-                expected_rr = float(self.rr_model.predict(X)[0])
-                expected_rr = max(0.1, min(expected_rr, 10.0))
+                # Clamp
+                p_tp = max(0.05, min(0.85, p_tp))
+
+                # Expected RR from features (structural TP/SL already baked in)
+                expected_rr = f.rr_ratio if f.rr_ratio > 0 else 1.0
+
+                # Apply HTF bias penalty and OB mitigation
+                multiplier = f.htf_bias_penalty * f.ob_state_multiplier
+                p_tp = min(0.85, p_tp * multiplier)
+
+                model_type = f"expected_return({self.model.__class__.__name__})"
+            else:
+                # Legacy mode: classifier for P(TP)
+                p_tp = float(self.model.predict_proba(X)[0][1])
+
+                # Apply HTF bias penalty and OB mitigation
+                multiplier = f.htf_bias_penalty * f.ob_state_multiplier
+                p_tp = min(0.85, p_tp * multiplier)
+
+                # Regressor: expected RR
+                expected_rr = f.rr_ratio
+                if self.rr_model is not None:
+                    expected_rr = float(self.rr_model.predict(X)[0])
+                    expected_rr = max(0.1, min(expected_rr, 10.0))
+
+                model_type = self.model.__class__.__name__
 
             # Profit factor
             q = 1 - p_tp
@@ -327,8 +436,8 @@ class ProbabilityEngine:
                 p_tp=round(p_tp, 4),
                 expected_rr=round(expected_rr, 2),
                 profit_factor=round(profit_factor, 2),
-                confidence=0.80,  # capped from 0.85 → 0.80 (confidence_cap)
-                model_type=self.model.__class__.__name__,
+                confidence=0.80,
+                model_type=model_type,
                 feature_importance=importances,
             )
         except Exception as e:

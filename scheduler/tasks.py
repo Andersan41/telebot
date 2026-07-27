@@ -20,6 +20,7 @@ class TaskScheduler:
 
         1. Сканирование каждые 15 минут
         2. Ежедневный отчёт в 00:05 UTC
+        3. Переобучение ML модели в 03:00 UTC
         """
         sc = config.scheduler
         self._scheduler.add_job(
@@ -41,7 +42,17 @@ class TaskScheduler:
             coalesce=True,
         )
 
-        logger.info("Scheduler configured: scanning every 15 min, daily report at 00:05 UTC")
+        # Daily ML retrain at 03:00 UTC
+        self._scheduler.add_job(
+            self._ml_retrain_job,
+            CronTrigger(hour=3, minute=0),
+            id="ml_retrain",
+            name="ML model retrain",
+            max_instances=1,
+            coalesce=True,
+        )
+
+        logger.info("Scheduler configured: scanning every 15 min, daily report at 00:05 UTC, ML retrain at 03:00 UTC")
 
     async def _scan_job(self, timeframes: list[str] | None = None):
         logger.info(f"Scheduler triggered: starting scan (tfs={timeframes})")
@@ -77,6 +88,18 @@ class TaskScheduler:
                 logger.info("Daily report summary sent to Telegram")
         except Exception as e:
             logger.error(f"Daily report job error: {e}", exc_info=True)
+
+    async def _ml_retrain_job(self):
+        logger.info("Scheduler triggered: ML model retrain")
+        try:
+            from ml.auto_retrain import retrain_ml_model
+            result = await retrain_ml_model()
+            if result:
+                logger.info("ML model retrained successfully")
+            else:
+                logger.info("ML retrain skipped (insufficient data)")
+        except Exception as e:
+            logger.error(f"ML retrain job error: {e}", exc_info=True)
 
     def start(self):
         self._scheduler.start()
