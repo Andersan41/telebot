@@ -23,6 +23,30 @@ OUTCOME_CHECK_INTERVAL_SECONDS = int(
 )
 OUTCOME_TTL_DAYS = int(os.getenv("OUTCOME_TTL_DAYS", "7"))
 
+# Time Stop: max hold duration (TZ §8.6)
+# Default 2880 min = 48h; overridden per-TF below
+TIME_STOP_MAX_MINUTES = int(os.getenv("TIME_STOP_MAX_MINUTES", "2880"))
+
+# Per-timeframe time stop: ~20 bars on the entry TF
+_TIME_STOP_BY_TF = {
+    "1m": 20,       # 20 min
+    "3m": 60,       # 1h
+    "5m": 100,      # ~1.7h (TZ original)
+    "15m": 300,     # 5h
+    "30m": 600,     # 10h
+    "1h": 1200,     # 20h
+    "2h": 2400,     # 40h (~1.7 days)
+    "4h": 5760,     # 96h (~4 days)
+    "6h": 8640,     # 6 days
+    "12h": 17280,   # 12 days
+    "1d": 28800,    # 20 days
+}
+
+
+def _get_time_stop_minutes(timeframe: str) -> int:
+    """Get time stop limit for a given timeframe (20 bars equivalent)."""
+    return _TIME_STOP_BY_TF.get(timeframe, TIME_STOP_MAX_MINUTES)
+
 # Funding rate estimate for perpetuals (default 0.01% per 8h)
 FUNDING_RATE_8H = float(os.getenv("FUNDING_RATE_8H", "0.0001"))
 
@@ -33,9 +57,53 @@ SYMBOL_FETCH_COOLDOWN_SECONDS = 600  # 10 min cooldown
 _symbol_fail_count: dict[str, int] = {}
 _symbol_cooldown_until: dict[str, datetime] = {}
 
+# ── Position State (TZ §8) ─────────────────────────────────────────────
+# Module-level state for position management (breakeven, trailing, partial close).
+# Persisted in-memory; resets on restart. For full persistence, use database.
+from risk.position_manager import (
+    ManagedPosition,
+    check_breakeven,
+    check_partial_closes,
+    check_sweep_breach,
+    apply_partial_close,
+    calculate_trailing_stop,
+    manage_position,
+    BREAKEVEN_RR_TRIGGER,
+)
+from risk.metrics import trade_metrics
+from storage.position_store import (
+    save_position,
+    load_open_positions,
+    update_position_state,
+    close_position,
+    get_position_id,
+)
+_position_state: dict[str, ManagedPosition] = {}  # key = signal.id
+
+
+async def _calc_atr_for_signal(signal, period: int = 14) -> float:
+    """Calculate ATR for a signal's symbol/timeframe."""
+    import pandas as pd
+
+    try:
+        candle_df = await exchange_client.fetch_ohlcv(signal.symbol, signal.timeframe, limit=period + 10)
+        if candle_df is None or len(candle_df) < period + 1:
+            return 0.0
+        high = candle_df["high"].astype(float)
+        low = candle_df["low"].astype(float)
+        close = candle_df["close"].astype(float)
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return float(tr.iloc[-period:].mean())
+    except Exception:
+        return 0.0
+
 
 async def _send_close_notification(
-    signal, status: str, current_price: float, net_pnl: float
+    signal, status: str, current_price: float, net_pnl: float,
+    actual_sl: float = None, actual_tp: float = None,
 ) -> None:
     """Отправить уведомление в Telegram о закрытии сделки (TP/SL)."""
     if not config.telegram.channel_id:
@@ -45,10 +113,20 @@ async def _send_close_notification(
         from telegram.constants import ParseMode
 
         bot = get_bot()
-        emoji = "✅" if status == "HIT_TP" else "🛑"
-        action = "Тейк Профит" if status == "HIT_TP" else "Стоп Лосс"
+        _STATUS_LABELS = {
+            "HIT_TP": ("✅", "Тейк Профит"),
+            "HIT_SL": ("🛑", "Стоп Лосс"),
+            "TIME_STOP": ("⏰", "Тайм Стоп"),
+            "FLIP_BIAS": ("🔄", "Смена Тренда"),
+            "SWEEP_BREACH": ("💥", "Пробой Уровня"),
+        }
+        emoji, action = _STATUS_LABELS.get(status, ("🛑", status))
         pnl_sign = "+" if net_pnl >= 0 else ""
         pnl_cls = "green" if net_pnl >= 0 else "red"
+
+        # Use actual SL/TP from position state if available
+        sl_val = actual_sl if actual_sl is not None else signal.sl
+        tp_val = actual_tp if actual_tp is not None else signal.tp
 
         text = (
             f"{emoji} <b>Сделка закрыта — {action}</b>\n\n"
@@ -237,15 +315,155 @@ async def check_open_outcomes() -> None:
         except Exception:
             pass
 
+        # ── Position Management (TZ §8) ──────────────────────────────
+        # Create or retrieve ManagedPosition for this signal
+        sig_id = str(signal.id)
+        if sig_id not in _position_state:
+            _position_state[sig_id] = ManagedPosition(
+                symbol=signal.symbol,
+                direction=signal.signal_type,
+                entry_price=signal.close_price,
+                stop_loss=signal.sl or signal.close_price,
+                take_profit=signal.tp,
+                entry_time=signal.created_at.replace(tzinfo=timezone.utc),
+            )
+            # Persist new position to DB
+            try:
+                await save_position(_position_state[sig_id])
+            except Exception as e:
+                logger.debug(f"Failed to save position to DB: {e}")
+        pos = _position_state[sig_id]
+
+        # Fetch ATR for trailing stop calculation
+        atr = 0.0
+        try:
+            atr = await _calc_atr_for_signal(signal)
+        except Exception:
+            pass
+
+        # Detect last BOS for Flip Bias check
+        last_bos_type = None
+        last_bos_timestamp = None
+        try:
+            from market_structure.structure import analyze_structure
+            bos_df = await exchange_client.fetch_ohlcv(signal.symbol, signal.timeframe, limit=50)
+            if bos_df is not None and len(bos_df) >= 10:
+                struct = analyze_structure(bos_df, lookback=50)
+                if struct and struct.last_bos:
+                    last_bos_type = struct.last_bos.type
+                    last_bos_timestamp = struct.last_bos.timestamp
+                    # Convert int timestamp to datetime if needed
+                    if isinstance(last_bos_timestamp, (int, float)):
+                        last_bos_timestamp = datetime.fromtimestamp(last_bos_timestamp, tz=timezone.utc)
+                    elif last_bos_timestamp and hasattr(last_bos_timestamp, 'tzinfo') and last_bos_timestamp.tzinfo is None:
+                        last_bos_timestamp = last_bos_timestamp.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+
+        # Run position management checks
+        mgmt = manage_position(
+            pos,
+            candle_high=candle_high,
+            candle_low=candle_low,
+            candle_close=current_price,
+            atr=atr,
+            current_time=now,
+            last_bos_type=last_bos_type,
+            last_bos_timestamp=last_bos_timestamp,
+        )
+
+        # Handle position management actions
+        if mgmt["close"]:
+            reason = mgmt["reason"]
+            gross_pnl, net_pnl = _calculate_net_pnl(
+                signal.signal_type, signal.close_price, current_price,
+                signal.created_at.replace(tzinfo=timezone.utc), now,
+            )
+            mfe_pct, mae_pct = _calculate_excursion(
+                signal.signal_type, signal.close_price, candle_high, candle_low,
+            )
+            await db.close_outcome(outcome.id, reason, current_price, net_pnl)
+            await db.update_signal_excursion(signal.id, mfe_pct, mae_pct)
+
+            # Record in metrics
+            trade_metrics.record_trade(
+                entry_price=signal.close_price,
+                exit_price=current_price,
+                exit_reason=reason,
+                direction=signal.signal_type,
+            )
+
+            # Update position DB
+            pos_id = await get_position_id(pos)
+            await close_position(pos_id, current_price, reason)
+
+            try:
+                await db.update_candidate_outcome_by_signal(signal.id, reason, net_pnl)
+            except Exception:
+                pass
+            try:
+                from storage.database import DecisionTrace
+                from sqlalchemy import select
+                async with db._session_factory() as session:
+                    result = await session.execute(
+                        select(DecisionTrace).where(DecisionTrace.signal_id == signal.id)
+                    )
+                    trace_row = result.scalar_one_or_none()
+                    if trace_row:
+                        trace_row.outcome = reason
+                        trace_row.pnl_pct = net_pnl
+                        await session.commit()
+                        _record_hypothesis_outcome(
+                            trace_row, signal, reason, net_pnl,
+                            mfe_pct, mae_pct, hold_bars,
+                        )
+            except Exception:
+                pass
+            logger.info(
+                f"Outcome RESOLVED: {signal.symbol} {signal.signal_type} -> {reason} "
+                f"at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
+                f"(entry={signal.close_price}, SL={pos.stop_loss:.6f}, TP={signal.tp})"
+            )
+            await _send_close_notification(signal, reason, current_price, net_pnl,
+                                           actual_sl=pos.stop_loss)
+            from risk.daily_limits import daily_limits
+            daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0))
+            _position_state.pop(sig_id, None)
+            continue
+
+        # Update SL if breakeven or trailing moved it
+        if mgmt["new_sl"] is not None:
+            pos.stop_loss = mgmt["new_sl"]
+            # Persist state change
+            pos_id = await get_position_id(pos)
+            await update_position_state(pos_id, stop_loss=mgmt["new_sl"])
+            logger.debug(
+                f"SL updated for {signal.symbol}: {mgmt['new_sl']:.4f} "
+                f"(breakeven={mgmt['breakeven']}, trailing={mgmt['trailing']})"
+            )
+
+        # Persist partial close state
+        if mgmt["partial_closes"]:
+            pos_id = await get_position_id(pos)
+            await update_position_state(
+                pos_id,
+                remaining_percent=pos.remaining_percent,
+                completed_targets=pos.completed_targets,
+                breakeven_moved=pos.breakeven_moved,
+                trailing_active=pos.trailing_active,
+            )
+
         hit_tp = (
             signal.signal_type == "BUY" and signal.tp and candle_high >= signal.tp
         ) or (
             signal.signal_type == "SELL" and signal.tp and candle_low <= signal.tp
         )
+        # Use actual SL from position state (may have been moved by BE/trailing)
+        actual_sl = pos.stop_loss
         hit_sl = (
-            signal.signal_type == "BUY" and signal.sl and candle_low <= signal.sl
+            signal.signal_type == "BUY" and actual_sl and candle_low <= actual_sl
         ) or (
-            signal.signal_type == "SELL" and signal.sl and candle_high >= signal.sl
+            signal.signal_type == "SELL" and actual_sl and candle_high >= actual_sl
         )
         # Calculate hold bars for ScenarioMemory
         hold_bars = int((now - signal.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60 / max(1, {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440}.get(signal.timeframe, 60)))
@@ -294,11 +512,14 @@ async def check_open_outcomes() -> None:
                 f"(entry={signal.close_price}, SL={signal.sl}, TP={signal.tp})"
             )
             await _send_close_notification(signal, "HIT_TP", current_price, net_pnl)
+            # Record daily limits
+            from risk.daily_limits import daily_limits
+            daily_limits.record_trade_closed(net_pnl, was_loss=False)
         elif hit_sl:
-            # Use SL price as close if candle hit it (better fill estimate)
-            close_price = signal.sl if (
-                (signal.signal_type == "BUY" and candle_low <= signal.sl) or
-                (signal.signal_type == "SELL" and candle_high >= signal.sl)
+            # Use actual SL price as close (may have been moved by BE/trailing)
+            close_price = actual_sl if (
+                (signal.signal_type == "BUY" and candle_low <= actual_sl) or
+                (signal.signal_type == "SELL" and candle_high >= actual_sl)
             ) else current_price
             gross_pnl, net_pnl = _calculate_net_pnl(
                 signal.signal_type, signal.close_price, close_price,
@@ -336,15 +557,20 @@ async def check_open_outcomes() -> None:
             logger.info(
                 f"Outcome RESOLVED: {signal.symbol} {signal.signal_type} -> HIT_SL "
                 f"at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
-                f"(entry={signal.close_price}, SL={signal.sl}, TP={signal.tp})"
+                f"(entry={signal.close_price}, SL={actual_sl:.6f}, TP={signal.tp})"
             )
-            await _send_close_notification(signal, "HIT_SL", current_price, net_pnl)
+            await _send_close_notification(signal, "HIT_SL", current_price, net_pnl,
+                                           actual_sl=actual_sl)
+            # Record daily limits
+            from risk.daily_limits import daily_limits
+            daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0))
         else:
+            # Time Stop (TZ §8.6) — PAUSED
             await db.touch_outcome_checked(outcome.id)
             logger.debug(
-                f"Outcome still open: signal_id={signal.id} {signal.symbol} "
-                f"{signal.signal_type} price={current_price:.4f} SL={signal.sl:.4f} TP={signal.tp:.4f}"
-            )
+                    f"Outcome still open: signal_id={signal.id} {signal.symbol} "
+                    f"{signal.signal_type} price={current_price:.4f} SL={signal.sl:.4f} TP={signal.tp:.4f}"
+                )
 
 
 async def outcome_tracker_loop() -> None:

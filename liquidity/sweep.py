@@ -43,12 +43,63 @@ class SweepEvent:
     displacement_after: float = 0.0
     delta_aligned: bool = False
     candle_index: int = 0
+    pool_age_bars: int = 0  # age of the pool at sweep time (for false filter)
+    atr: float = 0.0  # ATR at sweep time (for false filter)
 
     @property
     def is_valid(self) -> bool:
-        min_vol = getattr(config, "liquidity_sweep_min_volume_ratio", 1.5)
+        """Sweep validity: TZ §5.2 volume is OPTIONAL (enhancement, not required)."""
         max_reclaim = getattr(config, "liquidity_sweep_max_reclaim_candles", 3)
-        return self.volume_ratio > min_vol and self.reclaim_candles <= max_reclaim
+        return self.reclaim_candles <= max_reclaim
+
+    def passes_false_sweep_filters(
+        self,
+        atr: float = 0.0,
+        pool_age_bars: int = 0,
+    ) -> tuple[bool, str]:
+        """Check false sweep filters per TZ §5.3.
+
+        Args:
+            atr: current ATR value for body-beyond-level check
+            pool_age_bars: age of the pool in bars
+
+        Returns:
+            (passes, reason) — True if sweep is NOT a false positive
+        """
+        from config.settings import config as _cfg
+        liq = _cfg.liquidity
+
+        # max_body_beyond_level: % of ATR
+        if atr > 0:
+            max_body = atr * liq.sweep_max_body_beyond_level
+            body_size = abs(self.sweep_high - self.sweep_low)
+            wick_beyond = max(0, self.sweep_high - self.swept_level) if self.type == "bearish" else max(0, self.swept_level - self.sweep_low)
+            if wick_beyond > max_body:
+                return False, f"body beyond level {wick_beyond:.4f} > {max_body:.4f}"
+
+        # min_wick_beyond_level: % of price
+        if self.swept_level > 0:
+            wick_pct = 0.0
+            if self.type == "bearish":
+                wick_pct = max(0, self.sweep_high - self.swept_level) / self.swept_level * 100
+            else:
+                wick_pct = max(0, self.swept_level - self.sweep_low) / self.swept_level * 100
+            if wick_pct < liq.sweep_min_wick_beyond_level:
+                return False, f"wick beyond too small {wick_pct:.3f}% < {liq.sweep_min_wick_beyond_level}%"
+
+        # min_body_size: % of price
+        if self.swept_level > 0:
+            body_pct = abs(
+                float(self.sweep_high) - float(self.sweep_low)
+            ) / self.swept_level * 100
+            if body_pct < liq.sweep_min_body_size:
+                return False, f"body too small {body_pct:.3f}% < {liq.sweep_min_body_size}%"
+
+        # max_pool_age_bars
+        if pool_age_bars > liq.sweep_max_pool_age_bars:
+            return False, f"pool too old {pool_age_bars} > {liq.sweep_max_pool_age_bars}"
+
+        return True, ""
 
     @property
     def strength(self) -> float:
@@ -73,7 +124,7 @@ class SweepEvent:
 def detect_sweeps(
     df: pd.DataFrame,
     lookback: int = 50,
-    swing_window: int = 5,
+    swing_window: int = 2,
 ) -> list[SweepEvent]:
     """
     Detect liquidity sweeps in OHLCV data.
@@ -98,16 +149,18 @@ def detect_sweeps(
     swing_highs = _find_swing_highs(data, swing_window)
     swing_lows = _find_swing_lows(data, swing_window)
 
-    for i in range(len(data) - 1):
+    # TZ §5.2: 1-candle sweep detection
+    # Bearish: High[current] > Pool_Level AND Close[current] < Pool_Level
+    # Bullish: Low[current] < Pool_Level AND Close[current] > Pool_Level
+    for i in range(len(data)):
         current = data.iloc[i]
-        next_candle = data.iloc[i + 1]
 
         ts = _to_datetime(data.index[i])
 
         for swing_high in swing_highs:
             if swing_high["index"] >= i:
                 continue
-            if current["high"] > swing_high["price"] and next_candle["close"] < swing_high["price"]:
+            if current["high"] > swing_high["price"] and current["close"] < swing_high["price"]:
                 volume_ratio = _calc_volume_ratio(data, i)
                 reclaim = _count_candles_to_reclaim_bearish(data, i, swing_high["price"])
                 wick_body = _calc_wick_body_ratio(data, i)
@@ -131,7 +184,7 @@ def detect_sweeps(
         for swing_low in swing_lows:
             if swing_low["index"] >= i:
                 continue
-            if current["low"] < swing_low["price"] and next_candle["close"] > swing_low["price"]:
+            if current["low"] < swing_low["price"] and current["close"] > swing_low["price"]:
                 volume_ratio = _calc_volume_ratio(data, i)
                 reclaim = _count_candles_to_reclaim_bullish(data, i, swing_low["price"])
                 wick_body = _calc_wick_body_ratio(data, i)
@@ -156,22 +209,38 @@ def detect_sweeps(
 
 
 def _find_swing_highs(df: pd.DataFrame, window: int) -> list[dict]:
-    """Find swing highs (local maxima)."""
+    """Find swing highs using TZ §4.1 strict 2-neighbor formula.
+
+    High[i] is swing high iff:
+      High[i-2] < High[i] AND High[i-1] < High[i] AND
+      High[i+1] < High[i] AND High[i+2] < High[i]
+    """
     highs = []
     for i in range(window, len(df) - window):
-        high_window = df["high"].iloc[i - window: i + window + 1]
-        if df["high"].iloc[i] == high_window.max():
-            highs.append({"index": i, "price": float(df["high"].iloc[i])})
+        h = df["high"].iloc[i]
+        if (df["high"].iloc[i - 2] < h and
+            df["high"].iloc[i - 1] < h and
+            df["high"].iloc[i + 1] < h and
+            df["high"].iloc[i + 2] < h):
+            highs.append({"index": i, "price": float(h)})
     return highs
 
 
 def _find_swing_lows(df: pd.DataFrame, window: int) -> list[dict]:
-    """Find swing lows (local minima)."""
+    """Find swing lows using TZ §4.1 strict 2-neighbor formula.
+
+    Low[i] is swing low iff:
+      Low[i-2] > Low[i] AND Low[i-1] > Low[i] AND
+      Low[i+1] > Low[i] AND Low[i+2] > Low[i]
+    """
     lows = []
     for i in range(window, len(df) - window):
-        low_window = df["low"].iloc[i - window: i + window + 1]
-        if df["low"].iloc[i] == low_window.min():
-            lows.append({"index": i, "price": float(df["low"].iloc[i])})
+        l = df["low"].iloc[i]
+        if (df["low"].iloc[i - 2] > l and
+            df["low"].iloc[i - 1] > l and
+            df["low"].iloc[i + 1] > l and
+            df["low"].iloc[i + 2] > l):
+            lows.append({"index": i, "price": float(l)})
     return lows
 
 
@@ -246,6 +315,9 @@ def _check_delta_aligned(df: pd.DataFrame, sweep_index: int, sweep_type: str) ->
 
 def _to_datetime(idx) -> datetime:
     """Convert index value to datetime."""
+    if isinstance(idx, (int, float)):
+        from datetime import timezone as _tz
+        return datetime.fromtimestamp(idx, tz=_tz.utc)
     if hasattr(idx, "to_pydatetime"):
         ts = idx.to_pydatetime()
     else:
