@@ -6,6 +6,7 @@ const WS_URL = `ws://${location.host}/ws`;
 let socket = null;
 let priceChart = null;
 let reconnectTimer = null;
+let currentTimeframe = null;
 
 // ── Init ────────────────────────────────────────────
 function connect() {
@@ -30,6 +31,7 @@ function connect() {
       const data = JSON.parse(e.data);
       if (data.type === 'update') renderDashboard(data);
       if (data.type === 'open_trades') renderOpenTrades(data.trades || []);
+      if (data.type === 'init') renderTimeframePicker(data);
     } catch (err) {
       console.error('Parse error:', err);
     }
@@ -519,61 +521,36 @@ function hideLoader() {
   document.getElementById('loadingOverlay')?.classList.remove('visible');
 }
 
-// ── Filters ─────────────────────────────────────────
-async function loadFilters() {
-  try {
-    const res = await fetch('/api/filters');
-    const data = await res.json();
-    renderFilters(data.filters || []);
-  } catch (err) {
-    console.error('Failed to load filters:', err);
-  }
-}
-
-function renderFilters(filters) {
-  const container = document.getElementById('filterList');
+// ── Timeframe Picker ─────────────────────────────
+function renderTimeframePicker(data) {
+  const timeframes = data.timeframes || ['1h', '4h'];
+  currentTimeframe = data.currentTimeframe || timeframes[0];
+  const container = document.getElementById('tfList');
   if (!container) return;
 
-  container.innerHTML = filters.map(f => `
-    <div class="filter-item">
-      <span class="filter-label">${escapeHtml(f.label)}</span>
-      <label class="filter-switch">
-        <input type="checkbox" data-filter-key="${f.key}" ${f.enabled ? 'checked' : ''} />
-        <span class="slider"></span>
-      </label>
-      <span class="state ${f.enabled ? 'on' : 'off'}">${f.enabled ? 'ON' : 'OFF'}</span>
-    </div>
-  `).join('');
+  container.innerHTML = timeframes.map(tf => {
+    const active = tf === currentTimeframe ? ' active' : '';
+    return `<button class="tf-btn${active}" data-tf="${tf}">${tf.toUpperCase()}</button>`;
+  }).join('');
 
-  container.querySelectorAll('input[type="checkbox"]').forEach(input => {
-    input.addEventListener('change', (e) => {
-      const key = e.target.dataset.filterKey;
-      const enabled = e.target.checked;
-      toggleFilter(key, enabled, e.target);
-    });
+  container.querySelectorAll('.tf-btn').forEach(btn => {
+    btn.addEventListener('click', () => setTimeframe(btn.dataset.tf));
   });
+
+  setText('chartTfLabel', currentTimeframe.toUpperCase());
 }
 
-async function toggleFilter(key, enabled, inputEl) {
-  const stateEl = inputEl.closest('.filter-item')?.querySelector('.state');
-  if (stateEl) {
-    stateEl.textContent = enabled ? 'ON' : 'OFF';
-    stateEl.className = `state ${enabled ? 'on' : 'off'}`;
-  }
+function setTimeframe(tf) {
+  if (tf === currentTimeframe) return;
+  currentTimeframe = tf;
 
-  try {
-    await fetch('/api/filters', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, enabled }),
-    });
-  } catch (err) {
-    console.error('Failed to toggle filter:', err);
-    inputEl.checked = !enabled;
-    if (stateEl) {
-      stateEl.textContent = !enabled ? 'ON' : 'OFF';
-      stateEl.className = `state ${!enabled ? 'on' : 'off'}`;
-    }
+  document.querySelectorAll('.tf-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tf === tf);
+  });
+  setText('chartTfLabel', tf.toUpperCase());
+
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'set_timeframe', timeframe: tf }));
   }
 }
 
@@ -631,5 +608,4 @@ async function fetchOpenTrades() {
 
 // ── Start ──────────────────────────────────────────
 connect();
-loadFilters();
 fetchOpenTrades();

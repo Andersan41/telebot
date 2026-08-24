@@ -139,7 +139,7 @@
         <!-- Chart + SMC -->
         <div class="bottom-row">
           <div class="chart-col">
-            <div class="chart-label">Цена · 1H</div>
+            <div class="chart-label">Цена · <span id="chartTfLabel">1H</span></div>
             <canvas id="priceChart" role="img" aria-label="График цены"></canvas>
           </div>
           <div class="smc-col">
@@ -150,10 +150,10 @@
       </div>
     </div>
 
-    <!-- Filter toggles -->
-    <div class="filter-bar" id="filterBar">
-      <div class="filter-bar-label">Фильтры</div>
-      <div class="filter-bar-list" id="filterList"></div>
+    <!-- Timeframe picker -->
+    <div class="tf-picker" id="tfPicker">
+      <div class="tf-picker-label">Таймфрейм</div>
+      <div class="tf-picker-list" id="tfList"></div>
     </div>
 
     <!-- Open Trades -->

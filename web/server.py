@@ -13,13 +13,14 @@ from typing import Set, Dict, Any, Optional
 from aiohttp import web
 from loguru import logger
 
-from config.settings import config, FILTER_TOGGLE_KEYS, _set_nested_config, _get_nested_config
+from config.settings import config
 
 STATIC_DIR = Path(__file__).parent / "public"
 
 # Глобальное состояние
 _clients: Set[web.WebSocketResponse] = set()
 _client_symbols: Dict[web.WebSocketResponse, str] = {}
+_client_tfs: Dict[web.WebSocketResponse, str] = {}
 _broadcast_task: Optional[asyncio.Task] = None
 
 
@@ -133,11 +134,11 @@ def _compute_sr_levels(df, symbol: str, timeframe: str) -> Dict[str, Any]:
     }
 
 
-async def _build_payload(symbol: str) -> Dict[str, Any]:
+async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
     """Собрать полный payload для отправки клиенту."""
     try:
         from config.settings import config as cfg
-        tf = cfg.trading.primary_timeframes[0] if cfg.trading.primary_timeframes else "1h"
+        tf = timeframe or cfg.trading.primary_timeframes[0] if cfg.trading.primary_timeframes else "1h"
 
         df = await _fetch_candles(symbol, tf, limit=200)
         if df is None or df.empty:
@@ -248,23 +249,25 @@ async def _broadcast_loop():
     while True:
         try:
             if _clients:
-                # Собрать уникальные символы
-                symbols = set(_client_symbols.values())
-                if not symbols:
-                    symbols = {config.trading.symbols[0]} if config.trading.symbols else {"BTC/USDT"}
+                # Группируем клиентов по (symbol, timeframe)
+                groups: dict[tuple, list] = {}
+                for ws in _clients:
+                    sym = _client_symbols.get(ws, "BTC/USDT")
+                    tf = _client_tfs.get(ws, "1h")
+                    key = (sym, tf)
+                    if key not in groups:
+                        groups[key] = []
+                    groups[key].append(ws)
 
-                for symbol in symbols:
-                    payload = await _build_payload(symbol)
+                for (sym, tf), clients in groups.items():
+                    payload = await _build_payload(sym, tf)
                     message = json.dumps(payload, default=str)
-
-                    # Отправить только клиентам, подписанным на этот символ
                     stale = set()
-                    for ws in _clients:
-                        if _client_symbols.get(ws) == symbol:
-                            try:
-                                await ws.send_str(message)
-                            except Exception:
-                                stale.add(ws)
+                    for ws in clients:
+                        try:
+                            await ws.send_str(message)
+                        except Exception:
+                            stale.add(ws)
                     _clients.difference_update(stale)
 
                 # Рассылка открытых сделок всем клиентам
@@ -306,16 +309,25 @@ async def ws_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    # Подписываем на символ по умолчанию
+    # Подписываем на символ и таймфрейм по умолчанию
     default_symbol = config.trading.symbols[0] if config.trading.symbols else "BTC/USDT"
+    default_tf = config.trading.primary_timeframes[0] if config.trading.primary_timeframes else "1h"
     _clients.add(ws)
     _client_symbols[ws] = default_symbol
+    _client_tfs[ws] = default_tf
 
-    logger.info(f"WS client connected ({len(_clients)} total), default: {default_symbol}")
+    logger.info(f"WS client connected ({len(_clients)} total), default: {default_symbol} {default_tf}")
 
     try:
-        # Отправить текущее состояние сразу
-        payload = await _build_payload(default_symbol)
+        # Отправить init с доступными таймфреймами
+        await ws.send_json({
+            "type": "init",
+            "timeframes": config.trading.primary_timeframes,
+            "currentTimeframe": default_tf,
+        })
+
+        # Отправить текущее состояние
+        payload = await _build_payload(default_symbol, default_tf)
         await ws.send_json(payload)
 
         async for msg in ws:
@@ -324,13 +336,19 @@ async def ws_handler(request):
                     data = json.loads(msg.data)
                     if data.get("type") == "subscribe" and data.get("symbol"):
                         new_symbol = data["symbol"].upper()
-                        # Конвертируем BTC → BTC/USDT
                         if "/" not in new_symbol:
                             new_symbol = new_symbol + "/USDT"
                         _client_symbols[ws] = new_symbol
                         logger.info(f"WS client subscribed to {new_symbol}")
-                        # Отправить данные нового символа
-                        payload = await _build_payload(new_symbol)
+                        tf = _client_tfs.get(ws, default_tf)
+                        payload = await _build_payload(new_symbol, tf)
+                        await ws.send_json(payload)
+                    elif data.get("type") == "set_timeframe" and data.get("timeframe"):
+                        new_tf = data["timeframe"]
+                        _client_tfs[ws] = new_tf
+                        logger.info(f"WS client timeframe → {new_tf}")
+                        symbol = _client_symbols.get(ws, default_symbol)
+                        payload = await _build_payload(symbol, new_tf)
                         await ws.send_json(payload)
                 except json.JSONDecodeError:
                     pass
@@ -339,89 +357,10 @@ async def ws_handler(request):
     finally:
         _clients.discard(ws)
         _client_symbols.pop(ws, None)
+        _client_tfs.pop(ws, None)
         logger.info(f"WS client disconnected ({len(_clients)} remaining)")
 
     return ws
-
-
-# ─── Filter API ────────────────────────────────────────────────────────
-
-# Human-readable names for each filter toggle
-FILTER_LABELS: dict[str, str] = {
-    "adx_filter": "ADX",
-    "ema_alignment": "EMA Align",
-    "ema_spread": "EMA Spread",
-    "trigger": "Trigger",
-    "candle_close": "Candle Close",
-    "min_score": "Min Score",
-    "compression": "Compression",
-    "confirm_tf": "Confirm TF",
-    "ema_slope": "EMA Slope",
-    "macd_slope": "MACD Slope",
-    "mtf": "MTF",
-    "distance_filter": "Distance",
-    "sr_levels": "S/R Levels",
-    "tp_path": "TP Path",
-    "btc_corr": "BTC Corr",
-    "eth_corr": "ETH Corr",
-    "volatility": "Volatility",
-    "no_trade_zones": "No-Trade",
-    "dynamic_risk": "Dyn Risk",
-    "context": "Context",
-    "confidence_v2": "Confidence V2",
-    "signal_block": "Block Notify",
-    "scan_mode": "Scan Mode",
-}
-
-
-_HIDDEN_FILTERS: set[str] = {"ema_slope", "macd_slope", "tp_path"}
-
-
-async def api_filters_get(request):
-    """GET /api/filters — вернуть текущее состояние всех фильтров.
-
-    Скрытые (отключённые по умолчанию) фильтры не отдаются в UI.
-    """
-    filters = []
-    for key, (attr_path, _) in FILTER_TOGGLE_KEYS.items():
-        if key in _HIDDEN_FILTERS:
-            continue
-        try:
-            current = _get_nested_config(config, attr_path)
-        except AttributeError:
-            current = True
-        filters.append({
-            "key": key,
-            "label": FILTER_LABELS.get(key, key),
-            "enabled": bool(current),
-        })
-    return web.json_response({"filters": filters})
-
-
-async def api_filters_post(request):
-    """POST /api/filters — переключить фильтр.
-
-    Body: {"key": "adx_filter", "enabled": true}
-    """
-    from storage.database import db
-    from config.settings import reload_filter_toggles
-
-    try:
-        data = await request.json()
-    except Exception:
-        return web.json_response({"error": "Invalid JSON"}, status=400)
-
-    key = data.get("key")
-    enabled = data.get("enabled")
-
-    if key is None or enabled is None or key not in FILTER_TOGGLE_KEYS:
-        return web.json_response({"error": f"Invalid filter key: {key}"}, status=400)
-
-    attr_path, _ = FILTER_TOGGLE_KEYS[key]
-    _set_nested_config(config, attr_path, bool(enabled))
-    await db.set_setting(f"filter:toggle:{key}", str(bool(enabled)).lower())
-
-    return web.json_response({"ok": True, "key": key, "enabled": bool(enabled)})
 
 
 async def api_open_trades(request):
@@ -451,8 +390,6 @@ def create_app() -> web.Application:
     app = web.Application(middlewares=[no_cache_middleware])
 
     # API
-    app.router.add_get("/api/filters", api_filters_get)
-    app.router.add_post("/api/filters", api_filters_post)
     app.router.add_get("/api/open-trades", api_open_trades)
 
     # WebSocket
