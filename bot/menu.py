@@ -129,6 +129,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
         "📡 <b>Trading Signal Bot</b>\n\n"
         f"Отслеживаю <b>{len(get_active_symbols())}</b> токенов\n"
         f"Таймфреймы: <b>{', '.join(config.trading.primary_timeframes)}</b>\n"
+        f"Режим: <b>{config.trading.scan_mode}</b>\n"
         f"Подтверждение: <b>{config.trading.confirm_timeframe}</b>\n"
         f"Cooldown: <b>{config.signal_cooldown_minutes} мин</b>"
     )
@@ -409,6 +410,7 @@ def _format_settings() -> str:
         "⚙️ <b>Настройки бота</b>\n",
         f"📊 Символов: <b>{len(get_active_symbols())}</b>",
         f"⏱ Основные ТФ: <b>{', '.join(config.trading.primary_timeframes)}</b>",
+        f"🔄 Режим: <b>{config.trading.scan_mode}</b>",
         f"🔁 Подтверждение: <b>{config.trading.confirm_timeframe}</b>",
         f"⏰ Cooldown: <b>{config.signal_cooldown_minutes} мин</b>\n",
     ]
@@ -424,7 +426,7 @@ def _format_indicator_params() -> tuple[str, InlineKeyboardMarkup]:
         "ATR": ["atr_period", "atr_multiplier_sl", "atr_multiplier_tp"],
         "Supertrend": ["supertrend_period", "supertrend_multiplier"],
         "Volume": ["volume_factor", "volume_sma_period"],
-        "Прочее": ["min_score_for_signal", "confirm_timeframe", "signal_cooldown_minutes", "distance_filter_min_pct"],
+        "Прочее": ["scan_mode", "min_score_for_signal", "confirm_timeframe", "signal_cooldown_minutes", "distance_filter_min_pct"],
     }
 
     lines = ["📐 <b>Параметры индикаторов</b>\n"]
@@ -794,7 +796,7 @@ async def _do_full_analysis(symbol: str) -> str:
             lines.append(f"    {s.type} level=<code>{s.swept_level:.6f}</code>")
         lines.append(f"  Order Blocks: {len(order_blocks)}")
         for ob in order_blocks[-3:]:
-            lines.append(f"    {ob.type} level=<code>{ob.level:.6f}</code>")
+            lines.append(f"    {ob.type} level=<code>{ob.midpoint:.6f}</code>")
         if candle_quality:
             cq = candle_quality
             lines.append(f"  Candle: body={cq.body_pct:.1%} upper_wick={cq.upper_wick_pct:.1%} lower_wick={cq.lower_wick_pct:.1%}")

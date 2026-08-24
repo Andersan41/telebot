@@ -66,6 +66,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Бот активен\n"
         f"📊 Символов: <b>{len(symbols)}</b>\n"
         f"⏱ Таймфреймы: <b>{', '.join(timeframes)}</b>\n"
+        f"🔄 Режим: <b>{config.trading.scan_mode}</b>\n"
         f"🔁 Подтверждение: <b>{confirm_tf}</b>\n"
         f"📋 Список: <code>{', '.join(symbols)}</code>\n"
         f"⏰ Cooldown между сигналами: <b>{config.signal_cooldown_minutes} мин</b>\n"

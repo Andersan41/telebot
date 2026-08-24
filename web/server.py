@@ -370,6 +370,7 @@ FILTER_LABELS: dict[str, str] = {
     "context": "Context",
     "confidence_v2": "Confidence V2",
     "signal_block": "Block Notify",
+    "scan_mode": "Scan Mode",
 }
 
 

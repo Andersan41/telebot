@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Strategy version — increment on every logic change for traceability
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 
 
 @dataclass
@@ -70,8 +70,10 @@ class TradingConfig:
     primary_timeframes: List[str] = field(default_factory=lambda: [
         tf.strip() for tf in os.getenv("PRIMARY_TIMEFRAMES", "1h,4h").split(",")
     ])
+    # Режим сканирования: "single_tf" (один TF) или "multi_tf" (1h setup + 5m confirm)
+    scan_mode: str = os.getenv("SCAN_MODE", "single_tf")
     # Таймфрейм подтверждения сигнала
-    confirm_timeframe: str = os.getenv("CONFIRM_TIMEFRAME", "15m")
+    confirm_timeframe: str = os.getenv("CONFIRM_TIMEFRAME", "5m")
     # Включить подтверждение на confirm_timeframe
     confirm_tf_enabled: bool = os.getenv("CONFIRM_TF_ENABLED", "true").lower() == "true"
 
@@ -201,6 +203,20 @@ class TradingConfig:
     # Лимит свечей при запросе OHLCV
     candles_limit: int = int(os.getenv("CANDLES_LIMIT", "200"))
 
+    # ─── Execution Filters (TZ §11.3) ───────────────────────────────────
+    # Максимальный спред (%)
+    max_spread_percent: float = float(os.getenv("MAX_SPREAD_PERCENT", "0.15"))
+    # Максимальное проскальзывание (%)
+    max_slippage_percent: float = float(os.getenv("MAX_SLIPPAGE_PERCENT", "0.1"))
+    # Минимальная глубина стакана в пределах 0.5% (USDT)
+    min_depth_0_5_percent: float = float(os.getenv("MIN_DEPTH_0_5_PERCENT", "10000"))
+
+    # ─── Volatility Filter (TZ §11.2) ───────────────────────────────────
+    # Минимальный ATR % (ниже — блок所有 сигналов)
+    volatility_min_atr_percent: float = float(os.getenv("VOLATILITY_MIN_ATR_PERCENT", "0.3"))
+    # Максимальный ATR % (выше — блок所有 сигналов)
+    volatility_max_atr_percent: float = float(os.getenv("VOLATILITY_MAX_ATR_PERCENT", "5.0"))
+
 
 @dataclass
 class LiquidityConfig:
@@ -232,6 +248,16 @@ class LiquidityConfig:
     sweep_strength_delta_aligned: float = float(os.getenv("SWEEP_STRENGTH_DELTA_ALIGNED", "0.2"))
     sweep_strength_displacement: float = float(os.getenv("SWEEP_STRENGTH_DISPLACEMENT", "0.2"))
 
+    # ─── Sweep False Filters (TZ §5.3) ──────────────────────────────────
+    # Макс. % тела за пределами уровня (от ATR) — фильтр ложных sweep
+    sweep_max_body_beyond_level: float = float(os.getenv("SWEEP_MAX_BODY_BEYOND_LEVEL", "0.3"))
+    # Мин. % фитиля за пределами уровня (от цены)
+    sweep_min_wick_beyond_level: float = float(os.getenv("SWEEP_MIN_WICK_BEYOND_LEVEL", "0.1"))
+    # Мин. % размера тела свечи (от цены)
+    sweep_min_body_size: float = float(os.getenv("SWEEP_MIN_BODY_SIZE", "0.05"))
+    # Макс. возраст пула в свечах для sweep
+    sweep_max_pool_age_bars: int = int(os.getenv("SWEEP_MAX_POOL_AGE_BARS", "100"))
+
     # ─── Order Blocks ────────────────────────────────────────────────────
     # Минимальный % displacement для OB
     ob_min_displacement_pct: float = float(os.getenv("OB_MIN_DISPLACEMENT_PCT", "2.5"))
@@ -247,10 +273,12 @@ class LiquidityConfig:
     ob_lookback: int = int(os.getenv("OB_LOOKBACK", "100"))
     # Окно для swing detection в OB
     ob_swing_window: int = int(os.getenv("OB_SWING_WINDOW", "5"))
-    # Look-ahead для проверки BOS после OB
-    ob_bos_lookahead: int = int(os.getenv("OB_BOS_LOOKAHEAD", "20"))
-    # Максимальный look-ahead для проверки ретеста OB
-    ob_retest_max_lookahead: int = int(os.getenv("OB_RETEST_MAX_LOOKAHEAD", "30"))
+    # Lookback for BOS check after OB (candles to scan backward from current bar)
+    ob_bos_lookback: int = int(os.getenv("OB_BOS_LOOKBACK", "20"))
+    # Lookback for retest check (candles to scan backward from current bar)
+    ob_retest_history: int = int(os.getenv("OB_RETEST_HISTORY", "30"))
+    # OB Mitigation buffer (% penetration to consider mitigated)
+    ob_mitigation_buffer_pct: float = float(os.getenv("OB_MITIGATION_BUFFER_PCT", "0.3"))
 
     # ─── FVG ─────────────────────────────────────────────────────────────
     # Минимальный % размер FVG
@@ -322,6 +350,26 @@ class RiskConfig:
     risk_weak_pct: float = float(os.getenv("RISK_WEAK_PCT", "0.25"))
     # Минимальный ATR % для торговли (иначе no-trade zone)
     no_trade_min_atr_pct: float = float(os.getenv("NO_TRADE_MIN_ATR_PCT", "0.6"))
+
+    # ─── Daily Limits (TZ §9.3) ─────────────────────────────────────────
+    # Максимальный суммарный риск в день (% от капитала)
+    max_risk_per_day_pct: float = float(os.getenv("MAX_RISK_PER_DAY_PCT", "6.0"))
+    # Максимальное число сделок в день
+    max_trades_per_day: int = int(os.getenv("MAX_TRADES_PER_DAY", "5"))
+    # Максимальное число убытков подряд (circuit breaker)
+    max_consecutive_losses: int = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3"))
+    # Максимальная просадка в день (%)
+    max_drawdown_daily_pct: float = float(os.getenv("MAX_DRAWDOWN_DAILY_PCT", "10.0"))
+    # Дневной таргет по прибыли (%)
+    profit_target_daily_pct: float = float(os.getenv("PROFIT_TARGET_DAILY_PCT", "10.0"))
+
+    # ─── Position Limits (TZ §9.4) ─────────────────────────────────────
+    # Максимальное общее число открытых позиций
+    max_positions_total: int = int(os.getenv("MAX_POSITIONS_TOTAL", "5"))
+    # Максимальное число лонг-позиций
+    max_long_positions: int = int(os.getenv("MAX_LONG_POSITIONS", "3"))
+    # Максимальное число шорт-позиций
+    max_short_positions: int = int(os.getenv("MAX_SHORT_POSITIONS", "3"))
 
     # ─── Correlation ─────────────────────────────────────────────────────
     # Множитель риска при misaligned корреляции BTC/ETH
@@ -571,16 +619,20 @@ class ProbabilityConfig:
     min_samples_for_ml: int = int(os.getenv("PROBABILITY_MIN_SAMPLES_FOR_ML", "100"))
     # Fallback winrate when no historical data
     fallback_winrate: float = float(os.getenv("PROBABILITY_FALLBACK_WINRATE", "50.0"))
-    # Minimum P(TP) to pass the gate (0.0 = gate disabled, 0.40+ recommended)
-    min_p_tp: float = float(os.getenv("MIN_P_TP", "0.0"))
+    # Minimum P(TP) to pass the gate (0.0 = gate disabled, 0.30 = conservative start)
+    min_p_tp: float = float(os.getenv("MIN_P_TP", "0.30"))
+    # Minimum P(TP) for SHORT signals (higher threshold = stricter)
+    min_p_tp_short: float = float(os.getenv("MIN_P_TP_SHORT", "0.40"))
+    # Minimum P(TP) for REVERSAL signals (highest threshold = strictest)
+    min_p_tp_reversal: float = float(os.getenv("MIN_P_TP_REVERSAL", "0.50"))
 
 
 @dataclass
 class RiskEngineConfig:
     """Risk Engine — Layer 3 capital protection."""
 
-    # Minimum R:R ratio (hard gate)
-    min_rr_ratio: float = float(os.getenv("RISK_ENGINE_MIN_RR", "1.5"))
+    # Minimum R:R ratio (hard gate) — TZ §7.1: min 2.5
+    min_rr_ratio: float = float(os.getenv("RISK_ENGINE_MIN_RR", "2.0"))
     # Absolute SL minimum % (hard gate)
     sl_absolute_min_pct: float = float(os.getenv("RISK_ENGINE_SL_MIN_PCT", "0.25"))
     # Absolute SL maximum % (hard gate)
@@ -621,6 +673,10 @@ class AppConfig:
     ob_mitigation: bool = os.getenv("OB_MITIGATION", "true").lower() == "true"
     confidence_cap: bool = os.getenv("CONFIDENCE_CAP", "true").lower() == "true"
     shadow_mode: bool = os.getenv("SHADOW_MODE", "true").lower() == "true"
+    # v2.5: Classic indicators mode (off|soft|hard)
+    classic_indicators_mode: str = os.getenv("CLASSIC_INDICATORS_MODE", "soft")
+    # v2.5: Risk mode (kelly|fixed)
+    risk_mode: str = os.getenv("RISK_MODE", "fixed")
 
     # ─── Feature Flags (Phase 2 — HTF Bias V2 + Premium/Discount) ──────
     htf_bias_v2: bool = os.getenv("HTF_BIAS_V2", "true").lower() == "true"
@@ -629,6 +685,30 @@ class AppConfig:
     # ─── Feature Flags (Phase 3 — Signal Recovery) ────────────────────
     require_entry_zone: bool = os.getenv("REQUIRE_ENTRY_ZONE", "false").lower() == "true"
     reversal_require_displacement: bool = os.getenv("REVERSAL_REQUIRE_DISPLACEMENT", "true").lower() == "true"
+    # v2.5: OB retest confirmation gate
+    require_ob_retest: bool = os.getenv("REQUIRE_OB_RETEST", "true").lower() == "true"
+    # v2.5: Session hard gate (block outside kill zones)
+    session_hard_gate: bool = os.getenv("SESSION_HARD_GATE", "true").lower() == "true"
+    # v2.5: Trading sessions (comma-separated: london,ny)
+    trading_sessions_str: str = os.getenv("TRADING_SESSIONS", "london,ny")
+    # v2.5: Block all signals when HTF bias is neutral/ranging (no edge)
+    block_neutral_htf: bool = os.getenv("BLOCK_NEUTRAL_HTF", "true").lower() == "true"
+    # v2.5: Block SHORT signals when HTF bias is bullish (no edge)
+    block_short_in_bullish_htf: bool = os.getenv("BLOCK_SHORT_IN_BULLISH_HTF", "true").lower() == "true"
+    # v2.5: Block LONG signals when HTF bias is bearish (no edge)
+    block_long_in_bearish_htf: bool = os.getenv("BLOCK_LONG_IN_BEARISH_HTF", "true").lower() == "true"
+
+    # ─── Breakout Quality (AMD sweep vs real breakout) ─────────────────
+    # Enable the breakout-quality classifier (shadow log by default)
+    breakout_quality_enabled: bool = os.getenv("BREAKOUT_QUALITY_ENABLED", "true").lower() == "true"
+    # Hard gate: block signals classified as AMD fake-break (off = shadow only)
+    breakout_quality_hard_gate: bool = os.getenv("BREAKOUT_QUALITY_HARD_GATE", "false").lower() == "true"
+    # Score threshold used only as an informational cutoff (logging/backtests). NOT used
+    # to hard-block signals: bot entries are pullbacks, not range breaks, so a min-score
+    # gate would reject ~99% of executable signals (see A/B backtest).
+    breakout_quality_min_score: float = float(os.getenv("BREAKOUT_QUALITY_MIN_SCORE", "45"))
+    # Lookback candles for the settled range boundary
+    breakout_quality_lookback: int = int(os.getenv("BREAKOUT_QUALITY_LOOKBACK", "40"))
 
     # URL базы данных
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/signals.db")
@@ -641,6 +721,11 @@ class AppConfig:
     signal_cooldown_minutes: int = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "45"))
     # Множитель cooldown для таймфреймов: effective = max(base, tf_minutes * multiplier)
     signal_cooldown_tf_multiplier: float = float(os.getenv("SIGNAL_COOLDOWN_TF_MULTIPLIER", "2.0"))
+
+    # Cooldown mode: strict (classic) | ob_aware (OB-aware: reduced cooldown for OB retests)
+    cooldown_mode: str = os.getenv("COOLDOWN_MODE", "ob_aware")
+    # Max distance (%) between two OB midpoints to consider them "the same OB"
+    ob_proximity_pct: float = float(os.getenv("OB_PROXIMITY_PCT", "0.5"))
 
     # Контекстный модуль
     context_enabled: bool = os.getenv("CONTEXT_ENABLED", "true").lower() == "true"
@@ -675,6 +760,11 @@ class AppConfig:
     @property
     def coingecko_symbol_map(self) -> dict[str, str]:
         return self._parse_coingecko_map(self.coingecko_symbol_map_str)
+
+    @property
+    def trading_sessions(self) -> list[str]:
+        """Parse TRADING_SESSIONS env var into list."""
+        return [s.strip() for s in self.trading_sessions_str.split(",") if s.strip()]
 
     # ─── Convenience properties для liquidity ────────────────────────────
 
@@ -769,6 +859,7 @@ FILTER_PARAM_KEYS: dict[str, tuple[str, type]] = {
     "volume_sma_period": ("trading.volume_sma_period", int),
     "min_score_for_signal": ("scoring.min_score_for_signal", int),
     "confirm_timeframe": ("trading.confirm_timeframe", str),
+    "scan_mode": ("trading.scan_mode", str),
     "signal_cooldown_minutes": ("signal_cooldown_minutes", int),
     # MarketStructure params
     "distance_filter_min_pct": ("market_structure.distance_filter_min_pct", float),
@@ -940,6 +1031,7 @@ def build_config_snapshot() -> str:
         "block_compression_regime": t.block_compression_regime,
         "confirm_tf_enabled": t.confirm_tf_enabled,
         "confirm_timeframe": t.confirm_timeframe,
+        "scan_mode": t.scan_mode,
         # Risk
         "risk_strong_pct": r.risk_strong_pct, "risk_moderate_pct": r.risk_moderate_pct,
         "volatility_filter_enabled": r.volatility_filter_enabled,

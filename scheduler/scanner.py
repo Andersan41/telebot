@@ -115,7 +115,14 @@ _dynamic_bar_counters: dict = {}   # key = f"{symbol}_{timeframe}" → int (bar 
 # ── Helpers ────────────────────────────────────────────────────────────
 
 async def _is_cooldown_active(symbol: str, timeframe: str) -> tuple[bool, int]:
-    """Check if cooldown is active for symbol+timeframe."""
+    """Check if cooldown is active for symbol+timeframe.
+    
+    In ob_aware mode, always returns False (cooldown handled in dedup phase).
+    """
+    # In ob_aware mode, skip early cooldown — dedup phase handles OB comparison
+    if getattr(config, 'cooldown_mode', 'ob_aware') == 'ob_aware':
+        return False, 0
+    
     last = await db.get_cooldown(symbol, timeframe)
     if last is None:
         return False, 0
@@ -220,7 +227,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
     All indicator-based filtering removed.
     """
     from strategy.pattern_engine import pattern_engine
-    from strategy.feature_builder import feature_builder
+    from strategy.feature_builder import feature_builder, _detect_session
     from strategy.probability_engine import probability_engine
     from risk.engine import risk_engine, PortfolioState
     from strategy.signal_engine import _calculate_sl_tp
@@ -262,6 +269,43 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         trace.passed("portfolio_risk")
         _current_funnel.log_gate(symbol, timeframe, "portfolio_risk", "PASS")
 
+        # 0.2b Daily Limits (TZ §9.3)
+        from risk.daily_limits import daily_limits
+        can_trade, remaining_risk, dl_reason = daily_limits.can_open_trade(
+            risk_per_trade_pct=config.risk_engine.base_risk_pct
+        )
+        if not can_trade:
+            reason = f"daily limits: {dl_reason}"
+            _current_funnel.log_gate(symbol, timeframe, "daily_limits", "BLOCKED", reason)
+            trace.blocked("daily_limits", reason)
+            await trace.save(db)
+            return None
+        trace.passed("daily_limits")
+        _current_funnel.log_gate(symbol, timeframe, "daily_limits", "PASS")
+
+        # 0.2c Position Limits (TZ §9.4)
+        from risk.daily_limits import daily_limits as _dl
+        from storage.database import db as _db
+        _dl_state = _dl.get_state()
+        _active_outcomes = await _db.get_open_outcomes()
+        _total_positions = len(_active_outcomes)
+        _long_positions = sum(1 for o in _active_outcomes
+                              if hasattr(o, 'signal') and o.signal and o.signal.direction == "BUY")
+        _short_positions = sum(1 for o in _active_outcomes
+                               if hasattr(o, 'signal') and o.signal and o.signal.direction == "SELL")
+
+        if _total_positions >= config.risk.max_positions_total:
+            reason = f"max positions ({_total_positions}/{config.risk.max_positions_total})"
+            _current_funnel.log_gate(symbol, timeframe, "position_limits", "BLOCKED", reason)
+            trace.blocked("position_limits", reason)
+            await trace.save(db)
+            return None
+
+        # Direction-specific limits (check if signal direction would exceed limit)
+        # (direction not yet known here, so we check total only at this stage)
+        trace.passed("position_limits")
+        _current_funnel.log_gate(symbol, timeframe, "position_limits", "PASS")
+
         # 0.3 Fetch OHLCV + Indicators
         ind_result = await _get_indicators(symbol, timeframe)
         if ind_result is None:
@@ -272,6 +316,20 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         ind, df = ind_result
         trace.passed("indicators")
         _current_funnel.log_gate(symbol, timeframe, "indicators", "PASS")
+
+        # 0.4 Volatility Filter (TZ §11.2) — hard gate
+        if ind.atr and ind.close and ind.close > 0:
+            atr_pct = ind.atr / ind.close * 100
+            vol_min = config.trading.volatility_min_atr_percent
+            vol_max = config.trading.volatility_max_atr_percent
+            if atr_pct < vol_min or atr_pct > vol_max:
+                reason = f"volatility {atr_pct:.2f}% outside [{vol_min}, {vol_max}]"
+                _current_funnel.log_gate(symbol, timeframe, "volatility_filter", "BLOCKED", reason)
+                trace.blocked("volatility_filter", reason)
+                await trace.save(db)
+                return None
+        trace.passed("volatility_filter")
+        _current_funnel.log_gate(symbol, timeframe, "volatility_filter", "PASS")
 
         # ═══ Phase 1: Pattern Engine (ICT setup detection) ═══
 
@@ -285,7 +343,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         try:
             if len(_df_clean) >= 10:
                 from liquidity.sweep import detect_sweeps
-                from liquidity.order_blocks import detect_order_blocks
+                from liquidity.order_blocks import detect_order_blocks, find_ob_for_sweep
                 from market_structure.structure import analyze_structure
                 from liquidity.fvg import detect_fvg
                 from liquidity.candle_quality import analyze_last_candle
@@ -294,6 +352,38 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 order_blocks = detect_order_blocks(_df_clean, lookback=100)
                 candle_quality = analyze_last_candle(_df_clean, atr_value=ind.atr)
                 fvgs = detect_fvg(_df_clean, lookback=getattr(config, "liquidity_fvg_lookback", 100))
+
+                # TZ §6.2: For each valid sweep, find OB by backward scan
+                # and add to order_blocks if not already present
+                for sweep in sweeps:
+                    if not sweep.is_valid:
+                        continue
+                    sweep_idx = sweep.candle_index if hasattr(sweep, 'candle_index') else len(_df_clean) - 1
+                    sweep_ts = sweep.timestamp if hasattr(sweep, 'timestamp') else datetime.now(timezone.utc)
+                    # Convert int timestamp to datetime if needed
+                    if isinstance(sweep_ts, (int, float)):
+                        sweep_ts = datetime.fromtimestamp(sweep_ts, tz=timezone.utc)
+                    elif sweep_ts and hasattr(sweep_ts, 'tzinfo') and sweep_ts.tzinfo is None:
+                        sweep_ts = sweep_ts.replace(tzinfo=timezone.utc)
+                    ob = find_ob_for_sweep(
+                        _df_clean,
+                        sweep_index=sweep_idx,
+                        sweep_direction=sweep.type,
+                        sweep_timestamp=sweep_ts,
+                        lookback=20,
+                    )
+                    if ob is not None:
+                        # Avoid duplicates by checking timestamp + type
+                        existing = [
+                            o for o in order_blocks
+                            if o.type == ob.type and abs(o.midpoint - ob.midpoint) / max(ob.midpoint, 1e-10) < 0.001
+                        ]
+                        if not existing:
+                            order_blocks.append(ob)
+                            logger.debug(
+                                f"Found sweep OB: {ob.type} midpoint={ob.midpoint:.4f} "
+                                f"for sweep at idx={sweep_idx}"
+                            )
 
                 # Compute displacement_atr and reclaim for MSS classification
                 _disp_atr = 0.0
@@ -412,6 +502,21 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             _current_funnel.log_gate(symbol, timeframe, "entry_zone", "PASS")
             trace.passed("entry_zone")
 
+        # ═══ Phase 1.42: Confirmation Score Gate (TZ §6.4) ═══
+        # Weighted: BOS=2, FVG=1, OB=1. Minimum=2 for entry.
+        _conf_score = setup.confirmation_score
+        if _conf_score < 2:
+            reason = f"confirmation_score={_conf_score} < min 2 (BOS=2,FVG=1,OB=1)"
+            _current_funnel.log_gate(symbol, timeframe, "confirmation_score", "BLOCKED", reason)
+            trace.blocked("confirmation_score", reason)
+            trace.set_version(VERSION, build_config_snapshot())
+            await trace.save(db)
+            logger.info(f"ConfirmationScore BLOCKED: {symbol} {timeframe} — {reason}")
+            return None
+        _current_funnel.log_gate(symbol, timeframe, "confirmation_score", "PASS",
+                                 f"score={_conf_score}")
+        trace.passed("confirmation_score")
+
         # ═══ Phase 1.44: SMT Divergence (soft feature — no blocking) ═══
         _smt_result = None
         if config.derivatives.smt_enabled:
@@ -424,7 +529,178 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         trace.record("smt_divergence", True)
         logger.debug(f"SMT {symbol}: {_smt_detail}")
 
+        # ═══ Phase 1.41: Breakout Quality (AMD sweep vs real breakout) ═══
+        if config.breakout_quality_enabled:
+            try:
+                from liquidity.breakout_quality import classify_breakout
+                _breakout_gate_passed = True
+                _breakout_reason = ""
+
+                _breakout_oi = None
+                try:
+                    from context.fetcher import context_fetcher
+                    _oi_res = await context_fetcher.fetch_open_interest(symbol)
+                    if _oi_res and _oi_res.get("open_interest_delta") is not None and not _oi_res.get("is_warmup"):
+                        _breakout_oi = float(_oi_res["open_interest_delta"])
+                except Exception:
+                    _breakout_oi = None
+
+                _bq = classify_breakout(
+                    df=_df_clean,
+                    direction=setup.direction,
+                    atr=ind.atr if ind.atr else 0.0,
+                    oi_change_pct=_breakout_oi,
+                    lookback=config.breakout_quality_lookback,
+                )
+
+                logger.info(
+                    f"[BREAKOUT] {symbol} {timeframe} [{setup.direction}] "
+                    f"verdict={_bq.verdict} score={_bq.score:.0f} body={_bq.body_pct:.2f} "
+                    f"retention={_bq.retention} vol={_bq.volume_ratio:.1f}x OI={_bq.oi_change_pct} "
+                    f"triggers={_bq.triggers} warnings={_bq.warnings}"
+                )
+                trace.record("breakout_quality", _bq.verdict == "real")
+
+                if config.breakout_quality_hard_gate:
+                    # Block ONLY obvious AMD fake-breaks (revearse wick past a closed-in
+                    # range). Signals with a low score are still allowed: the bot's entries
+                    # are pullbacks, not range breaks, so a bare min-score gate kills ~99%
+                    # of executable signals (A/B on the bot's own pipeline, see
+                    # backtest/run_breakout_gate_ab.py).
+                    if _bq.verdict == "fake":
+                        _breakout_gate_passed = False
+                        _breakout_reason = (
+                            f"AMD fake-break (verdict={_bq.verdict}, wick {_bq.pierce_pct:.1f}% "
+                            f"past boundary, close retraced inside range)"
+                        )
+                    else:
+                        _breakout_gate_passed = True
+
+                if config.breakout_quality_hard_gate:
+                    if _breakout_gate_passed:
+                        _current_funnel.log_gate(symbol, timeframe, "breakout_quality", "PASS",
+                                                 f"verdict={_bq.verdict} score={_bq.score:.0f}")
+                        trace.passed("breakout_quality")
+                    else:
+                        reason = _breakout_reason or "breakout_quality gate failed"
+                        _current_funnel.log_gate(symbol, timeframe, "breakout_quality", "BLOCKED", reason)
+                        trace.blocked("breakout_quality", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        logger.info(f"BreakoutQuality BLOCKED: {symbol} {timeframe} — {reason}")
+                        return None
+            except Exception as e:
+                logger.debug(f"Breakout quality check failed for {symbol} {timeframe}: {e}")
+
+        # ═══ Phase 1.42: OB Retest + Mitigation Gate (v2.5) ═══
+        if config.require_ob_retest and setup.has_ob and setup.direction:
+            _ob_gate_passed = False
+            _ob_gate_reason = ""
+
+            # Find the active OB for this direction
+            _ob_dir = 'bullish' if setup.direction == 'buy' else 'bearish'
+            _relevant_obs = [ob for ob in order_blocks if ob.type == _ob_dir and ob.is_valid]
+
+            if _relevant_obs:
+                _nearest_ob = min(_relevant_obs, key=lambda ob: abs(ob.midpoint - setup.ob_midpoint))
+
+                # Check 1: OB age — if older than max_age and not retested → mitigated
+                _ob_age = len(_df_clean) - _nearest_ob.candle_index - 1
+                _max_age = getattr(config.liquidity, 'ob_max_age_candles', 35)
+                if _ob_age > _max_age and not _nearest_ob.retested:
+                    _ob_gate_reason = f"OB too old ({_ob_age} candles) and not retested"
+                else:
+                    # Check 2: OB mitigation state
+                    from liquidity.ob_state import get_ob_state, OBState
+                    _ob_state = get_ob_state(
+                        _df_clean, _nearest_ob.high, _nearest_ob.low, _nearest_ob.type,
+                    )
+                    if _ob_state == OBState.BROKEN:
+                        _ob_gate_reason = f"OB broken (state={_ob_state.value})"
+                    elif _ob_state == OBState.MITIGATED:
+                        _ob_gate_reason = f"OB mitigated (state={_ob_state.value})"
+                    else:
+                        # Check 3: OB retest confirmation
+                        # Price must have returned to OB zone
+                        _last_close = float(_df_clean['close'].iloc[-1])
+                        _ob_touched = (
+                            _nearest_ob.low <= _last_close <= _nearest_ob.high
+                            or _nearest_ob.retested
+                        )
+
+                        if not _ob_touched:
+                            # Check if price is within MAX_OB_DISTANCE_PCT
+                            _dist = abs(_last_close - _nearest_ob.midpoint) / _last_close * 100
+                            _max_dist = getattr(config, 'max_ob_distance_pct', 3.0)
+                            if _dist > _max_dist:
+                                _ob_gate_reason = f"OB too far ({_dist:.1f}% > {_max_dist}%)"
+                            else:
+                                _ob_gate_reason = f"OB not retested (distance={_dist:.1f}%)"
+                        else:
+                            # Check 4: Confirmation candle (engulfing or pin-bar)
+                            _last_candle = _df_clean.iloc[-1]
+                            _prev_candle = _df_clean.iloc[-2] if len(_df_clean) >= 2 else None
+
+                            _has_confirmation = False
+                            if _prev_candle is not None:
+                                _last_body = abs(float(_last_candle['close']) - float(_last_candle['open']))
+                                _last_range = float(_last_candle['high']) - float(_last_candle['low'])
+                                _prev_body = abs(float(_prev_candle['close']) - float(_prev_candle['open']))
+
+                                if _last_range > 0:
+                                    _wick_ratio = (_last_range - _last_body) / _last_range
+                                else:
+                                    _wick_ratio = 0.0
+
+                                # Bullish engulfing: green candle closes above prev open
+                                if setup.direction == 'buy':
+                                    _is_green = float(_last_candle['close']) > float(_last_candle['open'])
+                                    _engulfing = _is_green and _last_body > _prev_body and float(_last_candle['close']) > float(_prev_candle['open'])
+                                    _pin_bar = _is_green and _wick_ratio > 0.6 and _last_body / _last_range < 0.3 if _last_range > 0 else False
+                                    _has_confirmation = _engulfing or _pin_bar
+
+                                # Bearish engulfing: red candle closes below prev open
+                                elif setup.direction == 'sell':
+                                    _is_red = float(_last_candle['close']) < float(_last_candle['open'])
+                                    _engulfing = _is_red and _last_body > _prev_body and float(_last_candle['close']) < float(_prev_candle['open'])
+                                    _pin_bar = _is_red and _wick_ratio > 0.6 and _last_body / _last_range < 0.3 if _last_range > 0 else False
+                                    _has_confirmation = _engulfing or _pin_bar
+
+                            if _has_confirmation:
+                                _ob_gate_passed = True
+                            else:
+                                _ob_gate_reason = "no confirmation candle at OB retest"
+
+            if _ob_gate_passed:
+                _current_funnel.log_gate(symbol, timeframe, "ob_retest", "PASS",
+                                         f"OB retested + confirmed")
+                trace.passed("ob_retest")
+            else:
+                reason = _ob_gate_reason or "OB retest gate failed"
+                _current_funnel.log_gate(symbol, timeframe, "ob_retest", "BLOCKED", reason)
+                trace.blocked("ob_retest", reason)
+                trace.set_version(VERSION, build_config_snapshot())
+                await trace.save(db)
+                logger.info(f"OB Retest BLOCKED: {symbol} {timeframe} — {reason}")
+                return None
+
         # ═══ Phase 1.45: HTF Bias + Premium/Discount Zones ═══
+
+        # ═══ Phase 1.43: Session Filter (Kill Zones) (v2.5) ═══
+        if config.session_hard_gate:
+            _current_session = _detect_session()
+            _active_sessions = config.trading_sessions
+            if _current_session not in _active_sessions and _current_session != "overlap":
+                reason = f"outside trading session ({_current_session}, active={_active_sessions})"
+                _current_funnel.log_gate(symbol, timeframe, "session_filter", "BLOCKED", reason)
+                trace.blocked("session_filter", reason)
+                trace.set_version(VERSION, build_config_snapshot())
+                await trace.save(db)
+                logger.info(f"Session BLOCKED: {symbol} {timeframe} — {reason}")
+                return None
+            _current_funnel.log_gate(symbol, timeframe, "session_filter", "PASS",
+                                     f"session={_current_session}")
+            trace.passed("session_filter")
 
         try:
             df_1d = await exchange_client.fetch_ohlcv(symbol, "1d", limit=60)
@@ -460,26 +736,37 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             else:
                 _bias_enum = HTFBias.NEUTRAL
 
+            # ── Direction Filter (v2.5): Block SHORT in bullish HTF, LONG in bearish HTF ──
+            # Neutral HTF = no directional confirmation — allow signals through
             if _bias_enum != HTFBias.NEUTRAL:
+                if setup.direction == 'sell' and _bias_enum == HTFBias.BULLISH:
+                    if getattr(config, 'block_short_in_bullish_htf', True):
+                        reason = f"SHORT blocked: HTF bias is bullish"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
+                if setup.direction == 'buy' and _bias_enum == HTFBias.BEARISH:
+                    if getattr(config, 'block_long_in_bearish_htf', True):
+                        reason = f"LONG blocked: HTF bias is bearish"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
+
                 direction_map = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
 
                 if setup.setup_type == "continuation":
                     setup_bias = direction_map.get(setup.direction)
                     if setup_bias != _bias_enum:
-                        if config.htf_hard_gate:
-                            reason = f"HTF bias gate: continuation {setup.direction} vs HTF {htf_bias_str}"
-                            _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
-                            trace.blocked("htf_bias", reason)
-                            trace.set_version(VERSION, build_config_snapshot())
-                            await trace.save(db)
-                            return None
-                        else:
-                            _htf_bias_penalty = 0.85
-                            _current_funnel.log_gate(
-                                symbol, timeframe, "htf_bias", "PASS",
-                                f"continuation mismatch penalty {_htf_bias_penalty} (htf_hard_gate=false)",
-                            )
-                            trace.record("htf_bias", True)
+                        reason = f"HTF hard gate: continuation {setup.direction} vs HTF {htf_bias_str}"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
                     else:
                         trace.passed("htf_bias")
                         _current_funnel.log_gate(
@@ -490,12 +777,12 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 elif setup.setup_type == "reversal":
                     setup_bias = direction_map.get(setup.direction)
                     if setup_bias != _bias_enum:
-                        _htf_bias_penalty = 0.85
-                        _current_funnel.log_gate(
-                            symbol, timeframe, "htf_bias", "PASS",
-                            f"reversal mismatch penalty {_htf_bias_penalty}",
-                        )
-                        trace.record("htf_bias", True)
+                        reason = f"HTF hard gate: reversal {setup.direction} vs HTF {htf_bias_str}"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
                     else:
                         _current_funnel.log_gate(
                             symbol, timeframe, "htf_bias", "PASS",
@@ -523,26 +810,36 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             _bias_enum = get_htf_bias(df_1d, df_4h, _struct_1d, _struct_4h)
             htf_bias_str = _bias_enum.value
 
+            # ── Direction Filter (v2.5): Block SHORT in bullish HTF, LONG in bearish HTF ──
             if _bias_enum != HTFBias.NEUTRAL:
+                if setup.direction == 'sell' and _bias_enum == HTFBias.BULLISH:
+                    if getattr(config, 'block_short_in_bullish_htf', True):
+                        reason = f"SHORT blocked: HTF bias is bullish"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
+                if setup.direction == 'buy' and _bias_enum == HTFBias.BEARISH:
+                    if getattr(config, 'block_long_in_bearish_htf', True):
+                        reason = f"LONG blocked: HTF bias is bearish"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
+
                 direction_map = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
 
                 if setup.setup_type == "continuation":
                     setup_bias = direction_map.get(setup.direction)
                     if setup_bias != _bias_enum:
-                        if config.htf_hard_gate:
-                            reason = f"HTF bias gate: continuation {setup.direction} vs HTF {_bias_enum.value}"
-                            _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
-                            trace.blocked("htf_bias", reason)
-                            trace.set_version(VERSION, build_config_snapshot())
-                            await trace.save(db)
-                            return None
-                        else:
-                            _htf_bias_penalty = 0.85
-                            _current_funnel.log_gate(
-                                symbol, timeframe, "htf_bias", "PASS",
-                                f"continuation mismatch penalty {_htf_bias_penalty} (htf_hard_gate=false)",
-                            )
-                            trace.record("htf_bias", True)
+                        reason = f"HTF hard gate: continuation {setup.direction} vs HTF {_bias_enum.value}"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
                     else:
                         trace.passed("htf_bias")
                         _current_funnel.log_gate(
@@ -553,12 +850,12 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 elif setup.setup_type == "reversal":
                     setup_bias = direction_map.get(setup.direction)
                     if setup_bias != _bias_enum:
-                        _htf_bias_penalty = 0.85
-                        _current_funnel.log_gate(
-                            symbol, timeframe, "htf_bias", "PASS",
-                            f"reversal mismatch penalty {_htf_bias_penalty}",
-                        )
-                        trace.record("htf_bias", True)
+                        reason = f"HTF hard gate: reversal {setup.direction} vs HTF {_bias_enum.value}"
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
+                        trace.blocked("htf_bias", reason)
+                        trace.set_version(VERSION, build_config_snapshot())
+                        await trace.save(db)
+                        return None
                     else:
                         _current_funnel.log_gate(
                             symbol, timeframe, "htf_bias", "PASS",
@@ -623,6 +920,72 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             return None
 
         entry_price = ind.close
+
+        # ═══ Phase 1.7: LTF Confirmation (multi_tf mode) ═══
+        # Only runs when scan_mode == "multi_tf" and confirm_tf_enabled
+        _confirm_result = None
+        if (config.trading.scan_mode == "multi_tf"
+                and config.trading.confirm_tf_enabled
+                and config.trading.confirm_timeframe
+                and config.trading.confirm_timeframe != timeframe):
+
+            from strategy.confirmation_engine import find_confirmation
+
+            _entry_zone = None
+            if _nearest_ob:
+                _entry_zone = (_nearest_ob.high, _nearest_ob.low)
+
+            try:
+                df_confirm = await exchange_client.fetch_ohlcv(
+                    symbol, config.trading.confirm_timeframe, limit=100
+                )
+            except Exception:
+                df_confirm = None
+
+            if df_confirm is not None and len(df_confirm) >= 20:
+                try:
+                    from indicators.engine import indicator_engine as _ie
+                    ind_5m = _ie.calculate(df_confirm, symbol, config.trading.confirm_timeframe)
+                    atr_5m = ind_5m.atr if ind_5m and ind_5m.atr else 0.0
+                except Exception:
+                    atr_5m = 0.0
+
+                _setup_ts = None
+                if sweeps:
+                    for s in sweeps:
+                        if s.is_valid:
+                            _setup_ts = s.timestamp
+                            break
+                if _setup_ts is None and structure and structure.last_bos:
+                    _setup_ts = structure.last_bos.timestamp
+
+                _confirm_result = find_confirmation(
+                    df_5m=df_confirm,
+                    direction=setup.direction.value,
+                    entry_zone=_entry_zone,
+                    sl_price=sl,
+                    setup_timestamp=_setup_ts,
+                    atr_5m=atr_5m,
+                )
+
+                if _confirm_result.confirmed:
+                    entry_price = _confirm_result.entry_price
+                    trace.passed("confirm_tf")
+                    _current_funnel.log_gate(symbol, timeframe, "confirm_tf", "PASS",
+                                             f"{_confirm_result.trigger_type} "
+                                             f"(conf={_confirm_result.confidence:.1f})")
+                else:
+                    _current_funnel.log_gate(symbol, timeframe, "confirm_tf", "BLOCKED",
+                                             "no 5m confirmation")
+                    trace.blocked("confirm_tf", "no 5m confirmation")
+                    await trace.save(db)
+                    return None
+            else:
+                _current_funnel.log_gate(symbol, timeframe, "confirm_tf", "BLOCKED",
+                                         "5m OHLCV unavailable")
+                trace.blocked("confirm_tf", "5m data unavailable")
+                await trace.save(db)
+                return None
 
         # ═══ Phase 1.55: Market Phase Detection (SHADOW MODE) ═══
 
@@ -1040,6 +1403,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
 
         # OB state multiplier (mitigation factor for Probability Engine)
         _ob_state_multiplier = 1.0
+        _nearest_ob = None
         if order_blocks and setup.has_ob and setup.direction:
             _rel_obs = [ob for ob in order_blocks
                         if ob.type == ('bullish' if setup.direction == 'buy' else 'bearish')]
@@ -1091,9 +1455,16 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         if config.premium_discount and _zone_quality_multiplier != 1.0:
             probability.p_tp = min(probability.p_tp * _zone_quality_multiplier, 1.0)
 
-        # ═══ Phase 3.1: min_p_tp gate ═══
-        if config.probability.min_p_tp > 0 and probability.p_tp < config.probability.min_p_tp:
-            reason = f"P(TP)={probability.p_tp:.1%} < min_p_tp {config.probability.min_p_tp:.0%}"
+        # ═══ Phase 3.1: min_p_tp gate (with direction-specific thresholds) ═══
+        # Use higher thresholds for SHORT and REVERSAL signals
+        _effective_min_p_tp = config.probability.min_p_tp
+        if setup.direction == 'sell' and config.probability.min_p_tp_short > 0:
+            _effective_min_p_tp = max(_effective_min_p_tp, config.probability.min_p_tp_short)
+        if setup.setup_type == 'reversal' and config.probability.min_p_tp_reversal > 0:
+            _effective_min_p_tp = max(_effective_min_p_tp, config.probability.min_p_tp_reversal)
+
+        if _effective_min_p_tp > 0 and probability.p_tp < _effective_min_p_tp:
+            reason = f"P(TP)={probability.p_tp:.1%} < min {_effective_min_p_tp:.0%} (dir={setup.direction}, setup={setup.setup_type})"
             _current_funnel.log_gate(symbol, timeframe, "min_p_tp", "BLOCKED", reason)
             trace.blocked("min_p_tp", reason)
             trace.set_version(VERSION, build_config_snapshot())
@@ -1230,13 +1601,53 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 within_cooldown = (
                     datetime.now(timezone.utc) - last_sent
                 ) < timedelta(minutes=dedup_cooldown_minutes)
+
                 if same_direction and within_cooldown:
                     elapsed = (datetime.now(timezone.utc) - last_sent).total_seconds() / 60
-                    _current_funnel.log_gate(symbol, timeframe, "dedup", "BLOCKED",
-                                             f"same dir, {elapsed:.0f}m < {dedup_cooldown_minutes}m")
-                    trace.blocked("dedup", f"same direction, {elapsed:.0f}m < {dedup_cooldown_minutes}m")
-                    await trace.save(db)
-                    return None
+
+                    # OB-aware cooldown: compare OB midpoints
+                    _cooldown_mode = getattr(config, 'cooldown_mode', 'ob_aware')
+                    _ob_proximity = getattr(config, 'ob_proximity_pct', 0.5) / 100.0
+
+                    if _cooldown_mode == 'ob_aware' and last.ob_midpoint is not None and _nearest_ob is not None:
+                        ob_distance = abs(_nearest_ob.midpoint - last.ob_midpoint) / last.ob_midpoint
+                        same_ob = ob_distance <= _ob_proximity
+
+                        if not same_ob:
+                            # Different OB → skip cooldown entirely
+                            logger.info(
+                                f"Dedup BYPASS (ob_aware): {symbol} {timeframe} — "
+                                f"different OB ({_nearest_ob.midpoint:.1f} vs {last.ob_midpoint:.1f}, "
+                                f"dist={ob_distance:.3%})"
+                            )
+                            trace.passed("dedup")
+                            _current_funnel.log_gate(symbol, timeframe, "dedup", "PASS",
+                                                     f"ob_aware: different OB, dist={ob_distance:.3%}")
+                        else:
+                            # Same OB → reduced cooldown (1/3 of full)
+                            reduced_cooldown = dedup_cooldown_minutes // 3
+                            if (datetime.now(timezone.utc) - last_sent) < timedelta(minutes=reduced_cooldown):
+                                _current_funnel.log_gate(symbol, timeframe, "dedup", "BLOCKED",
+                                                         f"same OB retest, {elapsed:.0f}m < {reduced_cooldown}m (reduced)")
+                                trace.blocked("dedup", f"same OB retest, {elapsed:.0f}m < {reduced_cooldown}m (reduced)")
+                                await trace.save(db)
+                                return None
+                            else:
+                                logger.info(
+                                    f"Dedup BYPASS (ob_aware): {symbol} {timeframe} — "
+                                    f"same OB retest cooldown passed ({elapsed:.0f}m >= {reduced_cooldown}m)"
+                                )
+                                trace.passed("dedup")
+                                _current_funnel.log_gate(symbol, timeframe, "dedup", "PASS",
+                                                         f"ob_aware: same OB retest cooldown passed")
+                    else:
+                        # Strict mode or no OB data → full cooldown
+                        _current_funnel.log_gate(symbol, timeframe, "dedup", "BLOCKED",
+                                                 f"same dir, {elapsed:.0f}m < {dedup_cooldown_minutes}m")
+                        trace.blocked("dedup", f"same direction, {elapsed:.0f}m < {dedup_cooldown_minutes}m")
+                        await trace.save(db)
+                        return None
+
                 if not same_direction and within_cooldown:
                     cross_cooldown = timedelta(minutes=dedup_cooldown_minutes // 2)
                     if (datetime.now(timezone.utc) - last_sent) < cross_cooldown:
@@ -1266,6 +1677,55 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         _atr = features.atr if hasattr(features, 'atr') else None
         _last_candle = df.iloc[-1] if df is not None and len(df) > 0 else None
 
+        # Execution Filters (TZ §11.3)
+        if _ticker and _ticker.get("ask") and _ticker.get("bid"):
+            _spread_pct = (_ticker["ask"] - _ticker["bid"]) / _ticker["bid"] * 100 if _ticker["bid"] > 0 else 0
+            _max_spread = config.trading.max_spread_percent
+            if _spread_pct > _max_spread:
+                reason = f"spread {_spread_pct:.4f}% > {_max_spread}%"
+                _current_funnel.log_gate(symbol, timeframe, "execution_filter", "BLOCKED", reason)
+                trace.blocked("execution_filter", reason)
+                await trace.save(db)
+                return None
+
+        # Depth check (TZ §7.3): order book depth within 0.5% > min_required_usdt
+        if _ticker and _ticker.get("bid") and config.trading.min_depth_0_5_percent > 0:
+            try:
+                _depth = await exchange_client.fetch_order_book(symbol, limit=20)
+                if _depth and _depth.get("bids") and _depth.get("asks"):
+                    _mid = (_ticker["bid"] + _ticker["ask"]) / 2 if _ticker.get("ask") else _ticker["bid"]
+                    _range = _mid * 0.005  # 0.5%
+                    _bid_depth = sum(float(b[0]) * float(b[1]) for b in _depth["bids"]
+                                     if _mid - _range <= float(b[0]) <= _mid)
+                    _ask_depth = sum(float(a[0]) * float(a[1]) for a in _depth["asks"]
+                                     if _mid <= float(a[0]) <= _mid + _range)
+                    _total_depth = _bid_depth + _ask_depth
+                    if _total_depth < config.trading.min_depth_0_5_percent:
+                        reason = f"depth ${_total_depth:,.0f} < ${config.trading.min_depth_0_5_percent:,.0f}"
+                        _current_funnel.log_gate(symbol, timeframe, "depth_check", "BLOCKED", reason)
+                        trace.blocked("depth_check", reason)
+                        await trace.save(db)
+                        return None
+            except Exception as e:
+                logger.debug(f"Depth check failed for {symbol}: {e}")
+
+        # No correlated entry (TZ §7.3): skip if already have open position in correlated symbol
+        _correlated_symbols = getattr(config.trading, 'correlated_symbols', {})
+        if _correlated_symbols:
+            _group = _correlated_symbols.get(symbol)
+            if _group:
+                _group_symbols = [s for s, g in _correlated_symbols.items() if g == _group]
+                _active_symbols = [getattr(o, 'symbol', None) for o in _active_outcomes] if '_active_outcomes' in dir() else []
+                for _corr_sym in _group_symbols:
+                    if _corr_sym != symbol and _corr_sym in _active_symbols:
+                        reason = f"correlated entry: {_corr_sym} already open (group={_group})"
+                        _current_funnel.log_gate(symbol, timeframe, "correlated_entry", "BLOCKED", reason)
+                        trace.blocked("correlated_entry", reason)
+                        await trace.save(db)
+                        return None
+
+        _current_funnel.log_gate(symbol, timeframe, "execution_filter", "PASS")
+
         saved_signal = await db.save_signal(
             symbol=result.symbol,
             timeframe=result.timeframe,
@@ -1290,6 +1750,9 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             entry_atr=_atr,
             entry_tick_size=_tick_size,
             signal_detected_at=datetime.now(timezone.utc),
+            # OB info for cooldown dedup
+            ob_midpoint=_nearest_ob.midpoint if _nearest_ob else None,
+            ob_type=_nearest_ob.type if _nearest_ob else None,
         )
 
         trace.set_signal(
@@ -1337,6 +1800,10 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         await trace.save(db, signal_id=saved_signal.id)
 
         await db.create_outcome(saved_signal.id, risk_pct=risk_decision.risk_pct)
+
+        # Record daily limits
+        from risk.daily_limits import daily_limits
+        daily_limits.record_trade_opened(risk_decision.risk_pct)
 
         # ═══ Phase 8: Cooldown + Notify ═══
 
