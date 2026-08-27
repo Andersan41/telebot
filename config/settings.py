@@ -709,7 +709,7 @@ class AppConfig:
     # v2.5: OB retest confirmation gate
     require_ob_retest: bool = os.getenv("REQUIRE_OB_RETEST", "true").lower() == "true"
     # v2.5: Session hard gate (block outside kill zones)
-    session_hard_gate: bool = os.getenv("SESSION_HARD_GATE", "true").lower() == "true"
+    session_hard_gate: bool = os.getenv("SESSION_HARD_GATE", "false").lower() == "true"
     # v2.5: Trading sessions (comma-separated: london,ny)
     trading_sessions_str: str = os.getenv("TRADING_SESSIONS", "london,ny")
     # v2.5: Block all signals when HTF bias is neutral/ranging (no edge)
@@ -768,7 +768,7 @@ class AppConfig:
     # Максимальное число одновременно открытых сигналов
     max_active_signals: int = int(os.getenv("MAX_ACTIVE_SIGNALS", "3"))
     # Максимальный суммарный риск открытых позиций (%)
-    max_portfolio_risk_pct: float = float(os.getenv("MAX_PORTFOLIO_RISK_PCT", "3.0"))
+    max_portfolio_risk_pct: float = float(os.getenv("MAX_PORTFOLIO_RISK_PCT", "3.7"))
 
     def _parse_coingecko_map(self, map_str: str) -> dict[str, str]:
         result = {}
