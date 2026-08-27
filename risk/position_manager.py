@@ -39,6 +39,7 @@ TRAILING_MIN_DISTANCE_PCT = 0.005  # 0.5% from entry
 
 # TZ §8.6: Time stop
 TIME_STOP_MAX_MINUTES = 100  # 20 bars on 5m
+TIME_STOP_ENABLED = os.getenv("TIME_STOP_ENABLED", "false").lower() == "true"
 
 
 @dataclass
@@ -277,6 +278,8 @@ def check_time_stop(
     current_time: Optional[datetime] = None,
 ) -> bool:
     """TZ §8.6: Time stop — close if held too long without hitting TP."""
+    if not TIME_STOP_ENABLED:
+        return False
     if current_time is None:
         return False
     hold_minutes = position.elapsed_minutes(current_time)
