@@ -598,6 +598,26 @@ class WebConfig:
 
 
 @dataclass
+class WaveConfig:
+    """Elliott Wave analysis — soft feature, never a hard gate."""
+
+    # Master switch (default off — soft feature only)
+    enabled: bool = os.getenv("WAVE_ANALYSIS_ENABLED", "false").lower() == "true"
+    # Minimum confidence to include wave info in signal [0.0–1.0]
+    min_confidence: float = float(os.getenv("WAVE_MIN_CONFIDENCE", "0.4"))
+    # Conflict penalty multiplier (applied to P(TP) when wave conflicts with ICT direction)
+    conflict_penalty: float = float(os.getenv("WAVE_CONFLICT_PENALTY", "0.85"))
+    # Weight in probability engine (small, soft)
+    weight: float = float(os.getenv("WAVE_WEIGHT", "1.0"))
+    # Max alternatives to store per count
+    max_alternatives: int = int(os.getenv("WAVE_MAX_ALTERNATIVES", "3"))
+    # Minimum swing amplitude (ATR multiple) for wave pivot detection
+    min_swing_atr: float = float(os.getenv("WAVE_MIN_SWING_ATR", "0.5"))
+    # Max lookback candles for wave analysis
+    max_lookback: int = int(os.getenv("WAVE_MAX_LOOKBACK", "200"))
+
+
+@dataclass
 class PatternEngineConfig:
     """ICT Pattern Engine — Layer 1 configuration."""
 
@@ -662,6 +682,7 @@ class AppConfig:
     notifier: NotifierConfig = field(default_factory=NotifierConfig)
     support_resistance: SupportResistanceConfig = field(default_factory=SupportResistanceConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    wave: WaveConfig = field(default_factory=WaveConfig)
     # New pipeline configs
     pattern_engine: PatternEngineConfig = field(default_factory=PatternEngineConfig)
     probability: ProbabilityConfig = field(default_factory=ProbabilityConfig)

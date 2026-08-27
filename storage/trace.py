@@ -55,6 +55,8 @@ FEATURE_KEYS = {
     "atr_pct", "ema_slope_3", "ema_slope_5",
     "nearest_support_pct", "nearest_resistance_pct",
     "regime_confidence",
+    # Elliott Wave (soft feature)
+    "wave_confidence", "wave_direction", "wave_conflict", "wave_label",
 }
 
 

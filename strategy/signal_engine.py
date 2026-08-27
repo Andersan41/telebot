@@ -65,6 +65,11 @@ class SignalResult:
     _fib_level: Optional[float] = None
     _zone_quality_multiplier: float = 1.0
 
+    # Elliott Wave (soft feature)
+    _wave_confidence: float = 0.0
+    _wave_label: str = ""
+    _wave_conflict: bool = False
+
     @property
     def is_actionable(self) -> bool:
         return self.signal != SignalType.NO_SIGNAL
@@ -175,6 +180,10 @@ class SignalResult:
             lines.append(f"Confidence: {self.confidence:.0f}/100")
         else:
             lines.append(f"Confidence: {self.confidence:.0f}/100")
+        # Elliott Wave
+        if self._wave_confidence >= 0.4:
+            conflict_str = " ⚠️ конфликт" if self._wave_conflict else ""
+            lines.append(f"Wave: {self._wave_label} ({self._wave_confidence:.0%}){conflict_str}")
         return "\n".join(lines)
 
 

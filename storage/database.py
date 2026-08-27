@@ -286,6 +286,12 @@ class DecisionTrace(Base):
     # Hypothesis snapshot (JSON) — for ScenarioMemory tracking
     hypothesis_snapshot = Column(Text, nullable=True)  # JSON: Hypothesis data
 
+    # ── Elliott Wave (soft feature) ────────────────────────────────
+    wave_confidence = Column(Float, nullable=True)      # primary count confidence [0.0–1.0]
+    wave_direction = Column(String(10), nullable=True)   # "impulse" / "correction" / None
+    wave_conflict = Column(Boolean, nullable=True)       # True if primary + alternatives disagree
+    wave_label = Column(String(50), nullable=True)       # e.g. "impulse (1-2-3-4-5)"
+
 
 class Database:
     def __init__(self):
@@ -380,6 +386,11 @@ class Database:
                 "gate_structure_alignment": "BOOLEAN",
                 "gate_sweep_required": "BOOLEAN",
                 "gate_regime_block": "BOOLEAN",
+                # Elliott Wave (soft feature)
+                "wave_confidence": "FLOAT",
+                "wave_direction": "VARCHAR(10)",
+                "wave_conflict": "BOOLEAN",
+                "wave_label": "VARCHAR(50)",
             }
             for col_name, col_type in trace_migrations.items():
                 if col_name not in trace_columns:

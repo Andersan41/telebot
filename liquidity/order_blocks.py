@@ -19,6 +19,7 @@ from typing import Literal, Optional
 import pandas as pd
 
 from config.settings import config
+from market_structure.swing_detector import detect_swings, SwingType
 
 
 @dataclass
@@ -102,8 +103,12 @@ def detect_order_blocks(
 
     atr = _calc_atr(data)
     avg_vol = data["volume"].mean()
-    swing_highs = _find_swing_highs(data)
-    swing_lows = _find_swing_lows(data)
+    swing_highs = [{"index": s.index, "price": s.price}
+                    for s in detect_swings(data, left_bars=5, right_bars=5, strict=False)
+                    if s.swing_type == SwingType.HIGH]
+    swing_lows = [{"index": s.index, "price": s.price}
+                   for s in detect_swings(data, left_bars=5, right_bars=5, strict=False)
+                   if s.swing_type == SwingType.LOW]
 
     blocks: list[OrderBlock] = []
 
@@ -267,26 +272,6 @@ def _calc_atr(df: pd.DataFrame, period: int = 14) -> float:
     tr3 = (low - close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     return float(tr.iloc[-period:].mean())
-
-
-def _find_swing_highs(df: pd.DataFrame, window: int = 5) -> list[dict]:
-    """Find swing highs (local maxima)."""
-    highs = []
-    for i in range(window, len(df) - window):
-        high_window = df["high"].iloc[i - window: i + window + 1]
-        if df["high"].iloc[i] == high_window.max():
-            highs.append({"index": i, "price": float(df["high"].iloc[i])})
-    return highs
-
-
-def _find_swing_lows(df: pd.DataFrame, window: int = 5) -> list[dict]:
-    """Find swing lows (local minima)."""
-    lows = []
-    for i in range(window, len(df) - window):
-        low_window = df["low"].iloc[i - window: i + window + 1]
-        if df["low"].iloc[i] == low_window.min():
-            lows.append({"index": i, "price": float(df["low"].iloc[i])})
-    return lows
 
 
 def _check_bos_bullish(df: pd.DataFrame, start_idx: int, swing_highs: list[dict], lookback: int = 20) -> bool:

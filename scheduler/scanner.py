@@ -20,6 +20,7 @@ from market_structure.structure import check_mtf_alignment, get_htf_directional_
 from market_structure.htf_bias import get_htf_bias, HTFBias, extract_structure_dict
 from market_structure.htf_bias_v2 import get_htf_bias_v2, HTFBiasResult
 from risk.market_regime import RegimeDetector, MarketRegime
+from elliott_wave.wave_types import WaveDegree
 from scheduler.circuit_breaker import is_circuit_breaker_active, check_recent_losses
 from storage.trace import DecisionTraceBuilder, ExecutionSnapshot
 
@@ -1353,6 +1354,18 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 else:
                     _ob_state_multiplier = get_ob_multiplier(_ob_state)
 
+        # ═══ Elliott Wave Analysis (soft feature) ═══
+        _wave_analysis = None
+        if config.wave.enabled:
+            try:
+                from elliott_wave.analysis import analyze_waves
+                _wave_analysis = analyze_waves(
+                    _df_clean, symbol, timeframe,
+                    degree=WaveDegree.MINOR,
+                )
+            except Exception as e:
+                logger.debug(f"Wave analysis failed for {symbol}: {e}")
+
         # Build features
         features = feature_builder.build(
             setup=setup,
@@ -1373,6 +1386,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             htf_bias_penalty=_htf_bias_penalty,
             ob_state_multiplier=_ob_state_multiplier,
             smt_divergence_score=_smt_to_score(_smt_result),
+            wave_analysis=_wave_analysis,
         )
 
         # ═══ Phase 1.65: Scenario Engine (SHADOW MODE) ═══
@@ -1578,6 +1592,9 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             _zone_type=_zone_type,
             _fib_level=_fib_level,
             _zone_quality_multiplier=_zone_quality_multiplier,
+            _wave_confidence=_wave_analysis.confidence if _wave_analysis else 0.0,
+            _wave_label=_wave_analysis.primary.label if _wave_analysis and _wave_analysis.primary else "",
+            _wave_conflict=_wave_analysis.conflict if _wave_analysis else False,
         )
 
         # Attach probability data for display (capped at 85%)

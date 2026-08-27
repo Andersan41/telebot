@@ -122,6 +122,13 @@ class SetupFeatures:
     ob_state_multiplier: float = 1.0  # OB mitigation factor (0.0 = broken, 0.6-1.2)
     smt_divergence_score: float = 0.0  # -1.0 (bearish SMT) to 1.0 (bullish SMT), 0 = neutral
 
+    # === Elliott Wave (soft feature — never a gate) ===
+    wave_confidence: float = 0.0       # [0.0, 1.0] from primary wave count
+    wave_direction: int = 0            # +1 = impulse bullish, -1 = impulse bearish, 0 = no wave
+    wave_conflict: bool = False        # True if primary + alternatives disagree
+    wave_alternatives_count: int = 0   # number of alternative counts found
+    wave_primary_label: str = ""       # e.g. "impulse (1-2-3-4-5)" or "correction (A-B-C)"
+
     # === Additional ===
     nearest_support_pct: float = 0.0
     nearest_resistance_pct: float = 0.0
@@ -197,6 +204,11 @@ class SetupFeatures:
             "smt_divergence_score": self.smt_divergence_score,
             "htf_bias_penalty": self.htf_bias_penalty,
             "ob_state_multiplier": self.ob_state_multiplier,
+            # Elliott Wave
+            "wave_confidence": self.wave_confidence,
+            "wave_direction": self.wave_direction,
+            "wave_conflict": int(self.wave_conflict),
+            "wave_label": self.wave_primary_label,
         }
 
     def to_reasoning(self) -> List[str]:
@@ -251,6 +263,13 @@ class SetupFeatures:
                 reasons.append(f"Good location ({self.premium_discount_score:.1f})")
             elif self.premium_discount_score <= 0.3:
                 reasons.append(f"Bad location ({self.premium_discount_score:.1f})")
+        # Elliott Wave (soft)
+        if self.wave_confidence >= 0.4:
+            wave_str = f"Wave {self.wave_primary_label} (conf {self.wave_confidence:.0%})"
+            if self.wave_conflict:
+                reasons.append(f"{wave_str} [CONFLICT]")
+            else:
+                reasons.append(wave_str)
         return reasons
 
 
@@ -280,6 +299,7 @@ class FeatureBuilder:
         htf_bias_penalty: float = 1.0,
         ob_state_multiplier: float = 1.0,
         smt_divergence_score: float = 0.0,
+        wave_analysis: Any = None,  # WaveAnalysis from elliott_wave.analyzer (optional)
     ) -> SetupFeatures:
         """Build feature vector from all available data.
 
@@ -466,6 +486,16 @@ class FeatureBuilder:
             nearest_resistance_pct=nearest_res,
             # SMT
             smt_divergence_score=smt_divergence_score,
+            # Elliott Wave
+            wave_confidence=wave_analysis.confidence if wave_analysis else 0.0,
+            wave_direction=(
+                1 if wave_analysis.direction and wave_analysis.direction.value == "impulse"
+                else -1 if wave_analysis.direction and wave_analysis.direction.value == "correction"
+                else 0
+            ) if wave_analysis else 0,
+            wave_conflict=wave_analysis.conflict if wave_analysis else False,
+            wave_alternatives_count=len(wave_analysis.alternatives) if wave_analysis else 0,
+            wave_primary_label=wave_analysis.primary.label if wave_analysis and wave_analysis.primary else "",
         )
 
 

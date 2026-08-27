@@ -716,6 +716,43 @@ body {
   text-align: center;
 }
 
+/* ===== Elliott Wave ===== */
+.wave-card {
+  margin: 10px 0;
+  padding: 10px;
+}
+.wave-empty {
+  font-size: 12px;
+  color: #555;
+  text-align: center;
+  padding: 4px 0;
+}
+.wave-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin-bottom: 4px;
+}
+.wave-detail {
+  font-size: 11px;
+  color: #aaa;
+  font-family: monospace;
+  margin-bottom: 4px;
+}
+.wave-confidence {
+  font-size: 11px;
+  color: #888;
+}
+.wave-conflict {
+  color: #f59e0b;
+  font-weight: 600;
+}
+.wave-alt {
+  font-size: 10px;
+  color: #666;
+  margin-top: 2px;
+}
+
 /* ===== RESPONSIVE for analytics ===== */
 @media (max-width: 900px) {
   .analytics-row { grid-template-columns: 1fr; }

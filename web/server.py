@@ -155,6 +155,17 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
         sr_levels = _compute_sr_levels(df, symbol, tf)
         signal_info = _compute_signal_light(df, symbol, tf)
 
+        # Wave analysis (soft feature)
+        wave_data = None
+        if config.wave.enabled:
+            try:
+                from elliott_wave.analysis import analyze_waves
+                from elliott_wave.wave_types import WaveDegree
+                wave_analysis = analyze_waves(df, symbol, tf, degree=WaveDegree.MINOR)
+                wave_data = wave_analysis.to_dict()
+            except Exception as e:
+                logger.debug(f"Wave analysis failed for {symbol}/{tf}: {e}")
+
         # Price history for chart (последние 20 свечей)
         price_history = []
         for _, row in df.tail(20).iterrows():
@@ -176,6 +187,7 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             "levels": sr_levels,
             "signal": signal_info,
             "priceHistory": price_history,
+            "waves": wave_data,
         }
     except Exception as e:
         import traceback
@@ -374,6 +386,25 @@ async def api_open_trades(request):
         return web.json_response({"trades": [], "error": str(e)})
 
 
+async def api_waves(request):
+    """GET /api/waves/{symbol}/{timeframe} — Elliott Wave analysis."""
+    symbol = request.match_info.get("symbol", "BTC/USDT").upper()
+    timeframe = request.match_info.get("timeframe", "1h")
+    if "/" not in symbol:
+        symbol = symbol + "/USDT"
+    try:
+        df = await _fetch_candles(symbol, timeframe, limit=200)
+        if df is None or df.empty:
+            return web.json_response({"error": "No data"}, status=404)
+        from elliott_wave.analysis import analyze_waves
+        from elliott_wave.wave_types import WaveDegree
+        result = analyze_waves(df, symbol, timeframe, degree=WaveDegree.MINOR)
+        return web.json_response(result.to_dict())
+    except Exception as e:
+        logger.error(f"api_waves error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # ─── App factory ────────────────────────────────────────────────────────
 
 def create_app() -> web.Application:
@@ -391,6 +422,7 @@ def create_app() -> web.Application:
 
     # API
     app.router.add_get("/api/open-trades", api_open_trades)
+    app.router.add_get("/api/waves/{symbol}/{timeframe}", api_waves)
 
     # WebSocket
     app.router.add_get("/ws", ws_handler)

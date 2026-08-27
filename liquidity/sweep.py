@@ -28,6 +28,7 @@ from typing import Literal, Optional
 import pandas as pd
 
 from config.settings import config
+from market_structure.swing_detector import detect_swings, SwingType
 
 
 @dataclass
@@ -146,8 +147,12 @@ def detect_sweeps(
 
     sweeps: list[SweepEvent] = []
 
-    swing_highs = _find_swing_highs(data, swing_window)
-    swing_lows = _find_swing_lows(data, swing_window)
+    swing_highs = [{"index": s.index, "price": s.price}
+                    for s in detect_swings(data, left_bars=2, right_bars=2, strict=True)
+                    if s.swing_type == SwingType.HIGH]
+    swing_lows = [{"index": s.index, "price": s.price}
+                   for s in detect_swings(data, left_bars=2, right_bars=2, strict=True)
+                   if s.swing_type == SwingType.LOW]
 
     # TZ §5.2: 1-candle sweep detection
     # Bearish: High[current] > Pool_Level AND Close[current] < Pool_Level
@@ -206,42 +211,6 @@ def detect_sweeps(
                 ))
 
     return sweeps
-
-
-def _find_swing_highs(df: pd.DataFrame, window: int) -> list[dict]:
-    """Find swing highs using TZ §4.1 strict 2-neighbor formula.
-
-    High[i] is swing high iff:
-      High[i-2] < High[i] AND High[i-1] < High[i] AND
-      High[i+1] < High[i] AND High[i+2] < High[i]
-    """
-    highs = []
-    for i in range(window, len(df) - window):
-        h = df["high"].iloc[i]
-        if (df["high"].iloc[i - 2] < h and
-            df["high"].iloc[i - 1] < h and
-            df["high"].iloc[i + 1] < h and
-            df["high"].iloc[i + 2] < h):
-            highs.append({"index": i, "price": float(h)})
-    return highs
-
-
-def _find_swing_lows(df: pd.DataFrame, window: int) -> list[dict]:
-    """Find swing lows using TZ §4.1 strict 2-neighbor formula.
-
-    Low[i] is swing low iff:
-      Low[i-2] > Low[i] AND Low[i-1] > Low[i] AND
-      Low[i+1] > Low[i] AND Low[i+2] > Low[i]
-    """
-    lows = []
-    for i in range(window, len(df) - window):
-        l = df["low"].iloc[i]
-        if (df["low"].iloc[i - 2] > l and
-            df["low"].iloc[i - 1] > l and
-            df["low"].iloc[i + 1] > l and
-            df["low"].iloc[i + 2] > l):
-            lows.append({"index": i, "price": float(l)})
-    return lows
 
 
 def _calc_volume_ratio(df: pd.DataFrame, index: int) -> float:

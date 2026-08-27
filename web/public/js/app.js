@@ -40,7 +40,7 @@ function connect() {
 
 // ── Render ──────────────────────────────────────────
 function renderDashboard(data) {
-  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies } = data;
+  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, waves } = data;
 
   if (error) {
     updateStatus(`Ошибка: ${error}`);
@@ -58,6 +58,7 @@ function renderDashboard(data) {
   if (openInterest) renderOpenInterest(openInterest);
   if (volumeProfile) renderVolumeProfile(volumeProfile, price);
   if (bookAnomalies) renderBookAnomalies(bookAnomalies);
+  if (waves) renderWaves(waves);
 
   renderVerdictFromSignal(signal, indicators);
 }
@@ -444,6 +445,31 @@ function renderBookAnomalies(book) {
   } else {
     list.innerHTML = '<div class="book-no-anomalies">Нет аномалий</div>';
   }
+}
+
+// ── Elliott Wave ──────────────────────────────────────────
+function renderWaves(waves) {
+  const el = document.getElementById('wave-info');
+  if (!el) return;
+
+  if (!waves || !waves.primary) {
+    el.innerHTML = '<div class="wave-empty">Wave: no count</div>';
+    return;
+  }
+
+  const p = waves.primary;
+  const dirEmoji = p.direction === 'impulse' ? '🟢' : '🔵';
+  const conflictStr = waves.conflict ? ' <span class="wave-conflict">⚠️ конфликт</span>' : '';
+  const confPct = Math.round(waves.confidence * 100);
+
+  let pointsStr = p.points.map(pt => pt.label).join(' → ');
+
+  el.innerHTML = `
+    <div class="wave-header">${dirEmoji} ${p.label}</div>
+    <div class="wave-detail">${pointsStr}</div>
+    <div class="wave-confidence">Confidence: ${confPct}%${conflictStr}</div>
+    ${waves.alternatives.length > 0 ? `<div class="wave-alt">Alt: ${waves.alternatives.map(a => a.label).join(', ')}</div>` : ''}
+  `;
 }
 
 // ── Utils для нового функционала ───────────────────

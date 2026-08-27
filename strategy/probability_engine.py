@@ -22,6 +22,7 @@ from loguru import logger
 from strategy.feature_builder import SetupFeatures
 from strategy.scenario_engine import MarketScenario, ScenarioEvaluation
 from strategy.market_phase_engine import MarketPhase, PhaseAssessment, get_phase_modifier
+from config.settings import config
 
 
 @dataclass
@@ -335,6 +336,13 @@ class ProbabilityEngine:
                 model_type="rules",
             )
         winrate_mult *= f.ob_state_multiplier
+
+        # ═══ Elliott Wave (soft feature) ═══
+        if f.wave_confidence >= config.wave.min_confidence and not f.wave_conflict:
+            wave_edge = f.wave_confidence * config.wave.weight
+            winrate += wave_edge
+        elif f.wave_conflict:
+            winrate *= config.wave.conflict_penalty
 
         winrate = winrate * winrate_mult
         winrate = max(20.0, min(85.0, winrate))  # clamp

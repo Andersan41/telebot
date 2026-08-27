@@ -89,8 +89,6 @@ async def send_signal(result: SignalResult, context_verdict: ContextVerdict = No
 
     bot = get_bot()
     text = result.format_message()
-    if context_verdict is not None and config.context_enabled:
-        text += format_context_block(context_verdict)
 
     for attempt in range(retries):
         try:
@@ -161,9 +159,6 @@ def _format_blocked_message(result: 'SignalResult', symbol: str, timeframe: str,
         f"{signal_emoji} {result.signal.value} {symbol} {timeframe}",
         f"Причина: {reason}",
     ]
-    if context_verdict is not None:
-        lines.append("")
-        lines.append(format_context_block(context_verdict))
     return "\n".join(lines)
 
 
