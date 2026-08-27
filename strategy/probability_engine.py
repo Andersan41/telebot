@@ -493,14 +493,15 @@ class ProbabilityEngine:
         elif scenario.components_count >= 3:
             base_p *= 1.05
 
-        # Critical components all confirmed = boost
+        # Critical components all confirmed = boost (never reduce)
         if scenario.critical_components > 0:
             critical_score = sum(
                 component_scores.get(c.id, 0)
                 for c in scenario.components
                 if c.is_critical
             ) / scenario.critical_components
-            base_p = base_p * 0.7 + critical_score * 0.3
+            blended = base_p * 0.7 + critical_score * 0.3
+            base_p = max(base_p, blended)
 
         # ── 4. Phase modifier ──
         if phase:

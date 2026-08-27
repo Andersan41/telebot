@@ -195,6 +195,8 @@ class SetupFeatures:
             "htf_alignment_score": self.htf_alignment_score if self.htf_alignment_score is not None else 0.5,
             "premium_discount_score": self.premium_discount_score if self.premium_discount_score is not None else 0.5,
             "smt_divergence_score": self.smt_divergence_score,
+            "htf_bias_penalty": self.htf_bias_penalty,
+            "ob_state_multiplier": self.ob_state_multiplier,
         }
 
     def to_reasoning(self) -> List[str]:

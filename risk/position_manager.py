@@ -276,7 +276,16 @@ def check_time_stop(
     current_price: float,
     current_time: Optional[datetime] = None,
 ) -> bool:
-    """TZ §8.6: Time stop check — PAUSED."""
+    """TZ §8.6: Time stop — close if held too long without hitting TP."""
+    if current_time is None:
+        return False
+    hold_minutes = position.elapsed_minutes(current_time)
+    if hold_minutes >= TIME_STOP_MAX_MINUTES:
+        logger.info(
+            f"Time stop triggered: {position.symbol} held {hold_minutes:.0f}min "
+            f">= {TIME_STOP_MAX_MINUTES}min"
+        )
+        return True
     return False
 
 
@@ -380,8 +389,9 @@ def manage_position(
             result["reason"] = f"TP{len(position.completed_targets)}_FULL"
             return result
 
-    # 5. Breakeven check (TZ §8.4)
-    be_sl = check_breakeven(position, candle_close)
+    # 5. Breakeven check (TZ §8.4) — use intra-bar high/low, not close
+    _be_price = candle_high if position.direction == "BUY" else candle_low
+    be_sl = check_breakeven(position, _be_price)
     if be_sl is not None:
         result["new_sl"] = be_sl
         result["breakeven"] = True

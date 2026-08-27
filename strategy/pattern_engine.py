@@ -66,6 +66,7 @@ class ICTSetup:
     has_fvg: bool = False
     fvg_type: Optional[str] = None
     fvg_size_pct: float = 0.0
+    fvg_midpoint: float = 0.0
 
     # ── Entry readiness (soft — log but don't block) ──
     entry_armed: bool = False
@@ -260,12 +261,15 @@ class PatternEngine:
             if not passes:
                 logger.debug(f"Sweep rejected by false filter: {filter_reason}")
                 continue
-            has_sweep = True
-            sweep_type = s.type
-            sweep_strength = s.strength
-            sweep_reclaim = s.reclaim_candles
-            sweep_candle_index = s.candle_index
-            break  # use first valid sweep
+            # Pick strongest sweep (highest strength, most recent if tied)
+            if not has_sweep or s.strength > sweep_strength or (
+                s.strength == sweep_strength and s.candle_index > sweep_candle_index
+            ):
+                has_sweep = True
+                sweep_type = s.type
+                sweep_strength = s.strength
+                sweep_reclaim = s.reclaim_candles
+                sweep_candle_index = s.candle_index
 
         if not has_sweep:
             return ICTSetup(
@@ -476,6 +480,7 @@ class PatternEngine:
                 setup.has_fvg = True
                 setup.fvg_type = f.type
                 setup.fvg_size_pct = f.size_pct
+                setup.fvg_midpoint = (f.top + f.bottom) / 2
                 break
 
     def _check_entry_armed(self, setup: ICTSetup, current_price: float) -> bool:
@@ -495,13 +500,9 @@ class PatternEngine:
                 return True
 
         # Check FVG containment
-        if setup.has_fvg:
-            # For bullish FVG: price should be within or below the gap
-            if setup.fvg_type == "bullish":
-                # FVG gap is between bottom and top
-                # Price entering from above retracing into the gap
-                return True  # FVG exists and is active → armed
-            elif setup.fvg_type == "bearish":
+        if setup.has_fvg and setup.fvg_midpoint > 0:
+            dist_pct = abs(current_price - setup.fvg_midpoint) / current_price * 100
+            if dist_pct <= self.ob_proximity_pct:
                 return True
 
         return False

@@ -94,6 +94,8 @@ class RiskEngine:
             min_risk_pct=rc.min_risk_pct,
             max_risk_pct=rc.max_risk_pct,
             sl_min_atr_multiplier=getattr(rc, 'sl_min_atr_multiplier', 2.0),
+            max_active_signals=getattr(config, 'max_active_signals', 3),
+            max_portfolio_risk_pct=getattr(config, 'max_portfolio_risk_pct', 3.0),
         )
 
     def evaluate(
@@ -127,6 +129,18 @@ class RiskEngine:
             RiskDecision with should_trade, risk_pct, and details.
         """
         # === HARD GATES ===
+
+        # 0. Portfolio limits
+        if portfolio.active_count >= portfolio.max_active_signals:
+            return RiskDecision(
+                should_trade=False,
+                rejection_reason=f"max active signals reached ({portfolio.active_count}/{portfolio.max_active_signals})",
+            )
+        if portfolio.total_risk_pct >= portfolio.max_portfolio_risk_pct:
+            return RiskDecision(
+                should_trade=False,
+                rejection_reason=f"portfolio risk limit reached ({portfolio.total_risk_pct:.2f}%/{portfolio.max_portfolio_risk_pct}%)",
+            )
 
         # 1. Data integrity
         if entry_price <= 0 or sl <= 0 or tp <= 0:

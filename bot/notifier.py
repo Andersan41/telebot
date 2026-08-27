@@ -110,6 +110,10 @@ async def send_signal(result: SignalResult, context_verdict: ContextVerdict = No
                 logger.error(f"Failed to send signal after {retries} attempts: {e}")
         except Exception as e:
             logger.error(f"Unexpected error sending signal: {e}", exc_info=True)
+            try:
+                await send_error_alert(f"Signal format error for {result.symbol}: {e}")
+            except Exception:
+                pass
             return
 
 
@@ -119,7 +123,7 @@ async def send_signal_blocked(
     timeframe: str,
     reason: str,
     context_verdict: ContextVerdict = None,
-    retries: int = 3,
+    retries: int = config.notifier.send_retries,
 ):
     """Отправляет в канал уведомление о заблокированном сигнале."""
     if not config.signal_block_notify:

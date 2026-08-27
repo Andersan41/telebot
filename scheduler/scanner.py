@@ -102,6 +102,7 @@ class _FunnelCounter:
 
 
 _current_funnel = _FunnelCounter()
+_scan_lock = asyncio.Lock()
 
 
 # ── Dynamic Thesis caches (per symbol/timeframe) ─────────────────────
@@ -593,6 +594,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 logger.debug(f"Breakout quality check failed for {symbol} {timeframe}: {e}")
 
         # ═══ Phase 1.42: OB Retest + Mitigation Gate (v2.5) ═══
+        _nearest_ob = None
         if config.require_ob_retest and setup.has_ob and setup.direction:
             _ob_gate_passed = False
             _ob_gate_reason = ""
@@ -961,7 +963,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
 
                 _confirm_result = find_confirmation(
                     df_5m=df_confirm,
-                    direction=setup.direction.value,
+                    direction=setup.direction,
                     entry_zone=_entry_zone,
                     sl_price=sl,
                     setup_timestamp=_setup_ts,
@@ -1096,8 +1098,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                     )
             else:
                 # ── FIRST TIME: build graph + create thesis ──
-                _swing_highs = getattr(structure, "swing_points", []) or []
-                _swing_lows = getattr(structure, "swing_points", []) or []
+                _swing_highs = getattr(structure, "recent_highs", []) or []
+                _swing_lows = getattr(structure, "recent_lows", []) or []
                 _equal_levels = detect_equal_levels(_swing_highs, _swing_lows)
                 _external_levels = (
                     detect_external_liquidity(_df_clean, lookback=200)
@@ -1293,74 +1295,9 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         except Exception as e:
             logger.debug(f"[HYPOTHESIS] Engine error for {symbol} {timeframe}: {e}")
 
-        # ═══ Phase 1.65: Scenario Engine (SHADOW MODE) ═══
-
-        _new_scenarios = []
-        _new_evaluations = []
-        try:
-            if _liq_graph is not None:
-                _new_scenarios = _scenario_engine.detect_scenarios(
-                    graph=_liq_graph,
-                    structure=structure,
-                    phase=_phase_assessment,
-                    direction=setup.direction,
-                )
-
-                if _new_scenarios:
-                    # Estimate probability for each scenario
-                    from strategy.probability_engine import probability_engine
-                    from strategy.weight_manager import weight_manager
-                    for scenario in _new_scenarios[:5]:  # top 5
-                        eval_result = probability_engine.estimate_scenario(
-                            features=features,
-                            scenario=scenario,
-                        )
-                        # WeightManager adjusts P(TP) based on historical stats
-                        eval_result = weight_manager.adjust(
-                            eval_result, symbol, scenario.name,
-                            regime=regime.regime if regime else None,
-                        )
-                        _new_evaluations.append(eval_result)
-
-                    logger.info(
-                        f"[SHADOW] ScenarioEngine: {symbol} {timeframe} | "
-                        f"detected={len(_new_scenarios)} "
-                        f"evaluated={len(_new_evaluations)} | "
-                        + " | ".join(
-                            f"{s.name}(p={e.probability:.2f})"
-                            for s, e in zip(_new_scenarios[:3], _new_evaluations[:3])
-                        )
-                    )
-
-                    # Record observations in ScenarioMemory
-                    for scenario in _new_scenarios:
-                        scenario_memory.record_observation(symbol, scenario.name)
-
-                    # Update TradeThesisManager
-                    _current_thesis = _thesis_manager.update(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        scenarios=_new_scenarios,
-                        evaluations=_new_evaluations,
-                        bar=len(_df_clean),
-                        price=entry_price,
-                    )
-                    if _current_thesis:
-                        logger.info(
-                            f"[SHADOW] Thesis: {symbol} {timeframe} | "
-                            f"status={_current_thesis.status} "
-                            f"dir={_current_thesis.direction} "
-                            f"scenario={_current_thesis.scenario.name} "
-                            f"p={_current_thesis.evaluation.probability:.2f} "
-                            f"age={_current_thesis.age_bars}"
-                        )
-
-        except Exception as e:
-            logger.debug(f"[SHADOW] ScenarioEngine error for {symbol} {timeframe}: {e}")
-
         # ═══ Phase 2: Feature Builder ═══
 
-        regime = _detect_regime(ind, df, symbol, timeframe)
+        regime = _regime_for_gates
         from risk.volatility_regime import classify_volatility
         vol_regime = classify_volatility(ind.atr, ind.close)
 
@@ -1437,6 +1374,71 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             ob_state_multiplier=_ob_state_multiplier,
             smt_divergence_score=_smt_to_score(_smt_result),
         )
+
+        # ═══ Phase 1.65: Scenario Engine (SHADOW MODE) ═══
+
+        _new_scenarios = []
+        _new_evaluations = []
+        try:
+            if _liq_graph is not None:
+                _new_scenarios = _scenario_engine.detect_scenarios(
+                    graph=_liq_graph,
+                    structure=structure,
+                    phase=_phase_assessment,
+                    direction=setup.direction,
+                )
+
+                if _new_scenarios:
+                    # Estimate probability for each scenario
+                    from strategy.probability_engine import probability_engine
+                    from strategy.weight_manager import weight_manager
+                    for scenario in _new_scenarios[:5]:  # top 5
+                        eval_result = probability_engine.estimate_scenario(
+                            features=features,
+                            scenario=scenario,
+                        )
+                        # WeightManager adjusts P(TP) based on historical stats
+                        eval_result = weight_manager.adjust(
+                            eval_result, symbol, scenario.name,
+                            regime=regime.regime if regime else None,
+                        )
+                        _new_evaluations.append(eval_result)
+
+                    logger.info(
+                        f"[SHADOW] ScenarioEngine: {symbol} {timeframe} | "
+                        f"detected={len(_new_scenarios)} "
+                        f"evaluated={len(_new_evaluations)} | "
+                        + " | ".join(
+                            f"{s.name}(p={e.probability:.2f})"
+                            for s, e in zip(_new_scenarios[:3], _new_evaluations[:3])
+                        )
+                    )
+
+                    # Record observations in ScenarioMemory
+                    for scenario in _new_scenarios:
+                        scenario_memory.record_observation(symbol, scenario.name)
+
+                    # Update TradeThesisManager
+                    _current_thesis = _thesis_manager.update(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        scenarios=_new_scenarios,
+                        evaluations=_new_evaluations,
+                        bar=len(_df_clean),
+                        price=entry_price,
+                    )
+                    if _current_thesis:
+                        logger.info(
+                            f"[SHADOW] Thesis: {symbol} {timeframe} | "
+                            f"status={_current_thesis.status} "
+                            f"dir={_current_thesis.direction} "
+                            f"scenario={_current_thesis.scenario.name} "
+                            f"p={_current_thesis.evaluation.probability:.2f} "
+                            f"age={_current_thesis.age_bars}"
+                        )
+
+        except Exception as e:
+            logger.debug(f"[SHADOW] ScenarioEngine error for {symbol} {timeframe}: {e}")
 
         # ═══ Phase 3: Probability Engine ═══
 
@@ -1835,32 +1837,36 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
 
 async def run_scan_cycle(notify_callback, blocked_callback=None, timeframes: Optional[list[str]] = None):
     """One scan cycle —遍历 all symbols and timeframes in parallel."""
-    await check_recent_losses()
-    if is_circuit_breaker_active():
-        logger.warning("Scan skipped — circuit breaker active (too many recent losses)")
+    if _scan_lock.locked():
+        logger.warning("Scan cycle already in progress — skipping this trigger")
         return
+    async with _scan_lock:
+        await check_recent_losses()
+        if is_circuit_breaker_active():
+            logger.warning("Scan skipped — circuit breaker active (too many recent losses)")
+            return
 
-    symbols = get_active_symbols()
-    disabled = await db.get_disabled_symbols() or []
-    symbols = [s for s in symbols if s not in disabled]
-    tfs = timeframes if timeframes is not None else config.trading.primary_timeframes
+        symbols = get_active_symbols()
+        disabled = await db.get_disabled_symbols() or []
+        symbols = [s for s in symbols if s not in disabled]
+        tfs = timeframes if timeframes is not None else config.trading.primary_timeframes
 
-    logger.info(f"Starting scan: {len(symbols)} symbols × {tfs}")
+        logger.info(f"Starting scan: {len(symbols)} symbols × {tfs}")
 
-    _current_funnel.__init__()
+        _current_funnel.__init__()
 
-    tasks = []
-    for symbol in symbols:
-        for tf in tfs:
-            tasks.append(scan_symbol_v2(symbol, tf, notify_callback, blocked_callback))
+        tasks = []
+        for symbol in symbols:
+            for tf in tfs:
+                tasks.append(scan_symbol_v2(symbol, tf, notify_callback, blocked_callback))
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    signals_found = 0
-    for result in results:
-        if isinstance(result, SignalResult) and result is not None:
-            signals_found += 1
-        elif isinstance(result, Exception):
-            logger.error(f"Scan task failed: {result}", exc_info=result)
-    logger.info(f"Scan complete. Signals found: {signals_found}/{len(tasks)}")
+        signals_found = 0
+        for result in results:
+            if isinstance(result, SignalResult) and result is not None:
+                signals_found += 1
+            elif isinstance(result, Exception):
+                logger.error(f"Scan task failed: {result}", exc_info=result)
+        logger.info(f"Scan complete. Signals found: {signals_found}/{len(tasks)}")
     _current_funnel.log_summary()

@@ -89,7 +89,7 @@ async def cmd_lastsignal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dt_str = dt.strftime("%Y-%m-%d %H:%M UTC") if dt else "—"
         lines.append(
             f"{emoji} <b>{sig.signal_type}</b> {sig.symbol} {sig.timeframe} "
-            f"@ {sig.close_price:.4f} | {dt_str}"
+            f"@ {f'{sig.close_price:.4f}' if sig.close_price else '—'} | {dt_str}"
         )
 
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)

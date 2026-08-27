@@ -427,7 +427,7 @@ async def check_open_outcomes() -> None:
             await _send_close_notification(signal, reason, current_price, net_pnl,
                                            actual_sl=pos.stop_loss)
             from risk.daily_limits import daily_limits
-            daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0))
+            daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0), risk_pct=outcome.risk_pct or 0.0)
             _position_state.pop(sig_id, None)
             continue
 
@@ -514,7 +514,7 @@ async def check_open_outcomes() -> None:
             await _send_close_notification(signal, "HIT_TP", current_price, net_pnl)
             # Record daily limits
             from risk.daily_limits import daily_limits
-            daily_limits.record_trade_closed(net_pnl, was_loss=False)
+            daily_limits.record_trade_closed(net_pnl, was_loss=False, risk_pct=outcome.risk_pct or 0.0)
         elif hit_sl:
             # Use actual SL price as close (may have been moved by BE/trailing)
             close_price = actual_sl if (
@@ -563,7 +563,7 @@ async def check_open_outcomes() -> None:
                                            actual_sl=actual_sl)
             # Record daily limits
             from risk.daily_limits import daily_limits
-            daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0))
+            daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0), risk_pct=outcome.risk_pct or 0.0)
         else:
             # Time Stop (TZ §8.6) — PAUSED
             await db.touch_outcome_checked(outcome.id)

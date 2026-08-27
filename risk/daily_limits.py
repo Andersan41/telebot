@@ -119,10 +119,16 @@ class DailyLimitsTracker:
             f"trades={self._state.daily_trades_count})"
         )
 
-    def record_trade_closed(self, pnl_pct: float, was_loss: bool) -> None:
+    def record_trade_closed(self, pnl_pct: float, was_loss: bool, risk_pct: float = 0.0) -> None:
         """Record trade closure outcome."""
         self._maybe_reset()
         self._state.daily_pnl_pct += pnl_pct
+
+        # Free up the risk budget consumed by this trade
+        if risk_pct > 0:
+            self._state.daily_risk_used_pct = max(
+                0.0, self._state.daily_risk_used_pct - risk_pct
+            )
 
         if was_loss:
             self._state.consecutive_losses += 1
@@ -130,8 +136,9 @@ class DailyLimitsTracker:
             self._state.consecutive_losses = 0
 
         logger.info(
-            f"Daily limits: trade closed pnl={pnl_pct:+.2f}% "
+            f"Daily limits: trade closed pnl={pnl_pct:+.2f}% risk_freed={risk_pct:.2f}% "
             f"(daily_pnl={self._state.daily_pnl_pct:+.2f}%, "
+            f"risk_used={self._state.daily_risk_used_pct:.2f}%, "
             f"consecutive_losses={self._state.consecutive_losses})"
         )
 

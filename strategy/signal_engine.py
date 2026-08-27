@@ -115,7 +115,7 @@ class SignalResult:
             confidence = (tech_pct * blend) + (market_pct * (1.0 - blend))
         else:
             confidence = tech_pct
-        return round(confidence * 100, 1)
+        return round(min(confidence, 1.0) * 100, 1)
 
     def format_message(self) -> str:
         if self.signal == SignalType.BUY:
@@ -125,7 +125,7 @@ class SignalResult:
         else:
             signal_word = ""
         header = f"{self.signal.value} — {signal_word}" if signal_word else self.signal.value
-        emoji = "\U0001f7e2" if self.signal == SignalType.BUY else "\U0001f534"
+        emoji = "\U0001f7e2" if self.signal == SignalType.BUY else "\U0001f534" if self.signal == SignalType.SELL else "\u26aa"
         lines = [
             f"{emoji} {header} — {self.symbol}",
         ]
