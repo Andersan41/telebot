@@ -235,9 +235,13 @@ def _find_swing_points(
         low_window = data["low"].iloc[i - swing_window : i + swing_window + 1]
 
         ts = data.index[i]
-        if hasattr(ts, "to_pydatetime"):
+        # Convert to datetime if needed
+        if isinstance(ts, (int, float)):
+            from datetime import timezone as _tz
+            ts = datetime.fromtimestamp(ts, tz=_tz.utc)
+        elif hasattr(ts, "to_pydatetime"):
             ts = ts.to_pydatetime()
-        if ts.tzinfo is None:
+        if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
             ts = ts.replace(tzinfo=__import__("datetime", fromlist=["timezone"]).timezone.utc)
 
         candle_idx = offset + i  # absolute index in original df

@@ -403,4 +403,4 @@ class TestSignalResultFormatting:
             reasons=[], score=5,
         )
         msg = result.format_message()
-        assert "R/R" in msg
+        assert "RR:" in msg

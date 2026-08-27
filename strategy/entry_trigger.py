@@ -44,7 +44,7 @@ class EntryTrigger:
 
     def __init__(
         self,
-        entry_proximity_pct: float = 1.5,   # how close price must be to entry
+        entry_proximity_pct: float = 0.3,   # how close price must be to entry
         max_spread_pct: float = 0.1,         # max spread to allow entry
     ):
         self.entry_proximity_pct = entry_proximity_pct

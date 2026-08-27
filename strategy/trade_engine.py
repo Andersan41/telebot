@@ -129,7 +129,7 @@ class TradeEngine:
             )
 
         # SL = invalidation level + buffer (ATR-based)
-        sl_buffer = atr * 0.15  # 15% of ATR as buffer
+        sl_buffer = atr * 0.35  # 35% of ATR as buffer
         if signal == SignalType.BUY:
             sl = round(invalidation.level - sl_buffer, 8)
         else:
@@ -157,8 +157,8 @@ class TradeEngine:
                     tick_buffer = 10 ** (-price_precision)
             except Exception:
                 pass
-            # ATR buffer: 5% of ATR
-            atr_buffer = atr * 0.05
+            # ATR buffer: 15% of ATR
+            atr_buffer = atr * 0.15
 
             total_buffer = spread_buffer + tick_buffer + atr_buffer
 
@@ -176,12 +176,7 @@ class TradeEngine:
                     f"(candle_high={candle_high:.4f}, spread={spread_buffer:.6f}, "
                     f"tick={tick_buffer:.6f}, atr_buf={atr_buffer:.6f})"
                 )
-            elif signal == SignalType.SELL and sl <= candle_high:
-                sl = round(candle_high + atr * 0.10, 8)
-                logger.debug(
-                    f"SL adjusted above candle high: {sl:.4f} "
-                    f"(candle_high={candle_high:.4f}, atr={atr:.4f})"
-                )
+
 
         # ═══ Step 3: Find Targets (TP) ═══
 

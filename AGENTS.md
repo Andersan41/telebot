@@ -56,6 +56,11 @@ when behavior changes, not this one.
   Blocks buy continuations against bearish HTF bias (W1→D1→H4→H1 EMA).
 - **Premium/Discount zones** are OFF (`config.premium_discount = False`). A/B showed
   they hurt performance (PF 1.28→0.91). Revisit after 500+ live trades with v2.
+- **Breakout Quality** (`liquidity/breakout_quality.py`) distinguishes AMD stop-hunt from a
+  real breakout: close beyond the settled range boundary + body portion + volume + OI
+  vs. a wick-pierce fake break. Soft gate by default (`breakout_quality_hard_gate=False`,
+  shadow log only). Wired in `scan_symbol_v2` Phase 1.41; OI via
+  `context_fetcher.fetch_open_interest`. Config: `BREAKOUT_QUALITY_*`.
 
 ## Scheduler
 

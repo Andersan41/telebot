@@ -61,8 +61,8 @@ class RiskEngine:
 
     def __init__(
         self,
-        min_rr_ratio: float = 1.5,
-        sl_absolute_min_pct: float = 0.25,
+        min_rr_ratio: float = 2.0,
+        sl_absolute_min_pct: float = 0.8,
         sl_absolute_max_pct: float = 5.0,
         base_risk_pct: float = 1.0,
         min_risk_pct: float = 0.1,
@@ -93,6 +93,7 @@ class RiskEngine:
             base_risk_pct=rc.base_risk_pct,
             min_risk_pct=rc.min_risk_pct,
             max_risk_pct=rc.max_risk_pct,
+            sl_min_atr_multiplier=getattr(rc, 'sl_min_atr_multiplier', 2.0),
         )
 
     def evaluate(
@@ -143,7 +144,19 @@ class RiskEngine:
                 rejection_reason="zero risk distance",
             )
 
-        rr_ratio = reward_dist / risk_dist
+        # Account for exchange fees + slippage in R:R calculation
+        from config.settings import config
+        _fee = getattr(config.trading, 'exchange_fee_pct', 0.05) / 100  # per side
+        _slip = getattr(config.trading, 'slippage_pct', 0.05) / 100    # per side
+        _round_trip_cost = (_fee + _slip) * 2  # entry + exit costs
+        _cost_dist = entry_price * _round_trip_cost
+
+        # Effective risk = SL distance + round-trip costs
+        effective_risk = risk_dist + _cost_dist
+        # Effective reward = TP distance - round-trip costs
+        effective_reward = max(0, reward_dist - _cost_dist)
+
+        rr_ratio = effective_reward / effective_risk if effective_risk > 0 else 0
         sl_distance_pct = risk_dist / entry_price * 100
 
         # 2. R:R minimum
@@ -182,18 +195,25 @@ class RiskEngine:
 
         # === POSITION SIZING ===
 
-        # Kelly-inspired: f = (p * b - q) / b
-        p = probability.p_tp
-        q = 1 - p
-        b = rr_ratio
-        kelly = (p * b - q) / b if b > 0 else 0
-        kelly = max(0.0, min(kelly, 0.20))  # cap at 20% (half-Kelly)
+        _risk_mode = getattr(config, 'risk_mode', 'fixed')
 
-        # Scale by model confidence
-        kelly *= probability.confidence
+        kelly = 0.0
+        if _risk_mode == 'fixed':
+            # Fixed risk: risk = base_risk_pct, position sized by SL distance
+            risk_pct = self.base_risk_pct
+        else:
+            # Kelly-inspired: f = (p * b - q) / b
+            p = probability.p_tp
+            q = 1 - p
+            b = rr_ratio
+            kelly = (p * b - q) / b if b > 0 else 0
+            kelly = max(0.0, min(kelly, 0.20))  # cap at 20% (half-Kelly)
 
-        # Final risk = min(kelly, base_risk)
-        risk_pct = min(kelly * 100, self.base_risk_pct)
+            # Scale by model confidence
+            kelly *= probability.confidence
+
+            # Final risk = min(kelly, base_risk)
+            risk_pct = min(kelly * 100, self.base_risk_pct)
 
         # Scenario score scaling (from MarketThesisEngine)
         # Higher scenario quality → larger position (up to 1.2x)
@@ -242,10 +262,11 @@ class RiskEngine:
         logger.info(
             f"Risk decision: risk={risk_pct:.2f}% | "
             f"RR={rr_ratio:.2f} | SL={sl_distance_pct:.2f}% | "
-            f"P(TP)={probability.p_tp:.1%} | Kelly={kelly:.3f} | "
+            f"P(TP)={probability.p_tp:.1%} | "
             f"vol_adj={vol_adj:.2f} | mss_adj={mss_adj:.2f} | "
             f"scenario_adj={scenario_adj:.2f} | "
-            f"stability_adj={stability_adj:.2f}"
+            f"stability_adj={stability_adj:.2f} | "
+            f"mode={_risk_mode}"
         )
 
         return RiskDecision(

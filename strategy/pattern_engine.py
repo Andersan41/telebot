@@ -23,6 +23,7 @@ RSI/ADX/EMA never block.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Literal, Optional
 
 from loguru import logger
@@ -83,6 +84,19 @@ class ICTSetup:
         return len(self.components_found)
 
     @property
+    def confirmation_score(self) -> int:
+        """Weighted confirmation score (TZ §6.4): BOS=2, FVG=1, OB=1.
+        Minimum score for entry: 2."""
+        score = 0
+        if self.has_bos:
+            score += 2
+        if self.has_fvg:
+            score += 1
+        if self.has_ob:
+            score += 1
+        return score
+
+    @property
     def is_reversal(self) -> bool:
         return self.setup_type == "reversal"
 
@@ -123,6 +137,7 @@ class PatternEngine:
         candle_quality,
         current_price: float,
         atr: float = 0.0,
+        sweep_timestamp: Optional[datetime] = None,
     ) -> ICTSetup:
         """Detect whether a valid ICT setup exists.
 
@@ -160,7 +175,7 @@ class PatternEngine:
         # ═══ CONTINUATION PATH ═══
         # Trend → BOS (only if reversal not found)
         if not reversal.detected:
-            continuation = self._try_continuation(structure)
+            continuation = self._try_continuation(structure, sweeps)
             if continuation.detected:
                 direction = continuation.direction
                 setup_type = "continuation"
@@ -192,7 +207,15 @@ class PatternEngine:
         setup.setup_type = setup_type
         setup.structure_trend = structure.trend if structure else None
 
-        self._detect_entry_zones(setup, order_blocks, fvgs, direction, current_price)
+        # Extract sweep timestamp for temporal binding (TZ §6.0)
+        _sweep_ts = sweep_timestamp
+        if _sweep_ts is None:
+            for s in sweeps:
+                if s.is_valid:
+                    _sweep_ts = s.timestamp
+                    break
+
+        self._detect_entry_zones(setup, order_blocks, fvgs, direction, current_price, _sweep_ts)
 
         # ═══ CHECK ENTRY ARMED ═══
         setup.entry_armed = self._check_entry_armed(setup, current_price)
@@ -230,6 +253,13 @@ class PatternEngine:
 
         valid_sweeps = [s for s in sweeps if s.is_valid]
         for s in valid_sweeps:
+            # Apply false sweep filters (TZ §5.3)
+            passes, filter_reason = s.passes_false_sweep_filters(
+                atr=s.atr, pool_age_bars=s.pool_age_bars
+            )
+            if not passes:
+                logger.debug(f"Sweep rejected by false filter: {filter_reason}")
+                continue
             has_sweep = True
             sweep_type = s.type
             sweep_strength = s.strength
@@ -312,8 +342,12 @@ class PatternEngine:
             sweep_to_mss_bars=sweep_to_mss,
         )
 
-    def _try_continuation(self, structure) -> ICTSetup:
-        """Try to detect a CONTINUATION setup: trend + BOS."""
+    def _try_continuation(self, structure, sweeps: list = None) -> ICTSetup:
+        """Try to detect a CONTINUATION setup: trend + BOS.
+
+        TZ §6.3: BOS must break the last swing before the pullback.
+        We validate this by checking BOS level against recent swing points.
+        """
         if structure is None:
             return ICTSetup(
                 detected=False,
@@ -353,6 +387,35 @@ class PatternEngine:
                 rejection_reason="continuation: no BOS",
             )
 
+        # TZ §6.3: BOS must break the last swing before the pullback.
+        # Validate BOS level against the most recent swing in the opposite direction.
+        if structure.swing_points:
+            _swings = structure.swing_points
+            if direction == "buy":
+                # Bullish BOS should break the most recent swing high
+                _recent_highs = [s for s in _swings if s.type == "high" and s.candle_index < structure.last_bos.candle_index]
+                if _recent_highs:
+                    _last_swing_before = max(_recent_highs, key=lambda s: s.candle_index)
+                    if structure.last_bos.level <= _last_swing_before.price:
+                        return ICTSetup(
+                            detected=False,
+                            has_bos=has_bos, bos_type=bos_type,
+                            structure_trend=trend,
+                            rejection_reason=f"continuation: BOS level {structure.last_bos.level:.2f} <= last swing high {_last_swing_before.price:.2f}",
+                        )
+            elif direction == "sell":
+                # Bearish BOS should break the most recent swing low
+                _recent_lows = [s for s in _swings if s.type == "low" and s.candle_index < structure.last_bos.candle_index]
+                if _recent_lows:
+                    _last_swing_before = max(_recent_lows, key=lambda s: s.candle_index)
+                    if structure.last_bos.level >= _last_swing_before.price:
+                        return ICTSetup(
+                            detected=False,
+                            has_bos=has_bos, bos_type=bos_type,
+                            structure_trend=trend,
+                            rejection_reason=f"continuation: BOS level {structure.last_bos.level:.2f} >= last swing low {_last_swing_before.price:.2f}",
+                        )
+
         # 3. Trend alignment required
         trend_aligned = (
             (direction == "buy" and trend == "bullish") or
@@ -383,12 +446,19 @@ class PatternEngine:
         fvgs: list,
         direction: str,
         current_price: float,
+        sweep_timestamp: Optional[datetime] = None,
     ):
-        """Detect OB and FVG as entry zones (not gates)."""
-        # OB
+        """Detect OB and FVG as entry zones (not gates).
+
+        Temporal binding (TZ §6.0): only consider OBs/FVGs formed AFTER sweep.
+        """
+        # OB — temporal binding: ob.timestamp >= sweep_timestamp
         for ob in order_blocks:
             ob_dir = "buy" if ob.type == "bullish" else "sell" if ob.type == "bearish" else ob.type
             if ob.is_valid and ob_dir == direction:
+                if sweep_timestamp is not None and hasattr(ob, 'timestamp') and ob.timestamp is not None:
+                    if ob.timestamp < sweep_timestamp:
+                        continue
                 setup.has_ob = True
                 setup.ob_type = ob.type
                 setup.ob_midpoint = ob.midpoint
@@ -396,10 +466,13 @@ class PatternEngine:
                     setup.ob_distance_pct = abs(current_price - ob.midpoint) / current_price * 100
                 break
 
-        # FVG
+        # FVG — temporal binding: fvg.timestamp >= sweep_timestamp
         for f in fvgs:
             f_dir = "buy" if f.type == "bullish" else "sell" if f.type == "bearish" else f.type
             if f.is_active and f_dir == direction:
+                if sweep_timestamp is not None and hasattr(f, 'timestamp') and f.timestamp is not None:
+                    if f.timestamp < sweep_timestamp:
+                        continue
                 setup.has_fvg = True
                 setup.fvg_type = f.type
                 setup.fvg_size_pct = f.size_pct

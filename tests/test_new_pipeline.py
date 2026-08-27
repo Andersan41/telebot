@@ -847,7 +847,9 @@ class TestRiskEngine:
             entry_price=50000.0, sl=49500.0, tp=52500.0,
         )
         assert decision.should_trade is True
-        assert decision.kelly_fraction > 0
+        # In fixed mode, kelly_fraction is 0 but risk_pct is set from base_risk_pct
+        # In kelly mode, kelly_fraction > 0
+        assert decision.risk_pct > 0
         assert decision.probability_confidence == 0.9
 
 

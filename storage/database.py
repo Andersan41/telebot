@@ -53,6 +53,10 @@ class Signal(Base):
     mfe_pct = Column(Float, nullable=True)  # Maximum Favorable Excursion %
     mae_pct = Column(Float, nullable=True)  # Maximum Adverse Excursion %
 
+    # OB info for cooldown dedup (Phase 3.4)
+    ob_midpoint = Column(Float, nullable=True)  # Midpoint of the OB that triggered the signal
+    ob_type = Column(String(10), nullable=True)  # bullish / bearish
+
 
 class BotSetting(Base):
     __tablename__ = "bot_settings"
@@ -385,6 +389,24 @@ class Database:
                     await conn.commit()
                     logger.info(f"Migration: added decision_traces.{col_name}")
 
+            # ── OB cooldown columns (v2.5 Phase 3.4) ───
+            result = await conn.execute(
+                text("PRAGMA table_info(signals)")
+            )
+            sig_columns_v25 = [row[1] for row in result.fetchall()]
+            if "ob_midpoint" not in sig_columns_v25:
+                await conn.execute(
+                    text("ALTER TABLE signals ADD COLUMN ob_midpoint FLOAT")
+                )
+                await conn.commit()
+                logger.info("Migration: added signals.ob_midpoint")
+            if "ob_type" not in sig_columns_v25:
+                await conn.execute(
+                    text("ALTER TABLE signals ADD COLUMN ob_type VARCHAR(10)")
+                )
+                await conn.commit()
+                logger.info("Migration: added signals.ob_type")
+
     async def save_signal(
         self,
         symbol: str,
@@ -412,6 +434,9 @@ class Database:
         signal_detected_at: Optional[datetime] = None,
         telegram_sent_at: Optional[datetime] = None,
         exchange_notified_at: Optional[datetime] = None,
+        # OB info for cooldown dedup (Phase 3.4)
+        ob_midpoint: Optional[float] = None,
+        ob_type: Optional[str] = None,
     ) -> Signal:
         async with self._session_factory() as session:
             factors_json = json.dumps(confidence_v2_factors) if confidence_v2_factors else None
@@ -441,6 +466,8 @@ class Database:
                 signal_detected_at=signal_detected_at,
                 telegram_sent_at=telegram_sent_at,
                 exchange_notified_at=exchange_notified_at,
+                ob_midpoint=ob_midpoint,
+                ob_type=ob_type,
             )
             session.add(sig)
             await session.commit()

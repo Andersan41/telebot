@@ -1,0 +1,501 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SMC Bot Visualizer v2.5
+
+//@version=5
+indicator("SMC Bot Visualizer", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ПАРАМЕТРЫ
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- Order Blocks ---
+grp_ob = "Order Blocks"
+ob_show        = input.bool(true,  "Показать OB", group=grp_ob)
+ob_lookback    = input.int(50,    "Lookback (свечей)", minval=10, maxval=200, group=grp_ob)
+ob_displ_pct   = input.float(2.0, "Displacement min %", minval=0.5, step=0.1, group=grp_ob)
+ob_max_age     = input.int(35,    "Max age (свечей)", minval=5, maxval=100, group=grp_ob)
+ob_extend      = input.bool(false, "Расширять OB до mitigate", group=grp_ob)
+
+// --- Fair Value Gaps ---
+grp_fvg = "Fair Value Gaps"
+fvg_show  = input.bool(true,  "Показать FVG", group=grp_fvg)
+fvg_lookback = input.int(100, "Lookback", minval=20, maxval=500, group=grp_fvg)
+
+// --- Liquidity Sweeps ---
+grp_sw = "Liquidity Sweeps"
+sw_show     = input.bool(true,  "Показать Sweeps", group=grp_sw)
+sw_lookback = input.int(20,    "Lookback (свечей)", minval=5, maxval=100, group=grp_sw)
+
+// --- BOS / CHoCH ---
+grp_bos = "BOS / CHoCH"
+bos_show     = input.bool(true,  "Показать BOS/CHoCH", group=grp_bos)
+bos_lookback = input.int(50,    "Structure lookback", minval=10, maxval=200, group=grp_bos)
+
+// --- Premium / Discount (OTE) ---
+grp_ote = "Premium / Discount (OTE)"
+ote_show    = input.bool(true,  "Показать OTE зоны", group=grp_ote)
+ote_lookback = input.int(50,    "Lookback", minval=10, maxval=200, group=grp_ote)
+
+// --- Session Highlight ---
+grp_sess = "Session Highlight"
+sess_london_show = input.bool(true, "London (08-11 UTC)", group=grp_sess)
+sess_ny_show     = input.bool(true, "NY (13:30-16 UTC)", group=grp_sess)
+
+// --- Manual Trade Marker ---
+grp_trade = "Manual Trade Marker"
+trade_show     = input.bool(false, "Показать сделку", group=grp_trade)
+trade_entry    = input.float(0.0, "Entry Price", group=grp_trade)
+trade_sl       = input.float(0.0, "Stop Loss", group=grp_trade)
+trade_tp       = input.float(0.0, "Take Profit", group=grp_trade)
+trade_dir      = input.string("LONG", "Direction", options=["LONG", "SHORT"], group=grp_trade)
+
+// --- Info Panel ---
+grp_info = "Info Panel"
+info_show = input.bool(true, "Показать панель", group=grp_info)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ЦВЕТА (темная тема TV)
+// ══════════════════════════════════════════════════════════════════════════════
+
+color COL_BULL_OB     = color.new(#00C853, 80)   // зеленый Bull OB
+color COL_BEAR_OB     = color.new(#FF1744, 80)   // красный Bear OB
+color COL_BULL_OB_FT  = color.new(#00C853, 20)   // FRESH Bull
+color COL_BEAR_OB_FT  = color.new(#FF1744, 20)   // FRESH Bear
+color COL_TESTED_OB   = color.new(#FFD600, 60)   // TESTED — желтый
+color COL_MITIG_OB    = color.new(#78909C, 80)   // MITIGATED — серый
+color COL_FVG_BULL    = color.new(#00E676, 50)
+color COL_FVG_BEAR    = color.new(#FF5252, 50)
+color COL_BOS         = color.new(#2979FF, 0)
+color COL_CHOCH       = color.new(#FF6D00, 0)
+color COL_SWEEP_UP    = color.new(#FF4081, 0)
+color COL_SWEEP_DN    = color.new(#00B0FF, 0)
+color COL_LONDON      = color.new(#FFD600, 92)
+color COL_NY          = color.new(#2979FF, 92)
+color COL_OTE_DISC    = color.new(#00C853, 75)
+color COL_OTE_PREM    = color.new(#FF1744, 75)
+color COL_ENTRY       = color.new(#FFFFFF, 0)
+color COL_SL          = color.new(#FF1744, 0)
+color COL_TP          = color.new(#00E676, 0)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 1. ORDER BLOCKS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Структура для хранения OB
+type OrderBlock
+    float   high
+    float   low
+    int     bar_index
+    string  ob_type      // "bull" или "bear"
+    string  status       // "FRESH", "TESTED", "MITIGATED"
+    box     bx
+
+var array<OrderBlock> ob_array = array.new<OrderBlock>()
+
+// --- Детектирование displacement ---
+is_bull_displacement(int lookback, float min_pct) =>
+    if bar_index < lookback
+        false
+    else
+        float prev_low = ta.lowest(low, lookback)
+        float curr_move = (close - prev_low) / prev_low * 100
+        curr_move >= min_pct and close > open
+
+is_bear_displacement(int lookback, float min_pct) =>
+    if bar_index < lookback
+        false
+    else
+        float prev_high = ta.highest(high, lookback)
+        float curr_move = (prev_high - close) / close * 100
+        curr_move >= min_pct and close < open
+
+// --- Поиск свечи перед displacement ---
+var float bull_ob_price  = na
+var float bull_ob_high   = na
+var int   bull_ob_bar    = na
+var float bear_ob_price  = na
+var float bear_ob_low    = na
+var int   bear_ob_bar    = na
+
+if ob_show
+    // Bullish OB: последняя медвежья свеча перед ростом
+    if is_bull_displacement(ob_lookback, ob_displ_pct)
+        for i = 1 to math.min(5, bar_index)
+            if close[i] < open[i]  // медвежья свеча
+                float ob_hi = high[i]
+                float ob_lo = low[i]
+                int   ob_bi = bar_index - i
+                // Проверяем, что OB ещё не добавлен на этом баре
+                bool exists = false
+                if array.size(ob_array) > 0
+                    for j = array.size(ob_array) - 1 to math.max(0, array.size(ob_array) - 5) by -1
+                        OrderBlock prev = array.get(ob_array, j)
+                        if prev.bar_index == ob_bi and prev.ob_type == "bull"
+                            exists := true
+                            break
+                if not exists
+                    OrderBlock new_ob = OrderBlock.new(ob_hi, ob_lo, ob_bi, "bull", "FRESH", na)
+                    if ob_extend
+                        new_ob.bx := box.new(ob_bi, ob_hi, bar_index + 20, ob_lo, COL_BULL_OB_FT, 1, line.style_solid, COL_BULL_OB_FT)
+                    else
+                        new_ob.bx := box.new(ob_bi, ob_hi, ob_bi + 15, ob_lo, COL_BULL_OB_FT, 1, line.style_solid, COL_BULL_OB_FT)
+                    array.push(ob_array, new_ob)
+                break
+
+    // Bearish OB: последняя бычья свеча перед падением
+    if is_bear_displacement(ob_lookback, ob_displ_pct)
+        for i = 1 to math.min(5, bar_index)
+            if close[i] > open[i]  // бычья свеча
+                float ob_hi = high[i]
+                float ob_lo = low[i]
+                int   ob_bi = bar_index - i
+                bool exists = false
+                if array.size(ob_array) > 0
+                    for j = array.size(ob_array) - 1 to math.max(0, array.size(ob_array) - 5) by -1
+                        OrderBlock prev = array.get(ob_array, j)
+                        if prev.bar_index == ob_bi and prev.ob_type == "bear"
+                            exists := true
+                            break
+                if not exists
+                    OrderBlock new_ob = OrderBlock.new(ob_hi, ob_lo, ob_bi, "bear", "FRESH", na)
+                    if ob_extend
+                        new_ob.bx := box.new(ob_bi, ob_hi, bar_index + 20, ob_lo, COL_BEAR_OB_FT, 1, line.style_solid, COL_BEAR_OB_FT)
+                    else
+                        new_ob.bx := box.new(ob_bi, ob_hi, ob_bi + 15, ob_lo, COL_BEAR_OB_FT, 1, line.style_solid, COL_BEAR_OB_FT)
+                    array.push(ob_array, new_ob)
+                break
+
+// --- Обновление статусов OB ---
+if ob_show and array.size(ob_array) > 0
+    int size = array.size(ob_array)
+    for i = size - 1 to 0 by -1
+        OrderBlock ob = array.get(ob_array, i)
+        int age = bar_index - ob.bar_index
+
+        // Удаление старых OB
+        if age > ob_max_age
+            box.delete(ob.bx)
+            array.remove(ob_array, i)
+            continue
+
+        // Проверка MITIGATED (цена пробила OB)
+        if ob.ob_type == "bull" and low < ob.low
+            ob.status := "MITIGATED"
+            box.set_bgcolor(ob.bx, COL_MITIG_OB)
+            box.set_border_color(ob.bx, COL_MITIG_OB)
+            continue
+
+        if ob.ob_type == "bear" and high > ob.high
+            ob.status := "MITIGATED"
+            box.set_bgcolor(ob.bx, COL_MITIG_OB)
+            box.set_border_color(ob.bx, COL_MITIG_OB)
+            continue
+
+        // Проверка TESTED (цена коснулась OB)
+        if ob.status == "FRESH"
+            if ob.ob_type == "bull" and low <= ob.high and low >= ob.low
+                ob.status := "TESTED"
+                box.set_bgcolor(ob.bx, COL_TESTED_OB)
+                box.set_border_color(ob.bx, COL_TESTED_OB)
+            if ob.ob_type == "bear" and high >= ob.low and high <= ob.high
+                ob.status := "TESTED"
+                box.set_bgcolor(ob.bx, COL_TESTED_OB)
+                box.set_border_color(ob.bx, COL_TESTED_OB)
+
+        // Расширение активных OB
+        if ob_extend and ob.status != "MITIGATED"
+            box.set_right(ob.bx, bar_index + 5)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 2. FAIR VALUE GAPS
+// ══════════════════════════════════════════════════════════════════════════════
+
+type FVG
+    float   top
+    float   bottom
+    int     bar_index
+    string  fvg_type
+    line    line_top
+    line    line_bot
+    label   lbl
+
+var array<FVG> fvg_array = array.new<FVG>()
+
+if fvg_show and bar_index >= fvg_lookback
+    // Bullish FVG: gap между low[2] и high[0]
+    if low[2] > high[0]
+        float gap_top = low[2]
+        float gap_bot = high[0]
+        float gap_size_pct = (gap_top - gap_bot) / close * 100
+        if gap_size_pct > 0.05  // минимальный размер гэпа
+            line lt = line.new(bar_index - 2, gap_top, bar_index + 10, gap_top, color=COL_FVG_BULL, width=1, style=line.style_dashed)
+            line lb = line.new(bar_index - 2, gap_bot, bar_index + 10, gap_bot, color=COL_FVG_BULL, width=1, style=line.style_dashed)
+            label lb_l = label.new(math.round(bar_index - 1), gap_top, "FVG ↑", style=label.style_none, textcolor=COL_FVG_BULL, size=size.tiny)
+            array.push(fvg_array, FVG.new(gap_top, gap_bot, bar_index, "bull", lt, lb, lb_l))
+
+    // Bearish FVG: gap между high[2] и low[0]
+    if high[2] < low[0]
+        float gap_top = low[0]
+        float gap_bot = high[2]
+        float gap_size_pct = (gap_top - gap_bot) / close * 100
+        if gap_size_pct > 0.05
+            line lt = line.new(bar_index - 2, gap_top, bar_index + 10, gap_top, color=COL_FVG_BEAR, width=1, style=line.style_dashed)
+            line lb = line.new(bar_index - 2, gap_bot, bar_index + 10, gap_bot, color=COL_FVG_BEAR, width=1, style=line.style_dashed)
+            label lb_l = label.new(math.round(bar_index - 1), gap_bot, "FVG ↓", style=label.style_none, textcolor=COL_FVG_BEAR, size=size.tiny)
+            array.push(fvg_array, FVG.new(gap_top, gap_bot, bar_index, "bear", lt, lb, lb_l))
+
+// Удаление старых FVG
+if array.size(fvg_array) > 0
+    int fvg_size = array.size(fvg_array)
+    for i = fvg_size - 1 to 0 by -1
+        FVG f = array.get(fvg_array, i)
+        int fvg_age = bar_index - f.bar_index
+        if fvg_age > fvg_lookback
+            line.delete(f.line_top)
+            line.delete(f.line_bot)
+            label.delete(f.lbl)
+            array.remove(fvg_array, i)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 3. LIQUIDITY SWEEPS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Верхний sweep: wick пробивает high, но close ниже
+prev_high = ta.highest(high, sw_lookback)[1]
+prev_low  = ta.lowest(low, sw_lookback)[1]
+
+sweep_up = high > prev_high and close < prev_high and close < open
+sweep_dn = low < prev_low and close > prev_low and close > open
+
+plotshape(sw_show and sweep_up, title="Sweep ↑", style=shape.xcross, location=location.abovebar,
+     color=COL_SWEEP_UP, size=size.small, text="SW↑")
+plotshape(sw_show and sweep_dn, title="Sweep ↓", style=shape.xcross, location=location.belowbar,
+     color=COL_SWEEP_DN, size=size.small, text="SW↓")
+
+// Линии уровней ликвидности
+line liq_hi = sw_show ? line.new(bar_index - sw_lookback, prev_high, bar_index, prev_high,
+     color=color.new(COL_SWEEP_UP, 50), style=line.style_dotted, width=1) : na
+line liq_lo = sw_show ? line.new(bar_index - sw_lookback, prev_low, bar_index, prev_low,
+     color=color.new(COL_SWEEP_DN, 50), style=line.style_dotted, width=1) : na
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 4. BOS / CHoCH
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Определение структуры:Higher Highs / Lower Lows
+var int   struct_dir = 0  // 1 = bullish, -1 = bearish, 0 = ranging
+var float last_swing_high = na
+var float last_swing_low  = na
+
+// Поиск swing points (простой метод: 5 свечей с каждой стороны)
+swing_high_val = ta.pivothigh(high, 5, 5)
+swing_low_val  = ta.pivotlow(low, 5, 5)
+
+if not na(swing_high_val)
+    last_swing_high := swing_high_val
+if not na(swing_low_val)
+    last_swing_low := swing_low_val
+
+// BOS / CHoCH детекция
+bos_up   = false
+bos_dn   = false
+choch_up = false
+choch_dn = false
+
+if bos_show and not na(last_swing_high) and not na(last_swing_low)
+    // Bullish BOS: close выше last_swing_high при bullish структуре
+    if close > last_swing_high and struct_dir >= 0
+        if struct_dir == 1
+            bos_up := true
+        else
+            choch_up := true
+            struct_dir := 1
+
+    // Bearish BOS: close ниже last_swing_low при bearish структуре
+    if close < last_swing_low and struct_dir <= 0
+        if struct_dir == -1
+            bos_dn := true
+        else
+            choch_dn := true
+            struct_dir := -1
+
+// Отрисовка BOS / CHoCH
+plotshape(bos_show and bos_up, title="BOS ↑", style=shape.labelup, location=location.belowbar,
+     color=COL_BOS, size=size.tiny, text="BOS", textcolor=color.white)
+plotshape(bos_show and bos_dn, title="BOS ↓", style=shape.labeldown, location=location.abovebar,
+     color=COL_BOS, size=size.tiny, text="BOS", textcolor=color.white)
+plotshape(bos_show and choch_up, title="CHoCH ↑", style=shape.labelup, location=location.belowbar,
+     color=COL_CHOCH, size=size.tiny, text="CHoCH", textcolor=color.white)
+plotshape(bos_show and choch_dn, title="CHoCH ↓", style=shape.labeldown, location=location.abovebar,
+     color=COL_CHOCH, size=size.tiny, text="CHoCH", textcolor=color.white)
+
+// Линии структуры
+line struct_hi_line = not na(last_swing_high) ?
+     line.new(bar_index - 20, last_swing_high, bar_index, last_swing_high,
+         color=color.new(COL_BOS, 60), style=line.style_dotted, width=1) : na
+line struct_lo_line = not na(last_swing_low) ?
+     line.new(bar_index - 20, last_swing_low, bar_index, last_swing_low,
+         color=color.new(COL_BOS, 60), style=line.style_dotted, width=1) : na
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 5. PREMIUM / DISCOUNT (OTE)
+// ══════════════════════════════════════════════════════════════════════════════
+
+var float ote_high = na
+var float ote_low  = na
+
+if ote_show
+    swing_hi = ta.highest(high, ote_lookback)
+    swing_lo = ta.lowest(low, ote_lookback)
+
+    if swing_hi != swing_lo
+        ote_high := swing_hi
+        ote_low  := swing_lo
+
+        float range_sz = swing_hi - swing_lo
+        float fib_021 = swing_hi - range_sz * 0.21
+        float fib_050 = swing_hi - range_sz * 0.50
+        float fib_079 = swing_hi - range_sz * 0.79
+
+        // Discount zone (0.5-0.79) — для лонгов (зеленая)
+        box.new(bar_index - ote_lookback, fib_050, bar_index + 5, fib_079,
+             COL_OTE_DISC, 1, line.style_solid, COL_OTE_DISC)
+
+        // Premium zone (0.21-0.5) — для шортов (красная)
+        box.new(bar_index - ote_lookback, fib_021, bar_index + 5, fib_050,
+             COL_OTE_PREM, 1, line.style_solid, COL_OTE_PREM)
+
+        // Fib линии
+        line.new(bar_index - ote_lookback, fib_021, bar_index + 5, fib_021,
+             color=color.new(color.gray, 70), style=line.style_dotted, width=1)
+        line.new(bar_index - ote_lookback, fib_050, bar_index + 5, fib_050,
+             color=color.new(color.gray, 70), style=line.style_dotted, width=1)
+        line.new(bar_index - ote_lookback, fib_079, bar_index + 5, fib_079,
+             color=color.new(color.gray, 70), style=line.style_dotted, width=1)
+
+        // Подписи
+        label.new(bar_index + 6, fib_021, "0.21", style=label.style_none, textcolor=color.gray, size=size.tiny)
+        label.new(bar_index + 6, fib_050, "0.50", style=label.style_none, textcolor=color.gray, size=size.tiny)
+        label.new(bar_index + 6, fib_079, "0.79", style=label.style_none, textcolor=color.gray, size=timeframe.isseconds("1") ? size.tiny : size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 6. SESSION HIGHLIGHT
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Конвертация времени UTC (TradingView использует часовой пояс графика)
+hour_utc = hour  // Если график в UTC
+min_utc  = minute
+
+is_london = sess_london_show and hour_utc >= 8 and hour_utc < 11
+is_ny     = sess_ny_show and ((hour_utc == 13 and min_utc >= 30) or (hour_utc >= 14 and hour_utc < 16))
+
+bgcolor(is_london ? COL_LONDON : na, title="London Session")
+bgcolor(is_ny ? COL_NY : na, title="NY Session")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 7. MANUAL TRADE MARKER
+// ══════════════════════════════════════════════════════════════════════════════
+
+if trade_show and trade_entry > 0 and trade_sl > 0 and trade_tp > 0
+    bool is_long = trade_dir == "LONG"
+    float risk = math.abs(trade_entry - trade_sl)
+    float reward = math.abs(trade_tp - trade_entry)
+    float rr = risk > 0 ? reward / risk : 0.0
+
+    // Entry line
+    line.new(bar_index - 10, trade_entry, bar_index + 5, trade_entry,
+         color=COL_ENTRY, width=2, style=line.style_solid)
+    label.new(bar_index + 6, trade_entry,
+         str.format("Entry: {0} | RR: {1}", trade_entry, rr),
+         style=label.style_none, textcolor=COL_ENTRY, size=size.normal)
+
+    // SL line
+    line.new(bar_index - 10, trade_sl, bar_index + 5, trade_sl,
+         color=COL_SL, width=1, style=line.style_dashed)
+    sl_pct = (trade_entry - trade_sl) / trade_entry * 100
+    label.new(bar_index + 6, trade_sl,
+         str.format("SL: {0} ({1}%)", trade_sl, is_long ? -sl_pct : sl_pct),
+         style=label.style_none, textcolor=COL_SL, size=size.small)
+
+    // TP line
+    line.new(bar_index - 10, trade_tp, bar_index + 5, trade_tp,
+         color=COL_TP, width=1, style=line.style_dashed)
+    tp_pct = (trade_tp - trade_entry) / trade_entry * 100
+    label.new(bar_index + 6, trade_tp,
+         str.format("TP: {0} ({1}%)", trade_sl, is_long ? tp_pct : -tp_pct),
+         style=label.style_none, textcolor=COL_TP, size=size.small)
+
+    // R:R зона (заливка)
+    box.new(bar_index - 10, is_long ? trade_entry : trade_sl,
+         bar_index + 5, is_long ? trade_tp : trade_entry,
+         color.new(COL_TP, 92), 0, line.style_solid)
+    box.new(bar_index - 10, is_long ? trade_sl : trade_entry,
+         bar_index + 5, is_long ? trade_entry : trade_sl,
+         color.new(COL_SL, 92), 0, line.style_solid)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 8. INFO PANEL
+// ══════════════════════════════════════════════════════════════════════════════
+
+if info_show and barstate.islast
+    var table panel = table.new(position.top_right, 2, 6,
+         bgcolor=color.new(#1E1E1E, 10), frame_color=color.new(#424242, 0), frame_width=1,
+         border_color=color.new(#616161, 0), border_width=1)
+
+    // Заголовок
+    table.cell(panel, 0, 0, "SMC Bot v2.5", text_color=color.white, text_size=size.normal, bgcolor=color.new(#37474F, 0))
+    table.merge_cells(panel, 0, 0, 1, 0)
+
+    // HTF Bias
+    string htf_text = struct_dir == 1 ? "BULLISH" : struct_dir == -1 ? "BEARISH" : "RANGING"
+    color  htf_col  = struct_dir == 1 ? #00C853 : struct_dir == -1 ? #FF1744 : #FFD600
+    table.cell(panel, 0, 1, "HTF Bias:", text_color=color.gray, text_size=size.small)
+    table.cell(panel, 1, 1, htf_text, text_color=htf_col, text_size=size.small)
+
+    // Активные OB
+    int bull_ob_count = 0
+    int bear_ob_count = 0
+    if array.size(ob_array) > 0
+        for i = 0 to array.size(ob_array) - 1
+            OrderBlock ob = array.get(ob_array, i)
+            if ob.status != "MITIGATED"
+                if ob.ob_type == "bull"
+                    bull_ob_count += 1
+                else
+                    bear_ob_count += 1
+    table.cell(panel, 0, 2, "OB:", text_color=color.gray, text_size=size.small)
+    table.cell(panel, 1, 2,
+         str.format("↑{0}  ↓{1}", bull_ob_count, bear_ob_count),
+         text_color=color.white, text_size=size.small)
+
+    // Сессия
+    string sess_text = is_london ? "LONDON" : is_ny ? "NEW YORK" : "---"
+    color  sess_col  = is_london ? COL_LONDON : is_ny ? COL_NY : color.gray
+    table.cell(panel, 0, 3, "Session:", text_color=color.gray, text_size=size.small)
+    table.cell(panel, 1, 3, sess_text, text_color=sess_col, text_size=size.small)
+
+    // Ближайший FVG
+    string fvg_text = "---"
+    color  fvg_col  = color.gray
+    if array.size(fvg_array) > 0
+        float min_dist = 999999.0
+        FVG nearest = na
+        for i = 0 to array.size(fvg_array) - 1
+            FVG f = array.get(fvg_array, i)
+            float mid = (f.top + f.bottom) / 2
+            float dist_pct = math.abs(close - mid) / close * 100
+            if dist_pct < min_dist
+                min_dist := dist_pct
+                nearest := f
+        if not na(nearest)
+            fvg_text := str.format("{0} ({1}%)", nearest.fvg_type == "bull" ? "Bull ↑" : "Bear ↓", min_dist)
+            fvg_col := nearest.fvg_type == "bull" ? COL_FVG_BULL : COL_FVG_BEAR
+    table.cell(panel, 0, 4, "FVG:", text_color=color.gray, text_size=size.small)
+    table.cell(panel, 1, 4, fvg_text, text_color=fvg_col, text_size=size.small)
+
+    // Структура
+    table.cell(panel, 0, 5, "Structure:", text_color=color.gray, text_size=size.small)
+    table.cell(panel, 1, 5,
+         str.format("HH:{0} LL:{1}", not na(last_swing_high) ? str.tostring(last_swing_high, format.mintick) : "---",
+             not na(last_swing_low) ? str.tostring(last_swing_low, format.mintick) : "---"),
+         text_color=color.white, text_size=size.small)

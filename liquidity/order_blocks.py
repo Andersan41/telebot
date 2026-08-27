@@ -65,6 +65,7 @@ def detect_order_blocks(
     min_volume_ratio: Optional[float] = None,
     require_bos: bool = True,
     retest_required: Optional[bool] = None,
+    check_retest_lookback: Optional[int] = None,
 ) -> list[OrderBlock]:
     """
     Detect order blocks in OHLCV data with full validation.
@@ -92,6 +93,8 @@ def detect_order_blocks(
         min_volume_ratio = getattr(config, "liquidity_ob_min_volume_ratio", 1.5)
     if retest_required is None:
         retest_required = getattr(config, "liquidity_ob_retest_required", False)
+    if check_retest_lookback is None:
+        check_retest_lookback = getattr(config, "ob_retest_history", 30)
 
     data = df.tail(lookback).reset_index(drop=True)
     if len(data) < 5:
@@ -128,7 +131,10 @@ def detect_order_blocks(
                     continue
 
                 ts = _to_datetime(data.index[i])
-                retested, reaction = _check_retest_bullish(data, i, float(candle["high"]), float(candle["low"]))
+                retested, reaction = _check_retest_bullish(
+                    data, i, float(candle["high"]), float(candle["low"]),
+                    lookback=check_retest_lookback,
+                )
 
                 blocks.append(OrderBlock(
                     type="bullish",
@@ -155,7 +161,10 @@ def detect_order_blocks(
                     continue
 
                 ts = _to_datetime(data.index[i])
-                retested, reaction = _check_retest_bearish(data, i, float(candle["high"]), float(candle["low"]))
+                retested, reaction = _check_retest_bearish(
+                    data, i, float(candle["high"]), float(candle["low"]),
+                    lookback=check_retest_lookback,
+                )
 
                 blocks.append(OrderBlock(
                     type="bearish",
@@ -172,6 +181,78 @@ def detect_order_blocks(
 
     blocks = _filter_by_age(blocks, len(data), max_age_candles)
     return blocks
+
+
+def find_ob_for_sweep(
+    df: pd.DataFrame,
+    sweep_index: int,
+    sweep_direction: str,
+    sweep_timestamp: datetime,
+    lookback: int = 20,
+) -> Optional[OrderBlock]:
+    """TZ §6.2: Find OB by backward scan from sweep.
+
+    Bullish OB (for LONG after sweep low): last bearish candle before impulse,
+    where bars[i+1].low < bars[i].low * 0.998.
+
+    Bearish OB (for SHORT after sweep high): last bullish candle before impulse,
+    where bars[i+1].high > bars[i].high * 1.002.
+
+    Temporal binding: OB.timestamp >= sweep_timestamp.
+    """
+    # Ensure sweep_timestamp is a datetime
+    if isinstance(sweep_timestamp, (int, float)):
+        from datetime import timezone as _tz
+        sweep_timestamp = datetime.fromtimestamp(sweep_timestamp, tz=_tz.utc)
+    elif sweep_timestamp.tzinfo is None:
+        sweep_timestamp = sweep_timestamp.replace(tzinfo=datetime.timezone.utc)
+
+    data = df.tail(max(sweep_index + 10, 100)).reset_index(drop=True)
+    if sweep_index >= len(data):
+        return None
+
+    for i in range(sweep_index - 1, max(0, sweep_index - lookback), -1):
+        candle = data.iloc[i]
+        ts = _to_datetime(data.index[i])
+
+        # Temporal binding: OB cannot be before sweep
+        if ts < sweep_timestamp:
+            break
+
+        if sweep_direction == "bullish":
+            # TZ §6.2.2: bullish OB = last bearish candle before impulse
+            if float(candle["close"]) < float(candle["open"]):  # bearish
+                if i + 1 < len(data):
+                    next_candle = data.iloc[i + 1]
+                    if float(next_candle["low"]) < float(candle["low"]) * 0.998:
+                        return OrderBlock(
+                            type="bullish",
+                            high=float(candle["open"]),  # TZ: top = open
+                            low=float(candle["close"]),  # bottom = close
+                            timestamp=ts,
+                            candle_index=i,
+                            displacement_atr=0.0,  # not required for sweep OB
+                            volume_ratio=1.0,
+                            has_bos=False,  # BOS checked separately
+                        )
+        elif sweep_direction == "bearish":
+            # TZ §6.2.3: bearish OB = last bullish candle before impulse
+            if float(candle["close"]) > float(candle["open"]):  # bullish
+                if i + 1 < len(data):
+                    next_candle = data.iloc[i + 1]
+                    if float(next_candle["high"]) > float(candle["high"]) * 1.002:
+                        return OrderBlock(
+                            type="bearish",
+                            high=float(candle["close"]),  # TZ: top = close
+                            low=float(candle["open"]),    # bottom = open
+                            timestamp=ts,
+                            candle_index=i,
+                            displacement_atr=0.0,
+                            volume_ratio=1.0,
+                            has_bos=False,
+                        )
+
+    return None
 
 
 def _calc_atr(df: pd.DataFrame, period: int = 14) -> float:
@@ -208,35 +289,45 @@ def _find_swing_lows(df: pd.DataFrame, window: int = 5) -> list[dict]:
     return lows
 
 
-def _check_bos_bullish(df: pd.DataFrame, start_idx: int, swing_highs: list[dict], look_ahead: int = 20) -> bool:
-    """Check if price breaks above a previous swing high after OB formation."""
+def _check_bos_bullish(df: pd.DataFrame, start_idx: int, swing_highs: list[dict], lookback: int = 20) -> bool:
+    """Check if price breaks above a previous swing high after OB formation.
+
+    Scans candles from start_idx forward (all closed — no look-ahead).
+    """
     relevant_highs = [s for s in swing_highs if s["index"] < start_idx]
     if not relevant_highs:
         return False
     prev_swing_high = max(relevant_highs, key=lambda s: s["index"])["price"]
-    end = min(start_idx + look_ahead, len(df))
+    end = min(start_idx + lookback, len(df))
     for j in range(start_idx, end):
         if float(df["high"].iloc[j]) > prev_swing_high:
             return True
     return False
 
 
-def _check_bos_bearish(df: pd.DataFrame, start_idx: int, swing_lows: list[dict], look_ahead: int = 20) -> bool:
-    """Check if price breaks below a previous swing low after OB formation."""
+def _check_bos_bearish(df: pd.DataFrame, start_idx: int, swing_lows: list[dict], lookback: int = 20) -> bool:
+    """Check if price breaks below a previous swing low after OB formation.
+
+    Scans candles from start_idx forward (all closed — no look-ahead).
+    """
     relevant_lows = [s for s in swing_lows if s["index"] < start_idx]
     if not relevant_lows:
         return False
     prev_swing_low = min(relevant_lows, key=lambda s: s["index"])["price"]
-    end = min(start_idx + look_ahead, len(df))
+    end = min(start_idx + lookback, len(df))
     for j in range(start_idx, end):
         if float(df["low"].iloc[j]) < prev_swing_low:
             return True
     return False
 
 
-def _check_retest_bullish(df: pd.DataFrame, ob_idx: int, ob_high: float, ob_low: float, max_lookahead: int = 30) -> tuple[bool, Optional[float]]:
-    """Check if price retests bullish OB zone and reacts (bounces)."""
-    end = min(ob_idx + max_lookahead, len(df))
+def _check_retest_bullish(df: pd.DataFrame, ob_idx: int, ob_high: float, ob_low: float, lookback: int = 30) -> tuple[bool, Optional[float]]:
+    """Check if price already retested bullish OB zone using LOOKBACK (no look-ahead).
+
+    Scans candles AFTER the OB formation up to the end of available data.
+    All candles are closed — no future data is used.
+    """
+    end = min(ob_idx + lookback + 1, len(df))
     for j in range(ob_idx + 1, end):
         low = float(df["low"].iloc[j])
         close = float(df["close"].iloc[j])
@@ -246,9 +337,13 @@ def _check_retest_bullish(df: pd.DataFrame, ob_idx: int, ob_high: float, ob_low:
     return False, None
 
 
-def _check_retest_bearish(df: pd.DataFrame, ob_idx: int, ob_high: float, ob_low: float, max_lookahead: int = 30) -> tuple[bool, Optional[float]]:
-    """Check if price retests bearish OB zone and reacts (rejects)."""
-    end = min(ob_idx + max_lookahead, len(df))
+def _check_retest_bearish(df: pd.DataFrame, ob_idx: int, ob_high: float, ob_low: float, lookback: int = 30) -> tuple[bool, Optional[float]]:
+    """Check if price already retested bearish OB zone using LOOKBACK (no look-ahead).
+
+    Scans candles AFTER the OB formation up to the end of available data.
+    All candles are closed — no future data is used.
+    """
+    end = min(ob_idx + lookback + 1, len(df))
     for j in range(ob_idx + 1, end):
         high = float(df["high"].iloc[j])
         close = float(df["close"].iloc[j])
@@ -271,6 +366,9 @@ def _filter_by_age(blocks: list[OrderBlock], total_candles: int, max_age: int) -
 
 def _to_datetime(idx) -> datetime:
     """Convert index value to datetime."""
+    if isinstance(idx, (int, float)):
+        from datetime import timezone as _tz
+        return datetime.fromtimestamp(idx, tz=_tz.utc)
     if hasattr(idx, "to_pydatetime"):
         ts = idx.to_pydatetime()
     else:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Literal, Optional
 
 from loguru import logger
@@ -18,6 +19,18 @@ from loguru import logger
 from liquidity.equal_levels import EqualLevel, detect_equal_levels
 from liquidity.external import ExternalLiquidity, detect_external_liquidity
 from liquidity.sweep import SweepEvent
+
+
+class PoolStatus(Enum):
+    """Pool lifecycle states (TZ §4.3)."""
+    UNTESTED = "UNTESTED"
+    APPROACHING = "APPROACHING"
+    SWEEPED = "SWEEPED"
+    CONFIRMED = "CONFIRMED"
+    BREACHED = "BREACHED"
+    EXPIRED = "EXPIRED"
+    TRADED = "TRADED"
+    LIQUIDATED = "LIQUIDATED"
 
 
 @dataclass
@@ -34,6 +47,46 @@ class LiquidityLevel:
     strength: float = 0.0
     swept: bool = False
     source: Optional[object] = None  # original object (EqualLevel, ExternalLiquidity, etc.)
+
+    # Pool lifecycle (TZ §4.3)
+    status: PoolStatus = PoolStatus.UNTESTED
+    created_at: Optional[datetime] = None
+    tested_at: Optional[datetime] = None
+    breached_at: Optional[datetime] = None
+    traded_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+    liquidated_at: Optional[datetime] = None
+
+    def transition_to(self, new_status: PoolStatus, timestamp: Optional[datetime] = None) -> bool:
+        """Transition pool to a new status. Returns True if transition is valid."""
+        _valid_transitions = {
+            PoolStatus.UNTESTED: [PoolStatus.APPROACHING, PoolStatus.SWEEPED, PoolStatus.BREACHED, PoolStatus.EXPIRED],
+            PoolStatus.APPROACHING: [PoolStatus.SWEEPED, PoolStatus.BREACHED, PoolStatus.EXPIRED],
+            PoolStatus.SWEEPED: [PoolStatus.CONFIRMED, PoolStatus.BREACHED, PoolStatus.EXPIRED, PoolStatus.TRADED],
+            PoolStatus.CONFIRMED: [PoolStatus.TRADED, PoolStatus.BREACHED, PoolStatus.EXPIRED],
+            PoolStatus.BREACHED: [],  # terminal
+            PoolStatus.EXPIRED: [],   # terminal
+            PoolStatus.TRADED: [PoolStatus.LIQUIDATED],
+            PoolStatus.LIQUIDATED: [],  # terminal
+        }
+        if new_status not in _valid_transitions.get(self.status, []):
+            logger.debug(f"Invalid pool transition: {self.status.value} -> {new_status.value}")
+            return False
+
+        self.status = new_status
+        ts = timestamp or datetime.utcnow()
+        if new_status == PoolStatus.SWEEPED:
+            self.swept = True
+            self.tested_at = ts
+        elif new_status == PoolStatus.BREACHED:
+            self.breached_at = ts
+        elif new_status == PoolStatus.EXPIRED:
+            self.expired_at = ts
+        elif new_status == PoolStatus.TRADED:
+            self.traded_at = ts
+        elif new_status == PoolStatus.LIQUIDATED:
+            self.liquidated_at = ts
+        return True
 
     @property
     def is_bullish_target(self) -> bool:

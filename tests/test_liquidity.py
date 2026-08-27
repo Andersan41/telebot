@@ -167,6 +167,7 @@ class TestSweepEvent:
         assert event.is_valid is True
 
     def test_is_valid_false_volume(self):
+        """TZ §5.2: volume is OPTIONAL — low volume alone does NOT invalidate sweep."""
         event = SweepEvent(
             type="bullish",
             swept_level=100.0,
@@ -176,7 +177,7 @@ class TestSweepEvent:
             volume_ratio=1.0,
             timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
-        assert event.is_valid is False
+        assert event.is_valid is True  # volume is optional per TZ
 
     def test_is_valid_false_reclaim(self):
         event = SweepEvent(
@@ -488,47 +489,45 @@ class TestDetectFVG:
         assert isinstance(bearish, list)
 
     def test_bullish_fvg_filled_when_price_drops(self):
-        """Bullish FVG закрыт, если цена опустилась ниже top."""
+        """Bullish FVG closed when price drops below top. TZ §6.1: candle1 bullish, candle3 bullish."""
         df = pd.DataFrame({
             "open":  [100, 102, 105, 104, 103, 101, 99],
             "high":  [101, 103, 106, 105, 104, 102, 100],
             "low":   [99,  101, 104, 103, 102, 98,  97],
-            "close": [100, 102, 105, 104, 103, 99,  98],
+            "close": [101, 103, 106, 104, 103, 99,  98],  # candle1: C>O bullish, candle3: C>O bullish
             "volume": [100] * 7,
         })
-        result = detect_fvg(df, lookback=7, min_size_pct=0.3)
+        result = detect_fvg(df, lookback=7, min_size_pct=0.05)
         bullish = [f for f in result if f.type == "bullish"]
         assert len(bullish) >= 1
         filled = [f for f in bullish if f.filled]
         assert len(filled) >= 1, "Bullish FVG should be filled when price drops below top"
 
     def test_bullish_fvg_not_filled_when_price_stays_above(self):
-        """Bullish FVG не закрыт, если цена остаётся выше top."""
-        # FVG: high1=101, low3=108 → gap 101..108 (top=108)
-        # Все последующие low > 108
+        """Bullish FVG not closed when price stays above top. TZ §6.1: candle colors required."""
         df = pd.DataFrame({
             "open":  [100, 102, 110, 112, 115, 118, 120],
             "high":  [101, 103, 111, 113, 116, 119, 121],
             "low":   [99,  101, 108, 110, 113, 116, 118],
-            "close": [100, 102, 110, 112, 115, 118, 120],
+            "close": [101, 103, 111, 113, 116, 119, 121],  # all bullish candles (C>O)
             "volume": [100] * 7,
         })
-        result = detect_fvg(df, lookback=7, min_size_pct=0.3)
+        result = detect_fvg(df, lookback=7, min_size_pct=0.05)
         bullish = [f for f in result if f.type == "bullish"]
         assert len(bullish) >= 1
         unfilled = [f for f in bullish if not f.filled]
         assert len(unfilled) >= 1, f"Bullish FVG should NOT be filled when price stays above top, got {[f.filled for f in bullish]}"
 
     def test_bearish_fvg_filled_when_price_rises(self):
-        """Bearish FVG закрыт, если цена поднялась выше bottom."""
+        """Bearish FVG closed when price rises above bottom. TZ §6.1: candle colors required."""
         df = pd.DataFrame({
             "open":  [100, 98, 95, 96, 97, 99, 101],
             "high":  [101, 99, 96, 97, 98, 100, 102],
             "low":   [99,  97, 94, 95, 96, 98,  100],
-            "close": [100, 98, 95, 96, 97, 100, 101],
+            "close": [99,  97, 94, 96, 97, 100, 101],  # candle1: C<O bearish, candle3: C<O bearish
             "volume": [100] * 7,
         })
-        result = detect_fvg(df, lookback=7, min_size_pct=0.3)
+        result = detect_fvg(df, lookback=7, min_size_pct=0.05)
         bearish = [f for f in result if f.type == "bearish"]
         assert len(bearish) >= 1
         filled = [f for f in bearish if f.filled]

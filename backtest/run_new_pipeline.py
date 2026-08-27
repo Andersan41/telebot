@@ -46,15 +46,15 @@ from market_structure.htf_bias import get_htf_bias, HTFBias, extract_structure_d
 from config.settings import config
 
 # ── Config ─────────────────────────────────────────────────────────────
-SYMBOLS = ["BTC/USDT", "ETH/USDT", "ZRO/USDT"]
+SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
 ASSET_TYPES = {
     "BTC/USDT": "major",
     "ETH/USDT": "major",
-    "ZRO/USDT": "L1",
+    "SOL/USDT": "L1",
 }
 TIMEFRAME = "4h"
-DAYS = 90
+DAYS = 180
 WARMUP = 80           # candles for indicator warmup
 COOLDOWN_BARS = 3     # minimum bars between signals per symbol
 COMMISSION_PCT = 0.06  # 0.06% taker fee per side
@@ -187,7 +187,12 @@ def simulate_trade(
 def compute_stats(result: SymbolResult) -> dict:
     trades = result.trades
     if not trades:
-        return {"symbol": result.symbol, "total": 0}
+        return {
+            "symbol": result.symbol, "total": 0,
+            "signals_generated": result.signals_generated,
+            "signals_rejected": result.signals_rejected,
+            "rejection_reasons": result.rejection_reasons,
+        }
 
     pnls = [t.net_pnl_pct for t in trades]
     wins = [p for p in pnls if p > 0]
@@ -412,25 +417,41 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
 
         result.signals_generated += 1
 
-        # ── Phase 1.45: HTF Bias Hard Gate ──
-        _htf_bias_penalty = 1.0
+        # ── Phase 1.45: HTF Bias Hard Gate (v2.5 — direction + regime filters) ──
         try:
             _struct_1d = extract_structure_dict(structure) if structure else None
             htf_bias = get_htf_bias(
-                df_1d=None, df_4h=None,
+                df_1d=htf_data.get("1d"),
+                df_4h=htf_data.get("4h"),
                 structure_1d=_struct_1d, structure_4h=None,
             )
+
+            # Regime filter (v2.5): neutral HTF = no edge, but don't block
+            # Only block SHORT in bullish HTF and LONG in bearish HTF
+            if htf_bias == HTFBias.NEUTRAL:
+                pass  # No directional confirmation — allow signals
+
+            # Direction filter: Block SHORT in bullish HTF, LONG in bearish HTF
+            if setup.direction == 'sell' and htf_bias == HTFBias.BULLISH:
+                result.signals_rejected += 1
+                result.rejection_reasons["short_in_bullish_htf"] = \
+                    result.rejection_reasons.get("short_in_bullish_htf", 0) + 1
+                continue
+            if setup.direction == 'buy' and htf_bias == HTFBias.BEARISH:
+                result.signals_rejected += 1
+                result.rejection_reasons["long_in_bearish_htf"] = \
+                    result.rejection_reasons.get("long_in_bearish_htf", 0) + 1
+                continue
+
+            # Legacy gate: continuation must match HTF direction
             if htf_bias != HTFBias.NEUTRAL:
                 direction_map = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
                 setup_bias = direction_map.get(setup.direction)
                 if setup_bias != htf_bias:
-                    if setup.setup_type == "continuation":
-                        result.signals_rejected += 1
-                        result.rejection_reasons[f"htf_bias_{setup.direction}_vs_{htf_bias.value}"] = \
-                            result.rejection_reasons.get(f"htf_bias_{setup.direction}_vs_{htf_bias.value}", 0) + 1
-                        continue
-                    elif setup.setup_type == "reversal":
-                        _htf_bias_penalty = 0.85
+                    result.signals_rejected += 1
+                    result.rejection_reasons[f"htf_bias_{setup.direction}_vs_{htf_bias.value}"] = \
+                        result.rejection_reasons.get(f"htf_bias_{setup.direction}_vs_{htf_bias.value}", 0) + 1
+                    continue
         except Exception:
             pass
 
@@ -498,7 +519,6 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
                 candle_quality=candle_quality,
                 htf_alignment_score=htf_score,
                 premium_discount_score=pd_score,
-                htf_bias_penalty=_htf_bias_penalty,
             )
         except Exception as e:
             logger.debug(f"Feature builder failed: {e}")
@@ -511,7 +531,14 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
             logger.debug(f"Probability engine failed: {e}")
             continue
 
-        if probability.p_tp < 0.40:
+        # Direction-specific min_p_tp thresholds (v2.5)
+        _effective_min_p_tp = config.probability.min_p_tp
+        if setup.direction == 'sell' and config.probability.min_p_tp_short > 0:
+            _effective_min_p_tp = max(_effective_min_p_tp, config.probability.min_p_tp_short)
+        if setup.setup_type == 'reversal' and config.probability.min_p_tp_reversal > 0:
+            _effective_min_p_tp = max(_effective_min_p_tp, config.probability.min_p_tp_reversal)
+
+        if probability.p_tp < _effective_min_p_tp:
             result.signals_rejected += 1
             result.rejection_reasons["low_p_tp"] = result.rejection_reasons.get("low_p_tp", 0) + 1
             continue
@@ -572,7 +599,23 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
 
 
 async def main():
-    candles = DAYS * 24 + WARMUP + 50  # 90d * 24h + warmup + buffer
+    import argparse
+    parser = argparse.ArgumentParser(description="New pipeline backtest")
+    parser.add_argument("--symbols", type=str, default=None, help="Comma-separated symbols (default: BTC/USDT,ETH/USDT,ZRO/USDT)")
+    parser.add_argument("--days", type=int, default=None, help="Backtest period in days (default: 90)")
+    parser.add_argument("--timeframe", type=str, default=None, help="Timeframe (default: 4h)")
+    args = parser.parse_args()
+
+    # Override globals from args
+    global SYMBOLS, DAYS, TIMEFRAME
+    if args.symbols:
+        SYMBOLS = [s.strip() for s in args.symbols.split(",")]
+    if args.days:
+        DAYS = args.days
+    if args.timeframe:
+        TIMEFRAME = args.timeframe
+
+    candles = DAYS * 24 + WARMUP + 50  # days * 24h + warmup + buffer
 
     logger.info(f"═══ New Pipeline Backtest ═══")
     logger.info(f"Symbols: {', '.join(SYMBOLS)}")

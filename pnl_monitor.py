@@ -77,7 +77,7 @@ class PnLMonitor:
     async def _check_signal(self, signal):
         """Проверяет один сигнал на достижение SL/TP."""
         # Получаем текущую цену
-        df = await exchange_client.fetch_ohlcv(signal.signal, signal.timeframe, limit=1)
+        df = await exchange_client.fetch_ohlcv(signal.symbol, signal.timeframe, limit=1)
         if df is None or len(df) == 0:
             return
             
