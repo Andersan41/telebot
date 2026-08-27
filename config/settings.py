@@ -602,7 +602,7 @@ class WaveConfig:
     """Elliott Wave analysis — soft feature, never a hard gate."""
 
     # Master switch (default off — soft feature only)
-    enabled: bool = os.getenv("WAVE_ANALYSIS_ENABLED", "false").lower() == "true"
+    enabled: bool = os.getenv("WAVE_ANALYSIS_ENABLED", "true").lower() == "true"
     # Minimum confidence to include wave info in signal [0.0–1.0]
     min_confidence: float = float(os.getenv("WAVE_MIN_CONFIDENCE", "0.4"))
     # Conflict penalty multiplier (applied to P(TP) when wave conflicts with ICT direction)
