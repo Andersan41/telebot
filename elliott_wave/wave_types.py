@@ -111,6 +111,7 @@ class WaveAnalysis:
     direction: Optional[WaveDirection] = None  # net direction from primary
     confidence: float = 0.0
     conflict: bool = False     # True if primary + alternatives disagree on direction
+    conflict_details: str = ""  # human-readable conflict explanation
 
     def to_dict(self) -> dict:
         """Serializable dict for WebSocket/API."""
@@ -120,6 +121,7 @@ class WaveAnalysis:
             "direction": self.direction.value if self.direction else None,
             "confidence": round(self.confidence, 3),
             "conflict": self.conflict,
+            "conflict_details": self.conflict_details,
             "primary": _count_to_dict(self.primary) if self.primary else None,
             "alternatives": [_count_to_dict(a) for a in self.alternatives],
         }

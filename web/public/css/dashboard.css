@@ -755,10 +755,33 @@ body {
   color: #f59e0b;
   font-weight: 600;
 }
-.wave-alt {
-  font-size: 10px;
+.wave-conflict-block {
+  font-size: 11px;
+  color: #f59e0b;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 2px solid #f59e0b;
+  border-radius: 3px;
+}
+.wave-conflict-title {
+  font-weight: 700;
+}
+.wave-alt-block {
+  font-size: 11px;
+  color: #999;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid #555;
+  border-radius: 3px;
+}
+.wave-alt-label {
+  font-weight: 600;
+  color: #bbb;
+}
+.wave-alt-conf {
   color: #666;
-  margin-top: 2px;
 }
 
 /* ===== RESPONSIVE for analytics ===== */

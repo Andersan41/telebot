@@ -93,10 +93,23 @@ def analyze_waves(
     # Determine direction and conflict
     direction = primary.direction if primary else None
     conflict = False
+    conflict_details = ""
     if alternatives:
         alt_dirs = {a.direction for a in alternatives}
         if direction and len(alt_dirs) > 1:
             conflict = True
+            # Build detailed conflict explanation
+            primary_dir = direction.value
+            disagree = [a for a in alternatives if a.direction != direction]
+            agree = [a for a in alternatives if a.direction == direction]
+            parts = []
+            if disagree:
+                disagree_labels = ", ".join(f"{a.label} ({a.direction.value})" for a in disagree)
+                parts.append(f"Против: {disagree_labels}")
+            if agree:
+                agree_labels = ", ".join(f"{a.label}" for a in agree)
+                parts.append(f"Совпадают: {agree_labels}")
+            conflict_details = "; ".join(parts)
 
     confidence = primary.confidence if primary else 0.0
 
@@ -108,6 +121,7 @@ def analyze_waves(
         direction=direction,
         confidence=confidence,
         conflict=conflict,
+        conflict_details=conflict_details,
     )
 
 

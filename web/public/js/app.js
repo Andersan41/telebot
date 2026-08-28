@@ -459,7 +459,6 @@ function renderWaves(waves, currentPrice) {
 
   const p = waves.primary;
   const dirEmoji = p.direction === 'impulse' ? '🟢' : '🔵';
-  const conflictStr = waves.conflict ? ' <span class="wave-conflict">⚠️ конфликт</span>' : '';
   const confPct = Math.round(waves.confidence * 100);
 
   // Determine current wave label from points
@@ -498,11 +497,30 @@ function renderWaves(waves, currentPrice) {
     highlightedLabel = `${labelParts[0]}(${highlighted})`;
   }
 
+  // Conflict details
+  let conflictHtml = '';
+  if (waves.conflict) {
+    const details = waves.conflict_details || 'Разные варианты указывают разное направление';
+    conflictHtml = `<div class="wave-conflict-block">⚠️ <span class="wave-conflict-title">Конфликт:</span> ${details}</div>`;
+  }
+
+  // Alternatives with direction info
+  let altHtml = '';
+  if (waves.alternatives.length > 0) {
+    const altItems = waves.alternatives.map(a => {
+      const aDirEmoji = a.direction === 'impulse' ? '🟢' : '🔵';
+      const aConf = Math.round(a.confidence * 100);
+      return `${aDirEmoji} ${a.label} <span class="wave-alt-conf">(${aConf}%)</span>`;
+    }).join('<br>');
+    altHtml = `<div class="wave-alt-block"><span class="wave-alt-label">Альтернативы:</span><br>${altItems}</div>`;
+  }
+
   el.innerHTML = `
     <div class="wave-header">${dirEmoji} ${highlightedLabel}</div>
     <div class="wave-detail">${pointsStr}</div>
-    <div class="wave-confidence">Confidence: ${confPct}%${conflictStr}</div>
-    ${waves.alternatives.length > 0 ? `<div class="wave-alt">Alt: ${waves.alternatives.map(a => a.label).join(', ')}</div>` : ''}
+    <div class="wave-confidence">Confidence: ${confPct}%</div>
+    ${conflictHtml}
+    ${altHtml}
   `;
 }
 

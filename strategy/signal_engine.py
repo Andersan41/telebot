@@ -71,6 +71,7 @@ class SignalResult:
     _wave_confidence: float = 0.0
     _wave_label: str = ""
     _wave_conflict: bool = False
+    _wave_conflict_details: str = ""  # detailed conflict explanation
     _wave_alt_label: str = ""  # alternative count label for conflict explanation
     _wave_direction: str = ""  # "bullish" / "bearish" / ""
     _wave_target: float = 0.0  # expected price target from wave analysis
@@ -194,9 +195,9 @@ class SignalResult:
             wave_line = f"🌊 Волна: {highlighted_label} {direction_icon} {direction_text} ({self._wave_confidence:.0%})"
             if self._wave_target > 0:
                 wave_line += f" → целевая {_fmt_price(self._wave_target)}"
-            if self._wave_conflict and self._wave_alt_label:
-                alt_highlighted = _highlight_wave(self._wave_alt_label, self._wave_current)
-                wave_line += f"\n⚠️ альтернатива: {alt_highlighted}"
+            if self._wave_conflict:
+                details = self._wave_conflict_details or "Разные варианты указывают разное направление"
+                wave_line += f"\n⚠️ конфликт: {details}"
             lines.append(wave_line)
         return "\n".join(lines)
 
