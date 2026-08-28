@@ -511,7 +511,7 @@ async def check_open_outcomes() -> None:
                 f"at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
                 f"(entry={signal.close_price}, SL={signal.sl}, TP={signal.tp})"
             )
-            await _send_close_notification(signal, "HIT_TP", current_price, net_pnl)
+            await _send_close_notification(signal, "HIT_TP", close_price, net_pnl)
             # Record daily limits
             from risk.daily_limits import daily_limits
             daily_limits.record_trade_closed(net_pnl, was_loss=False, risk_pct=outcome.risk_pct or 0.0)
@@ -559,7 +559,7 @@ async def check_open_outcomes() -> None:
                 f"at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
                 f"(entry={signal.close_price}, SL={actual_sl:.6f}, TP={signal.tp})"
             )
-            await _send_close_notification(signal, "HIT_SL", current_price, net_pnl,
+            await _send_close_notification(signal, "HIT_SL", close_price, net_pnl,
                                            actual_sl=actual_sl)
             # Record daily limits
             from risk.daily_limits import daily_limits
