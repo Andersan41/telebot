@@ -146,11 +146,17 @@ async def _send_close_notification(
         sl_val = actual_sl if actual_sl is not None else signal.sl
         tp_val = actual_tp if actual_tp is not None else signal.tp
 
+        def _fp(v):
+            """Format price: strip trailing zeros."""
+            if v is None:
+                return ""
+            return f"{v:.10f}".rstrip("0").rstrip(".")
+
         text = (
             f"{emoji} <b>Сделка закрыта — {action}</b>\n\n"
             f"📊 {html.escape(signal.signal_type)} {html.escape(signal.symbol)} {html.escape(signal.timeframe)}\n"
-            f"💰 Entry: <code>{signal.close_price}</code>\n"
-            f"📍 Закрытие: <code>{current_price}</code>\n"
+            f"💰 Entry: <code>{_fp(signal.close_price)}</code>\n"
+            f"📍 Закрытие: <code>{_fp(current_price)}</code>\n"
             f"📈 PnL: <b>{pnl_sign}{net_pnl:.2f}%</b>"
         )
         if wave_label and wave_direction:

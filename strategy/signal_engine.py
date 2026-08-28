@@ -161,14 +161,14 @@ class SignalResult:
         lines.append(f"Таймфрейм: {self.timeframe.upper()}")
 
         entry = self.entry_price if self.entry_price is not None else self.close
-        lines.append(f"Entry: <code>{entry}</code>")
+        lines.append(f"Entry: <code>{_fmt_price(entry)}</code>")
 
         if self.sl is not None:
             sl_pct = (self.sl - entry) / entry * 100 if entry else 0
-            lines.append(f"SL: <code>{self.sl}</code> ({sl_pct:+.2f}%)")
+            lines.append(f"SL: <code>{_fmt_price(self.sl)}</code> ({sl_pct:+.2f}%)")
         if self.tp is not None:
             tp_pct = (self.tp - entry) / entry * 100 if entry else 0
-            lines.append(f"TP: <code>{self.tp}</code> ({tp_pct:+.2f}%)")
+            lines.append(f"TP: <code>{_fmt_price(self.tp)}</code> ({tp_pct:+.2f}%)")
         if self.sl is not None and self.tp is not None and entry:
             rr = abs(self.tp - entry) / abs(entry - self.sl) if entry != self.sl else 0
             lines.append(f"RR: 1:{rr:.1f}")
@@ -189,11 +189,19 @@ class SignalResult:
             direction_text = "бычий" if self._wave_direction == "bullish" else "медвежий" if self._wave_direction == "bearish" else "неопределён"
             wave_line = f"🌊 Волна: {self._wave_label} {direction_icon} {direction_text} ({self._wave_confidence:.0%})"
             if self._wave_target > 0:
-                wave_line += f" → целевая {self._wave_target:.6f}"
+                wave_line += f" → целевая {_fmt_price(self._wave_target)}"
             if self._wave_conflict and self._wave_alt_label:
                 wave_line += f"\n⚠️ альтернатива: {self._wave_alt_label}"
             lines.append(wave_line)
         return "\n".join(lines)
+
+
+def _fmt_price(value) -> str:
+    """Format price: strip trailing zeros (1.350000 → 1.35, 0.0001130 → 0.000113)."""
+    if value is None:
+        return ""
+    s = f"{value:.10f}".rstrip("0").rstrip(".")
+    return s
 
 
 def _calculate_sl_tp(
