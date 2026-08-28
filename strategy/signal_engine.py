@@ -5,6 +5,8 @@ ICT Core: all indicator-based gates removed.
 Pattern Engine (pattern_engine.py) is the sole source of trading signals.
 """
 import math
+import html
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Literal, Optional, Dict, Any
@@ -72,6 +74,7 @@ class SignalResult:
     _wave_alt_label: str = ""  # alternative count label for conflict explanation
     _wave_direction: str = ""  # "bullish" / "bearish" / ""
     _wave_target: float = 0.0  # expected price target from wave analysis
+    _wave_current: str = ""    # current wave label(s), e.g. "3" or "A-B"
 
     @property
     def is_actionable(self) -> bool:
@@ -187,11 +190,13 @@ class SignalResult:
         if self._wave_confidence >= 0.4:
             direction_icon = "🟢" if self._wave_direction == "bullish" else "🔴" if self._wave_direction == "bearish" else "⚪"
             direction_text = "бычий" if self._wave_direction == "bullish" else "медвежий" if self._wave_direction == "bearish" else "неопределён"
-            wave_line = f"🌊 Волна: {self._wave_label} {direction_icon} {direction_text} ({self._wave_confidence:.0%})"
+            highlighted_label = _highlight_wave(self._wave_label, self._wave_current)
+            wave_line = f"🌊 Волна: {highlighted_label} {direction_icon} {direction_text} ({self._wave_confidence:.0%})"
             if self._wave_target > 0:
                 wave_line += f" → целевая {_fmt_price(self._wave_target)}"
             if self._wave_conflict and self._wave_alt_label:
-                wave_line += f"\n⚠️ альтернатива: {self._wave_alt_label}"
+                alt_highlighted = _highlight_wave(self._wave_alt_label, self._wave_current)
+                wave_line += f"\n⚠️ альтернатива: {alt_highlighted}"
             lines.append(wave_line)
         return "\n".join(lines)
 
@@ -202,6 +207,30 @@ def _fmt_price(value) -> str:
         return ""
     s = f"{value:.10f}".rstrip("0").rstrip(".")
     return s
+
+
+def _highlight_wave(label: str, current: str) -> str:
+    """Highlight current wave in label with bold HTML.
+    E.g. label='impulse (1-2-3-4-5)', current='3' → 'impulse (1-2-<b>3</b>-4-5)'
+    """
+    if not current or "(" not in label:
+        return html.escape(label)
+    m = re.search(r'\(([^)]+)\)', label)
+    if not m:
+        return html.escape(label)
+    prefix = label[:m.start()]
+    waves_str = m.group(1)
+    suffix = label[m.end():]
+    waves = waves_str.split("-")
+    # Build highlighted version
+    highlighted = []
+    cur_set = set(current.split("-"))
+    for w in waves:
+        if w in cur_set:
+            highlighted.append(f"<b>{html.escape(w)}</b>")
+        else:
+            highlighted.append(html.escape(w))
+    return html.escape(prefix) + "(" + "-".join(highlighted) + ")" + html.escape(suffix)
 
 
 def _calculate_sl_tp(

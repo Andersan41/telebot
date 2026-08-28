@@ -79,6 +79,27 @@ class WaveCount:
     def wave_labels(self) -> List[str]:
         return [p.wave_label for p in self.points]
 
+    def get_current_wave(self, current_price: float) -> str:
+        """Determine which wave label(s) the current price is between.
+        Returns e.g. '3' or 'A-B' (dash-separated for ranges).
+        """
+        if len(self.points) < 2:
+            return ""
+        for i in range(len(self.points) - 1):
+            p1 = self.points[i]
+            p2 = self.points[i + 1]
+            lo, hi = min(p1.price, p2.price), max(p1.price, p2.price)
+            if lo <= current_price <= hi:
+                # Price is in this segment
+                if i == 0:
+                    return p1.wave_label
+                elif i == len(self.points) - 2:
+                    return p2.wave_label
+                else:
+                    return f"{p1.wave_label}-{p2.wave_label}"
+        # Price beyond last point — on the last wave
+        return self.points[-1].wave_label
+
 
 @dataclass(frozen=True)
 class WaveAnalysis:
