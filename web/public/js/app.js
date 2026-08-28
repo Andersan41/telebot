@@ -504,13 +504,14 @@ function renderWaves(waves, currentPrice) {
     conflictHtml = `<div class="wave-conflict-block">⚠️ <span class="wave-conflict-title">Конфликт:</span> ${details}</div>`;
   }
 
-  // Alternatives with direction info
+  // Alternatives with direction info and target
   let altHtml = '';
   if (waves.alternatives.length > 0) {
     const altItems = waves.alternatives.map(a => {
       const aDirEmoji = a.direction === 'impulse' ? '🟢' : '🔵';
       const aConf = Math.round(a.confidence * 100);
-      return `${aDirEmoji} ${a.label} <span class="wave-alt-conf">(${aConf}%)</span>`;
+      const aTarget = a.target ? formatPrice(a.target) : '—';
+      return `${aDirEmoji} ${a.label} <span class="wave-alt-conf">(${aConf}%) → ${aTarget}</span>`;
     }).join('<br>');
     altHtml = `<div class="wave-alt-block"><span class="wave-alt-label">Альтернативы:</span><br>${altItems}</div>`;
   }

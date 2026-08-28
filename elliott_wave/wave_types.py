@@ -134,6 +134,7 @@ def _count_to_dict(count: WaveCount) -> dict:
         "confidence": round(count.confidence, 3),
         "is_primary": count.is_primary,
         "label": count.label,
+        "target": round(count.end_price, 8),
         "points": [
             {"index": p.index, "price": round(p.price, 8), "label": p.wave_label}
             for p in count.points
