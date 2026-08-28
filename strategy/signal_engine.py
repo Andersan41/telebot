@@ -69,6 +69,7 @@ class SignalResult:
     _wave_confidence: float = 0.0
     _wave_label: str = ""
     _wave_conflict: bool = False
+    _wave_alt_label: str = ""  # alternative count label for conflict explanation
 
     @property
     def is_actionable(self) -> bool:
@@ -182,7 +183,12 @@ class SignalResult:
             lines.append(f"Confidence: {self.confidence:.0f}/100")
         # Elliott Wave
         if self._wave_confidence >= 0.4:
-            conflict_str = " ⚠️ конфликт" if self._wave_conflict else ""
+            if self._wave_conflict and self._wave_alt_label:
+                conflict_str = f" ⚠️ альтернатива: {self._wave_alt_label}"
+            elif self._wave_conflict:
+                conflict_str = " ⚠️ есть альтернативный подсчёт"
+            else:
+                conflict_str = ""
             lines.append(f"Wave: {self._wave_label} ({self._wave_confidence:.0%}){conflict_str}")
         return "\n".join(lines)
 
