@@ -70,6 +70,8 @@ class SignalResult:
     _wave_label: str = ""
     _wave_conflict: bool = False
     _wave_alt_label: str = ""  # alternative count label for conflict explanation
+    _wave_direction: str = ""  # "bullish" / "bearish" / ""
+    _wave_target: float = 0.0  # expected price target from wave analysis
 
     @property
     def is_actionable(self) -> bool:
@@ -183,13 +185,14 @@ class SignalResult:
             lines.append(f"Confidence: {self.confidence:.0f}/100")
         # Elliott Wave
         if self._wave_confidence >= 0.4:
+            direction_icon = "🟢" if self._wave_direction == "bullish" else "🔴" if self._wave_direction == "bearish" else "⚪"
+            direction_text = "бычий" if self._wave_direction == "bullish" else "медвежий" if self._wave_direction == "bearish" else "неопределён"
+            wave_line = f"🌊 Волна: {self._wave_label} {direction_icon} {direction_text} ({self._wave_confidence:.0%})"
+            if self._wave_target > 0:
+                wave_line += f" → целевая {self._wave_target:.6f}"
             if self._wave_conflict and self._wave_alt_label:
-                conflict_str = f" ⚠️ альтернатива: {self._wave_alt_label}"
-            elif self._wave_conflict:
-                conflict_str = " ⚠️ есть альтернативный подсчёт"
-            else:
-                conflict_str = ""
-            lines.append(f"Wave: {self._wave_label} ({self._wave_confidence:.0%}){conflict_str}")
+                wave_line += f"\n⚠️ альтернатива: {self._wave_alt_label}"
+            lines.append(wave_line)
         return "\n".join(lines)
 
 

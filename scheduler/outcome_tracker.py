@@ -101,9 +101,27 @@ async def _calc_atr_for_signal(signal, period: int = 14) -> float:
         return 0.0
 
 
+async def _get_wave_info(signal_id: int) -> tuple[str, str]:
+    """Get wave label and direction from DecisionTrace for a signal."""
+    try:
+        from storage.database import DecisionTrace, db as _db
+        from sqlalchemy import select
+        async with _db._session_factory() as session:
+            result = await session.execute(
+                select(DecisionTrace).where(DecisionTrace.signal_id == signal_id)
+            )
+            trace_row = result.scalar_one_or_none()
+            if trace_row:
+                return (trace_row.wave_label or "", trace_row.wave_direction or "")
+    except Exception:
+        pass
+    return ("", "")
+
+
 async def _send_close_notification(
     signal, status: str, current_price: float, net_pnl: float,
     actual_sl: float = None, actual_tp: float = None,
+    wave_label: str = "", wave_direction: str = "",
 ) -> None:
     """Отправить уведомление в Telegram о закрытии сделки (TP/SL)."""
     if not config.telegram.channel_id:
@@ -135,6 +153,9 @@ async def _send_close_notification(
             f"📍 Закрытие: <code>{current_price}</code>\n"
             f"📈 PnL: <b>{pnl_sign}{net_pnl:.2f}%</b>"
         )
+        if wave_label and wave_direction:
+            direction_icon = "🟢" if wave_direction == "bullish" else "🔴" if wave_direction == "bearish" else "⚪"
+            text += f"\n🌊 Волна: {html.escape(wave_label)} {direction_icon}"
 
         await bot.send_message(
             chat_id=config.telegram.channel_id,
@@ -424,8 +445,10 @@ async def check_open_outcomes() -> None:
                 f"at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
                 f"(entry={signal.close_price}, SL={pos.stop_loss:.6f}, TP={signal.tp})"
             )
+            wave_label, wave_dir = await _get_wave_info(signal.id)
             await _send_close_notification(signal, reason, current_price, net_pnl,
-                                           actual_sl=pos.stop_loss)
+                                           actual_sl=pos.stop_loss,
+                                           wave_label=wave_label, wave_direction=wave_dir)
             from risk.daily_limits import daily_limits
             daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0), risk_pct=outcome.risk_pct or 0.0)
             _position_state.pop(sig_id, None)
@@ -511,7 +534,9 @@ async def check_open_outcomes() -> None:
                 f"at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
                 f"(entry={signal.close_price}, SL={signal.sl}, TP={signal.tp})"
             )
-            await _send_close_notification(signal, "HIT_TP", close_price, net_pnl)
+            wave_label, wave_dir = await _get_wave_info(signal.id)
+            await _send_close_notification(signal, "HIT_TP", close_price, net_pnl,
+                                           wave_label=wave_label, wave_direction=wave_dir)
             # Record daily limits
             from risk.daily_limits import daily_limits
             daily_limits.record_trade_closed(net_pnl, was_loss=False, risk_pct=outcome.risk_pct or 0.0)
@@ -559,8 +584,10 @@ async def check_open_outcomes() -> None:
                 f"at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
                 f"(entry={signal.close_price}, SL={actual_sl:.6f}, TP={signal.tp})"
             )
+            wave_label, wave_dir = await _get_wave_info(signal.id)
             await _send_close_notification(signal, "HIT_SL", close_price, net_pnl,
-                                           actual_sl=actual_sl)
+                                           actual_sl=actual_sl,
+                                           wave_label=wave_label, wave_direction=wave_dir)
             # Record daily limits
             from risk.daily_limits import daily_limits
             daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0), risk_pct=outcome.risk_pct or 0.0)

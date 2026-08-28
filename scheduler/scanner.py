@@ -1596,6 +1596,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             _wave_label=_wave_analysis.primary.label if _wave_analysis and _wave_analysis.primary else "",
             _wave_conflict=_wave_analysis.conflict if _wave_analysis else False,
             _wave_alt_label=_wave_analysis.alternatives[0].label if _wave_analysis and _wave_analysis.alternatives else "",
+            _wave_direction=_wave_analysis.direction.value if _wave_analysis and _wave_analysis.direction else "",
+            _wave_target=_wave_analysis.primary.end_price if _wave_analysis and _wave_analysis.primary else 0.0,
         )
 
         # Attach probability data for display (capped at 85%)
