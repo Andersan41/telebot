@@ -733,11 +733,19 @@ body {
   color: #e0e0e0;
   margin-bottom: 4px;
 }
+.wave-header b {
+  color: #60a5fa;
+  font-weight: 700;
+}
 .wave-detail {
   font-size: 11px;
   color: #aaa;
   font-family: monospace;
   margin-bottom: 4px;
+}
+.wave-detail b {
+  color: #60a5fa;
+  font-weight: 700;
 }
 .wave-confidence {
   font-size: 11px;

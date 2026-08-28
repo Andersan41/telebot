@@ -58,7 +58,7 @@ function renderDashboard(data) {
   if (openInterest) renderOpenInterest(openInterest);
   if (volumeProfile) renderVolumeProfile(volumeProfile, price);
   if (bookAnomalies) renderBookAnomalies(bookAnomalies);
-  if (waves) renderWaves(waves);
+  if (waves) renderWaves(waves, price);
 
   renderVerdictFromSignal(signal, indicators);
 }
@@ -448,7 +448,7 @@ function renderBookAnomalies(book) {
 }
 
 // ── Elliott Wave ──────────────────────────────────────────
-function renderWaves(waves) {
+function renderWaves(waves, currentPrice) {
   const el = document.getElementById('wave-info');
   if (!el) return;
 
@@ -462,10 +462,44 @@ function renderWaves(waves) {
   const conflictStr = waves.conflict ? ' <span class="wave-conflict">⚠️ конфликт</span>' : '';
   const confPct = Math.round(waves.confidence * 100);
 
-  let pointsStr = p.points.map(pt => pt.label).join(' → ');
+  // Determine current wave label from points
+  let currentLabel = '';
+  if (currentPrice && p.points && p.points.length >= 2) {
+    for (let i = 0; i < p.points.length - 1; i++) {
+      const lo = Math.min(p.points[i].price, p.points[i + 1].price);
+      const hi = Math.max(p.points[i].price, p.points[i + 1].price);
+      if (currentPrice >= lo && currentPrice <= hi) {
+        if (i === 0) currentLabel = p.points[i].label;
+        else if (i === p.points.length - 2) currentLabel = p.points[i + 1].label;
+        else currentLabel = `${p.points[i].label}-${p.points[i + 1].label}`;
+        break;
+      }
+    }
+    if (!currentLabel && p.points.length > 0) {
+      currentLabel = p.points[p.points.length - 1].label;
+    }
+  }
+
+  const curSet = new Set(currentLabel.split('-'));
+
+  // Highlight points — mark current wave(s) with bold
+  let pointsStr = p.points.map(pt => {
+    if (curSet.has(pt.label)) return `<b>${pt.label}</b>`;
+    return pt.label;
+  }).join(' → ');
+
+  // Also highlight label parentheses (e.g. "1-2-3-4-5")
+  let highlightedLabel = p.label;
+  if (p.label.includes('(')) {
+    const labelParts = p.label.split('(');
+    const wavesStr = labelParts[1].replace(')', '');
+    const waves = wavesStr.split('-');
+    const highlighted = waves.map(w => curSet.has(w) ? `<b>${w}</b>` : w).join('-');
+    highlightedLabel = `${labelParts[0]}(${highlighted})`;
+  }
 
   el.innerHTML = `
-    <div class="wave-header">${dirEmoji} ${p.label}</div>
+    <div class="wave-header">${dirEmoji} ${highlightedLabel}</div>
     <div class="wave-detail">${pointsStr}</div>
     <div class="wave-confidence">Confidence: ${confPct}%${conflictStr}</div>
     ${waves.alternatives.length > 0 ? `<div class="wave-alt">Alt: ${waves.alternatives.map(a => a.label).join(', ')}</div>` : ''}
