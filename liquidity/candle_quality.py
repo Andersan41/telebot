@@ -309,7 +309,7 @@ def analyze_last_candle(
         return None
 
     last = df.iloc[-1]
-    return analyze_candle(
+    result = analyze_candle(
         open_price=float(last["open"]),
         high=float(last["high"]),
         low=float(last["low"]),
@@ -317,6 +317,11 @@ def analyze_last_candle(
         atr_value=atr_value,
         **kwargs,
     )
+    # Compute body_atr_ratio (analyze_candle doesn't — it only sets basic fields)
+    if result and atr_value and atr_value > 0:
+        body = abs(float(last["close"]) - float(last["open"]))
+        result.body_atr_ratio = round(body / atr_value, 4)
+    return result
 
 
 def analyze_candle_at_index(

@@ -126,15 +126,15 @@ def classify_choch(
     reclaim_bars: int = 0,
     volume_ratio: float = 1.0,
     htf_aligned: bool = False,
-    max_causal_bars: int = 5,
+    max_causal_bars: int = 10,
     df: Optional[pd.DataFrame] = None,
     atr_value: float = 0.0,
 ) -> CHoCH:
     """Classify CHoCH strength as weak/normal/mss.
 
     MSS criteria (all must pass):
-    1. Sweep within causal window (max_causal_bars, default 5)
-    2. Displacement >= 1 ATR (measured as max body between sweep and CHoCH)
+    1. Sweep within causal window (max_causal_bars, default 10)
+    2. Displacement >= 0.2 ATR (measured as max body between sweep and CHoCH)
     3. Reclaim <= 2 bars
     """
     choch.displacement_score = displacement_atr
@@ -177,21 +177,33 @@ def classify_choch(
             max_disp = 0.0
             for idx in range(start, end):
                 candle = df.iloc[idx]
-                body = abs(float(candle["close"]) - float(candle["open"]))
-                disp = body / atr_value
+                if start == end - 1:
+                    # Same-candle case: use full range (high-low) as displacement
+                    disp = (float(candle["high"]) - float(candle["low"])) / atr_value
+                else:
+                    # Multi-candle: use body (close-open) of each candle
+                    body = abs(float(candle["close"]) - float(candle["open"]))
+                    disp = body / atr_value
                 if disp > max_disp:
                     max_disp = disp
             if max_disp > displacement_atr:
                 displacement_atr = max_disp
                 choch.displacement_score = displacement_atr
+        from loguru import logger
+        logger.debug(
+            f"classify_choch: disp_param={choch.displacement_score:.3f} "
+            f"sweep_idx={matching_sweep.candle_index} choch_idx={choch.candle_index} "
+            f"atr={atr_value:.2f} df_len={len(df) if df is not None else 0}"
+        )
     else:
         choch.has_sweep_reference = False
         choch.causality_score = 0.0
 
-    # Classify
+    # Classify — lowered MSS threshold to 0.2 ATR (was 0.5, killing reversal for same-candle sweep+CHoCH)
+    # For same-candle sweep+CHoCH (common in low-vol), use lower threshold since full range is displacement
     is_mss = (
         choch.has_sweep_reference
-        and displacement_atr >= 1.0
+        and displacement_atr >= 0.2
         and reclaim_bars <= 2
     )
 
@@ -204,7 +216,7 @@ def classify_choch(
             volume_ratio=volume_ratio,
             htf_aligned=htf_aligned,
         )
-    elif choch.has_sweep_reference and displacement_atr >= 0.5:
+    elif choch.has_sweep_reference and displacement_atr >= 0.1:
         choch.strength = "normal"
         choch.mss_score = calc_mss_score(
             sweep_strength=matching_sweep.strength if matching_sweep else 0.0,
