@@ -189,16 +189,21 @@ class RiskEngine:
                 rejection_reason=f"SL too tight: {sl_distance_pct:.2f}% < {self.sl_absolute_min_pct}%",
             )
 
-        if sl_distance_pct > self.sl_absolute_max_pct:
+        # Dynamic SL max: A1 fix — dead zone消失 when ATR > 2.5%
+        # Formula: sl_max = max(5.0%, ATR × 2.2), clamp ≤ 8.0%
+        atr_pct = atr / entry_price * 100 if entry_price > 0 else 0.0
+        dynamic_sl_max = max(self.sl_absolute_max_pct, atr_pct * 2.2)
+        dynamic_sl_max = min(dynamic_sl_max, 8.0)  # hard cap at 8%
+
+        if sl_distance_pct > dynamic_sl_max:
             return RiskDecision(
                 should_trade=False,
                 rr_ratio=rr_ratio,
-                rejection_reason=f"SL too wide: {sl_distance_pct:.2f}% > {self.sl_absolute_max_pct}%",
+                rejection_reason=f"SL too wide: {sl_distance_pct:.2f}% > {dynamic_sl_max:.2f}%",
             )
 
         # 3b. SL minimum ATR multiplier (prevent tight SL on volatile symbols)
         if atr > 0 and entry_price > 0:
-            atr_pct = atr / entry_price * 100
             min_sl_from_atr = atr_pct * self.sl_min_atr_multiplier
             if sl_distance_pct < min_sl_from_atr:
                 return RiskDecision(
