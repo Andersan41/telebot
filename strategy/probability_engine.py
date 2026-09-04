@@ -267,16 +267,8 @@ class ProbabilityEngine:
         elif f.volume_ratio > 1.2:
             volume_edge += 1.0
 
-        # R:R quality
-        rr_edge = 0.0
-        if f.rr_ratio >= 3.0:
-            rr_edge += 4.0
-        elif f.rr_ratio >= 2.0:
-            rr_edge += 3.0
-        elif f.rr_ratio >= 1.5:
-            rr_edge += 1.5
-        elif f.rr_ratio < 1.0:
-            rr_edge -= 3.0
+        # R:R quality — REMOVED (A3): RR is already used to calculate SL/TP,
+        # adding it to probability creates a feedback loop (RR ≠ P(TP))
 
         # MTF alignment
         mtf_edge = 0.0
@@ -307,7 +299,7 @@ class ProbabilityEngine:
         # Total
         winrate = (
             base + component_edge + structure_edge + volume_edge
-            + rr_edge + mtf_edge + session_edge + atr_edge + ctx_edge
+            + mtf_edge + session_edge + atr_edge + ctx_edge
             + regime_edge
         )
 
@@ -516,13 +508,7 @@ class ProbabilityEngine:
             modifier = get_phase_modifier(phase.phase, scenario.name)
             base_p *= modifier
 
-        # ── 5. R:R quality ──
-        if scenario.rr_ratio >= 3.0:
-            base_p *= 1.10
-        elif scenario.rr_ratio >= 2.0:
-            base_p *= 1.05
-        elif scenario.rr_ratio < 1.0:
-            base_p *= 0.85
+        # ── 5. R:R quality — REMOVED (A3): feedback loop ──
 
         # ── 6. Clamp ──
         eval_.probability = max(0.10, min(0.85, base_p))
