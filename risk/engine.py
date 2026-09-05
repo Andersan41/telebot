@@ -33,6 +33,7 @@ class PortfolioState:
     total_risk_pct: float = 0.0
     max_active_signals: int = 3
     max_portfolio_risk_pct: float = 3.0
+    equity: float = 0.0  # total portfolio equity in USDT
 
 
 @dataclass
@@ -235,7 +236,15 @@ class RiskEngine:
             q = 1 - p
             b = rr_ratio
             kelly = (p * b - q) / b if b > 0 else 0
-            kelly = max(0.0, min(kelly, 0.20))  # cap at 20% (half-Kelly)
+
+            # Reject negative-EV trades (kelly <= 0 means expected loss)
+            if kelly <= 0:
+                return RiskDecision(
+                    should_trade=False,
+                    rejection_reason=f"kelly={kelly:.4f} <= 0 (negative EV: p={p:.2f}, rr={rr_ratio:.2f})",
+                )
+
+            kelly = min(kelly, 0.20)  # cap at 20% (half-Kelly)
 
             # Scale by model confidence
             kelly *= probability.confidence
@@ -286,6 +295,16 @@ class RiskEngine:
 
         # Clamp
         risk_pct = max(self.min_risk_pct, min(risk_pct, self.max_risk_pct))
+
+        # Min notional check (Binance minimum ≈ $5 USDT)
+        min_notional = getattr(config, 'min_notional_usdt', 5.0)
+        if portfolio.equity > 0 and entry_price > 0:
+            position_size_usdt = (portfolio.equity * risk_pct / 100.0) / entry_price
+            if position_size_usdt < min_notional:
+                return RiskDecision(
+                    should_trade=False,
+                    rejection_reason=f"position size ${position_size_usdt:.2f} < min notional ${min_notional}",
+                )
 
         logger.info(
             f"Risk decision: risk={risk_pct:.2f}% | "

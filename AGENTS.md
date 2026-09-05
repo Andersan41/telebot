@@ -103,6 +103,9 @@ Key baselines (post H-003 fix, 500 candles 1h):
   rather than reuse the module-level singletons.
 - **`main.py` adds project root to `sys.path`** — running submodules without it will fail
   sibling imports.
+- **`config_version`**: Bump `_CONFIG_VERSION` in `scheduler/scanner.py` when any config
+  threshold changes (e.g. min_rr_ratio, volatility limits, SL bounds, max_active_signals).
+  Audit logs use this to distinguish signals under different configs for A/B analysis.
 
 ## Required `.env`
 

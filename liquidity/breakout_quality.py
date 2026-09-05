@@ -175,7 +175,7 @@ def classify_breakout(
         warnings.append("no retention (AMD fake-break risk)")
         penalty += 15
 
-    score = max(0.0, score - penalty)
+    score = max(0.0, min(score - penalty, 100.0))
 
     if score >= 55:
         verdict = "real"

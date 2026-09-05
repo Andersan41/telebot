@@ -108,6 +108,20 @@ class DailyLimitsTracker:
 
         return True, actual_risk, ""
 
+    def try_open_trade(
+        self,
+        risk_per_trade_pct: float,
+    ) -> tuple[bool, float, str]:
+        """Atomically check daily limits AND reserve the risk slot.
+
+        Combines can_open_trade() + record_trade_opened() to prevent TOCTOU.
+        Use this instead of calling them separately.
+        """
+        allowed, actual_risk, reason = self.can_open_trade(risk_per_trade_pct)
+        if allowed:
+            self.record_trade_opened(actual_risk)
+        return allowed, actual_risk, reason
+
     def record_trade_opened(self, risk_pct: float) -> None:
         """Record that a trade was opened."""
         self._maybe_reset()

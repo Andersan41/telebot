@@ -68,8 +68,8 @@ RR_TOO_LOW = "rr_too_low"
 SL_TOO_TIGHT = "sl_too_tight"
 SL_TOO_WIDE = "sl_too_wide"
 SL_ATR_CONFLICT = "sl_atr_conflict"
-SL_ATR_MIN_RELAXED = "sl_atr_min_relaxed"
-EV_GATE_FAILED = "ev_gate_failed"
+POSITION_SIZE_BELOW_MIN = "position_size_below_min"
+NEGATIVE_EV = "negative_ev"
 
 # ── Phase 4.5: Entry Trigger ──────────────────────────────────────
 ENTRY_TRIGGER_NO = "entry_trigger_no"

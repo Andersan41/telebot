@@ -330,6 +330,11 @@ class SignalAuditLog(Base):
     mfe_r = Column(Float, nullable=True)               # max favorable excursion in R
     resolved_at = Column(DateTime, nullable=True)
 
+    # Point-in-time snapshot (P0-01)
+    as_of_utc = Column(DateTime, nullable=True)        # timestamp of last closed candle
+    is_final = Column(Boolean, default=True)           # True if all data finalized
+    data_age_ms = Column(Integer, nullable=True)       # age of data in ms from ts_event
+
     meta = Column(Text, nullable=True)                 # JSON: additional context
 
 
@@ -457,6 +462,23 @@ class Database:
                 )
                 await conn.commit()
                 logger.info("Migration: added signals.ob_type")
+
+            # Migration: signal_audit_log point-in-time snapshot columns
+            result = await conn.execute(
+                text("PRAGMA table_info(signal_audit_log)")
+            )
+            existing_cols = {row[1] for row in result}
+            for col_name, col_type in [
+                ("as_of_utc", "DATETIME"),
+                ("is_final", "BOOLEAN DEFAULT 1"),
+                ("data_age_ms", "INTEGER"),
+            ]:
+                if col_name not in existing_cols:
+                    await conn.execute(
+                        text(f"ALTER TABLE signal_audit_log ADD COLUMN {col_name} {col_type}")
+                    )
+                    logger.info(f"Migration: added signal_audit_log.{col_name}")
+            await conn.commit()
 
     async def save_signal(
         self,
@@ -1360,6 +1382,9 @@ class Database:
         hypothetical_p_tp: Optional[float] = None,
         synthetic_plan: bool = False,
         meta: Optional[str] = None,
+        as_of_utc: Optional[datetime] = None,
+        is_final: bool = True,
+        data_age_ms: Optional[int] = None,
     ) -> int:
         """Insert a row into signal_audit_log. Returns the new row id."""
         async with self._session_factory() as session:
@@ -1382,6 +1407,9 @@ class Database:
                 hypothetical_p_tp=hypothetical_p_tp,
                 synthetic_plan=synthetic_plan,
                 meta=meta,
+                as_of_utc=as_of_utc,
+                is_final=is_final,
+                data_age_ms=data_age_ms,
             )
             session.add(entry)
             await session.commit()

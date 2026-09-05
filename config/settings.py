@@ -688,6 +688,9 @@ class AppConfig:
     probability: ProbabilityConfig = field(default_factory=ProbabilityConfig)
     risk_engine: RiskEngineConfig = field(default_factory=RiskEngineConfig)
 
+    # Portfolio equity in USDT (for min_notional check). 0 = disabled.
+    portfolio_equity_usdt: float = float(os.getenv("PORTFOLIO_EQUITY_USDT", "0"))
+
     # ─── Feature Flags (Phase 1) ─────────────────────────────────────────
     htf_hard_gate: bool = os.getenv("HTF_HARD_GATE", "true").lower() == "true"
     external_liquidity_tp: bool = os.getenv("EXTERNAL_LIQUIDITY_TP", "true").lower() == "true"
