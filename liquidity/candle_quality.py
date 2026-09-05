@@ -101,7 +101,9 @@ def analyze_candle(
 
     is_displacement = False
     if atr_value is not None and atr_value > 0:
-        is_displacement = body > atr_value * atr_mult
+        # Use full range (high-low), not body — matches structure.py fix
+        # for same-candle displacement detection
+        is_displacement = range_val > atr_value * atr_mult
 
     is_weak = body_pct < min_body_pct
     if not is_weak:
@@ -176,7 +178,8 @@ def analyze_candle_quality(
     lower_wick_pct = lower_wick / range_val
 
     atr_mult = getattr(config, "liquidity_candle_displacement_atr_mult", 1.2)
-    is_displacement = body > atr * atr_mult if atr > 0 else False
+    # Use full range (high-low), not body — matches structure.py fix
+    is_displacement = range_val > atr * atr_mult if atr > 0 else False
 
     min_body_pct = getattr(config, "liquidity_candle_min_body_pct", 0.5)
     max_wick_ratio = getattr(config, "liquidity_candle_max_wick_ratio", 0.3)

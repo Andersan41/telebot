@@ -293,6 +293,46 @@ class DecisionTrace(Base):
     wave_label = Column(String(50), nullable=True)       # e.g. "impulse (1-2-3-4-5)"
 
 
+class SignalAuditLog(Base):
+    """Every pipeline checkpoint — pass or blocked.
+
+    Enables counterfactual replay, gate effectiveness analysis,
+    and rejection funnel decomposition.
+    """
+    __tablename__ = "signal_audit_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(String(10), nullable=False)
+    ts_event = Column(DateTime, nullable=False, index=True)
+    ts_logged = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    config_version = Column(Integer, nullable=False, default=1)
+
+    scan_mode = Column(String(20), nullable=True)
+    setup_type = Column(String(20), nullable=True)     # reversal / continuation / NULL
+    direction = Column(String(10), nullable=True)      # buy / sell / NULL
+    stage = Column(String(50), nullable=False)         # gate name
+    reason_code = Column(String(80), nullable=False)   # structured rejection code
+    passed = Column(Boolean, nullable=False)           # True = stage passed
+
+    features_snapshot = Column(Text, nullable=True)    # JSON: SetupFeatures at ts_event
+
+    hypothetical_entry = Column(Float, nullable=True)
+    hypothetical_sl = Column(Float, nullable=True)
+    hypothetical_tp = Column(Float, nullable=True)
+    hypothetical_rr = Column(Float, nullable=True)
+    hypothetical_p_tp = Column(Float, nullable=True)
+    synthetic_plan = Column(Boolean, default=False)    # True if plan from hypothetical engine
+
+    outcome = Column(String(20), nullable=True)        # tp / sl / expired / NULL
+    outcome_r = Column(Float, nullable=True)           # result in R-multiples
+    mae_r = Column(Float, nullable=True)               # max adverse excursion in R
+    mfe_r = Column(Float, nullable=True)               # max favorable excursion in R
+    resolved_at = Column(DateTime, nullable=True)
+
+    meta = Column(Text, nullable=True)                 # JSON: additional context
+
+
 class Database:
     def __init__(self):
         os.makedirs("data", exist_ok=True)
@@ -1297,6 +1337,94 @@ class Database:
 
             wins = sum(1 for o in closed if o.status == "HIT_TP")
             return round(wins / len(closed) * 100, 1)
+
+    # ── SignalAuditLog CRUD ────────────────────────────────────────
+
+    async def create_audit_entry(
+        self,
+        symbol: str,
+        timeframe: str,
+        ts_event: datetime,
+        config_version: int,
+        stage: str,
+        reason_code: str,
+        passed: bool,
+        scan_mode: Optional[str] = None,
+        setup_type: Optional[str] = None,
+        direction: Optional[str] = None,
+        features_snapshot: Optional[str] = None,
+        hypothetical_entry: Optional[float] = None,
+        hypothetical_sl: Optional[float] = None,
+        hypothetical_tp: Optional[float] = None,
+        hypothetical_rr: Optional[float] = None,
+        hypothetical_p_tp: Optional[float] = None,
+        synthetic_plan: bool = False,
+        meta: Optional[str] = None,
+    ) -> int:
+        """Insert a row into signal_audit_log. Returns the new row id."""
+        async with self._session_factory() as session:
+            entry = SignalAuditLog(
+                symbol=symbol,
+                timeframe=timeframe,
+                ts_event=ts_event,
+                config_version=config_version,
+                stage=stage,
+                reason_code=reason_code,
+                passed=passed,
+                scan_mode=scan_mode,
+                setup_type=setup_type,
+                direction=direction,
+                features_snapshot=features_snapshot,
+                hypothetical_entry=hypothetical_entry,
+                hypothetical_sl=hypothetical_sl,
+                hypothetical_tp=hypothetical_tp,
+                hypothetical_rr=hypothetical_rr,
+                hypothetical_p_tp=hypothetical_p_tp,
+                synthetic_plan=synthetic_plan,
+                meta=meta,
+            )
+            session.add(entry)
+            await session.commit()
+            await session.refresh(entry)
+            return entry.id
+
+    async def update_audit_outcome(
+        self,
+        audit_id: int,
+        outcome: str,
+        outcome_r: float,
+        mae_r: Optional[float] = None,
+        mfe_r: Optional[float] = None,
+    ):
+        """Update outcome fields on an existing audit entry."""
+        async with self._session_factory() as session:
+            await session.execute(
+                text(
+                    "UPDATE signal_audit_log SET outcome=:outcome, "
+                    "outcome_r=:outcome_r, mae_r=:mae_r, mfe_r=:mfe_r, "
+                    "resolved_at=:resolved_at WHERE id=:id"
+                ),
+                {
+                    "outcome": outcome,
+                    "outcome_r": outcome_r,
+                    "mae_r": mae_r,
+                    "mfe_r": mfe_r,
+                    "resolved_at": datetime.now(timezone.utc),
+                    "id": audit_id,
+                },
+            )
+            await session.commit()
+
+    async def get_unresolved_audits(self) -> list:
+        """Return audit entries with outcome IS NULL (open hypotheticals)."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(SignalAuditLog).where(
+                    SignalAuditLog.outcome.is_(None),
+                    SignalAuditLog.synthetic_plan == True,
+                )
+            )
+            return list(result.scalars().all())
 
 
 db = Database()

@@ -153,23 +153,29 @@ scan_symbol_v2() → 38 gates → Telegram signal
 
 ### A1: SL dead zone
 
-**Проблема:** SL >= 2×ATR И SL <= 5%. При ATR ≥ 2.5% сделка невозможна.
+**Проблема:** SL >= 2×ATR И SL <= dynamic_sl_max. При высоком ATR min > max → dead zone.
 
-**Исправление:** Dynamic SL max.
+**Исправление:** Dynamic SL max + ATR-min relaxation.
 
 ```python
 dynamic_sl_max = max(sl_absolute_max_pct, atr_pct * 2.2)
 dynamic_sl_max = min(dynamic_sl_max, 8.0)  # hard cap
+min_sl_from_atr = atr_pct * sl_min_atr_multiplier  # 2.0×ATR
+if min_sl_from_atr > dynamic_sl_max:
+    min_sl_from_atr = dynamic_sl_max  # relaxed (logged)
 ```
 
-| ATR% | dynamic_sl_max | До (5.0%) | Dead zone? |
-|------|----------------|-----------|------------|
-| 1.0% | 5.0% | 5.0% | No |
-| 2.0% | 5.0% | 5.0% | No |
-| 2.5% | 5.5% | 5.0% | **Was yes, now no** |
-| 3.0% | 6.6% | 5.0% | **Was yes, now no** |
-| 5.0% | 8.0% (cap) | 5.0% | **Was yes, now no** |
-| 8.0% | 8.0% (cap) | 5.0% | **Was yes, now no** |
+| ATR% | min SL (2×ATR) | dynamic_sl_max | Range valid? | Status |
+|------|----------------|----------------|--------------|--------|
+| 1.0% | 2.0% | 5.0% | 3.0% wide | OK |
+| 2.0% | 4.0% | 5.0% | 1.0% wide | OK |
+| 2.5% | 5.0% | 5.5% | 0.5% wide | OK (was dead) |
+| 3.0% | 6.0% | 6.6% | 0.6% wide | OK (was dead) |
+| 4.0% | 8.0% | 8.0% | 0.0% (boundary) | OK (min relaxed to 8.0%) |
+| 5.0% | 10.0% | 8.0% (cap) | min > max | **Relaxed** to 8.0% |
+| 8.0% | 16.0% | 8.0% (cap) | min > max | **Relaxed** to 8.0%; volatility gate blocks (max=5%) |
+
+**After A1 fix:** min SL is relaxed to `dynamic_sl_max` when it exceeds the cap. Signal still enters with wider SL (smaller position size keeps risk constant). Logged as `sl_atr_min_relaxed`.
 
 ---
 
@@ -280,7 +286,7 @@ dynamic_sl_max = min(dynamic_sl_max, 8.0)  # hard cap
 
 ### Class B (Hard, structural) — potentially Class C
 
-- MSS (reversal) — **verified, threshold tuned**
+- MSS (reversal) — **threshold relaxed, quality unverified** (needs outcome data)
 - BOS (continuation)
 - Sweep required (reversal)
 - Confirmation >= 2 — **needs counterfactual validation**
@@ -308,7 +314,7 @@ dynamic_sl_max = min(dynamic_sl_max, 8.0)  # hard cap
 |-----------|-------|--------|
 | `sl_absolute_min_pct` | 0.25% | `config/settings.py:657` |
 | `sl_absolute_max_pct` | dynamic: max(5%, ATR×2.2), cap 8% | `risk/engine.py:194-203` |
-| `sl_min_atr_multiplier` | 2.0 | `risk/engine.py:72` |
+| `sl_min_atr_multiplier` | 2.0 (relaxed if > dynamic_sl_max) | `risk/engine.py:205-213` |
 | `min_rr_ratio` | 2.0 | `risk/engine.py:64` |
 | `max_causal_bars` | 10 | `structure.py:129` |
 | `MSS threshold` | 0.2 ATR | `structure.py:206` |
@@ -317,6 +323,8 @@ dynamic_sl_max = min(dynamic_sl_max, 8.0)  # hard cap
 | `SIGNAL_COOLDOWN_MINUTES` | 45 | `config/settings.py:742` |
 | `sl_max_atr_multiplier` | 2.2 | `risk/engine.py:197` |
 | `sl_max_cap` | 8.0% | `risk/engine.py:198` |
+| `volatility_min_atr_percent` | 0.3% | `config/settings.py:216` |
+| `volatility_max_atr_percent` | **5.0%** | `config/settings.py:218` |
 
 ---
 

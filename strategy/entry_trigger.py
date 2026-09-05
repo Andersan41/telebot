@@ -13,9 +13,29 @@ Checks:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Protocol, runtime_checkable
 
-from strategy.hypothesis import Hypothesis
+
+# ── Entry Target Protocol ──────────────────────────────────────────
+
+@runtime_checkable
+class EntryTarget(Protocol):
+    """Duck-typed entry target: Hypothesis or SimpleEntryTarget."""
+    @property
+    def direction(self) -> str: ...
+    @property
+    def entry_price(self) -> float: ...
+
+
+@dataclass
+class SimpleEntryTarget:
+    """Lightweight fallback when no Hypothesis is available.
+
+    Built from setup direction + Trade Engine entry_price.
+    Used when Decision Engine / Hypothesis Engine is skipped.
+    """
+    direction: str
+    entry_price: float
 
 
 # ── Entry Trigger Result ───────────────────────────────────────────
@@ -40,6 +60,7 @@ class EntryTrigger:
     Design:
         Hypothesis exists → price hasn't entered OB → NO SIGNAL
         Hypothesis exists → price entered OB → SIGNAL
+        No hypothesis → fallback: check price proximity to entry
     """
 
     def __init__(
@@ -52,7 +73,7 @@ class EntryTrigger:
 
     def check(
         self,
-        hypothesis: Hypothesis,
+        hypothesis: EntryTarget,
         current_price: float,
         bid: Optional[float] = None,
         ask: Optional[float] = None,
@@ -60,7 +81,7 @@ class EntryTrigger:
         """Check if entry conditions are met.
 
         Args:
-            hypothesis: the winning hypothesis
+            hypothesis: winning Hypothesis or SimpleEntryTarget fallback
             current_price: current market price
             bid: current bid price (optional, for spread check)
             ask: current ask price (optional, for spread check)

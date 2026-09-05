@@ -31,6 +31,18 @@ async def measure(symbol: str, timeframe: str, candles: int = 500):
     total = 0
     lookback = min(80, len(df) - 1)
 
+    # Tracking detected signal characteristics
+    detected_count = 0
+    has_displacement_count = 0
+    has_ob_count = 0
+    has_fvg_count = 0
+    has_bos_count = 0
+    has_sweep_count = 0
+    has_mss_count = 0
+    reversal_count = 0
+    continuation_count = 0
+    confirmation_rej = 0
+
     for i in range(lookback, len(df)):
         window = df.iloc[: i + 1]
         current_price = float(df["close"].iloc[i])
@@ -56,6 +68,20 @@ async def measure(symbol: str, timeframe: str, candles: int = 500):
             total += 1
             if not setup.detected:
                 rejections[setup.rejection_reason or "unknown"] += 1
+            else:
+                detected_count += 1
+                has_displacement_count += 1 if setup.has_displacement else 0
+                has_ob_count += 1 if setup.has_ob else 0
+                has_fvg_count += 1 if setup.has_fvg else 0
+                has_bos_count += 1 if setup.has_bos else 0
+                has_sweep_count += 1 if setup.has_sweep else 0
+                has_mss_count += 1 if setup.has_mss else 0
+                if setup.setup_type == "reversal":
+                    reversal_count += 1
+                elif setup.setup_type == "continuation":
+                    continuation_count += 1
+                if setup.confirmation_score < 2:
+                    confirmation_rej += 1
         except Exception as e:
             rejections[f"error: {e}"] += 1
             total += 1
@@ -70,11 +96,23 @@ async def measure(symbol: str, timeframe: str, candles: int = 500):
     for reason, count in rejections.most_common():
         pct = count / total * 100
         print(f"    {count:>4} ({pct:>5.1f}%)  {reason}")
+
+    if detected_count > 0:
+        print(f"\n  Detected signal characteristics:")
+        print(f"    has_displacement: {has_displacement_count}/{detected_count} ({has_displacement_count/detected_count*100:.1f}%)")
+        print(f"    has_ob:          {has_ob_count}/{detected_count} ({has_ob_count/detected_count*100:.1f}%)")
+        print(f"    has_fvg:         {has_fvg_count}/{detected_count} ({has_fvg_count/detected_count*100:.1f}%)")
+        print(f"    has_bos:         {has_bos_count}/{detected_count} ({has_bos_count/detected_count*100:.1f}%)")
+        print(f"    has_sweep:       {has_sweep_count}/{detected_count} ({has_sweep_count/detected_count*100:.1f}%)")
+        print(f"    has_mss:         {has_mss_count}/{detected_count} ({has_mss_count/detected_count*100:.1f}%)")
+        print(f"    reversal:        {reversal_count}/{detected_count} ({reversal_count/detected_count*100:.1f}%)")
+        print(f"    continuation:    {continuation_count}/{detected_count} ({continuation_count/detected_count*100:.1f}%)")
+        print(f"    conf_score < 2:  {confirmation_rej}/{detected_count} ({confirmation_rej/detected_count*100:.1f}%)")
     print()
 
 
 async def main():
-    symbols = ["BTC/USDT", "ETH/USDT"]
+    symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"]
     timeframe = "1h"
     candles = 500
 

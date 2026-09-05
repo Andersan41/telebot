@@ -51,6 +51,10 @@ when behavior changes, not this one.
 - Context never blocks: `ContextScore` provides a score [-1, 1] for the Probability Engine.
 - BTC/ETH correlation removed as gates — become secondary features.
 - 15m confirmation TF removed entirely.
+- **Audit logging**: Every BLOCKED/PASS gate in `scan_symbol_v2` writes to `signal_audit_log`
+  with structured `reason_code` (50+ codes in `storage/audit_reasons.py`). 35 audit calls
+  cover all pipeline gates. `features_snapshot` stores JSON feature vector at signal time.
+  `config_version` tracks config changes. `docs/hypotheses.md` tracks all parameter changes.
 - **HTF Bias V2** is ON by default (`config.htf_bias_v2 = True`). A/B validated:
   PF 1.10→1.28, WR 29.6%→31.1%, PnL x2.1 on 90d/1h BTC+ETH.
   Blocks buy continuations against bearish HTF bias (W1→D1→H4→H1 EMA).
@@ -61,6 +65,22 @@ when behavior changes, not this one.
   vs. a wick-pierce fake break. Soft gate by default (`breakout_quality_hard_gate=False`,
   shadow log only). Wired in `scan_symbol_v2` Phase 1.41; OI via
   `context_fetcher.fetch_open_interest`. Config: `BREAKOUT_QUALITY_*`.
+- **HTF POI** (`strategy/htf_poi.py`): Multi-timeframe Points of Interest.
+  Detects OB/FVG on D1, H4, W1 and checks proximity to current price.
+  If price near HTF POI → SL anchored to HTF structure level for better RR.
+  Integrated in `scan_symbol_v2` Phase 1.5; SL override in `TradeEngine.build_trade_plan()`.
+
+## Hypotheses tracking
+
+`docs/hypotheses.md` — every parameter change or config drift is logged as a hypothesis entry
+(H-001, H-002, ...) before live data collection. Baseline measurements from
+`scripts/measure_rejection_rate.py` record current pipeline behavior for comparison.
+
+Key baselines (post H-003 fix, 500 candles 1h):
+- Displacement rate: 0.6–4.8% (low, not a major filter)
+- Dominant rejection: "reversal: no MSS (strong CHoCH)" — 45–63%
+- Continuation dominates detected setups (69–91%)
+- OB detection extremely low (0–5.8%)
 
 ## Scheduler
 
