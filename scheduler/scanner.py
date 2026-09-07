@@ -45,13 +45,13 @@ from storage.audit_reasons import (
     SPREAD_TOO_WIDE, DEPTH_TOO_LOW, CORRELATION_BLOCKED, OK,
 )
 
-# ── Shadow mode imports ──
+# ── Analytical overlay imports (A12: not true shadow — outputs influence sizing) ──
 from strategy.market_phase_engine import MarketPhaseEngine
 from strategy.scenario_engine import ScenarioEngine
 from strategy.trade_thesis import TradeThesisManager
 from strategy.scenario_memory import scenario_memory
 
-# Shadow mode singletons
+# Analytical overlay singletons
 _market_phase_engine = MarketPhaseEngine()
 _scenario_engine = ScenarioEngine()
 _thesis_manager = TradeThesisManager()
@@ -1205,13 +1205,13 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 bars_in_range=20,
             )
             logger.info(
-                f"[SHADOW] Phase: {symbol} {timeframe} | "
+                f"[OVERLAY] Phase: {symbol} {timeframe} | "
                 f"phase={_phase_assessment.phase.value} "
                 f"conf={_phase_assessment.confidence:.2f} "
                 f"dur={_phase_assessment.duration_bars}bars"
             )
         except Exception as e:
-            logger.debug(f"[SHADOW] Phase detection failed for {symbol} {timeframe}: {e}")
+            logger.debug(f"[OVERLAY] Phase detection failed for {symbol} {timeframe}: {e}")
 
         # ═══ Phase 1.6: Market Thesis Engine (SHADOW MODE) ═══
         # Dynamic approach: cache graph and thesis per symbol/timeframe.
@@ -1265,7 +1265,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         _thesis_score = _best.score
 
                         logger.info(
-                            f"[SHADOW] Dynamic Thesis: {symbol} {timeframe} | "
+                            f"[OVERLAY] Dynamic Thesis: {symbol} {timeframe} | "
                             f"BUY={_thesis.buy_scenario.probability:.2f} "
                             f"SELL={_thesis.sell_scenario.probability:.2f} | "
                             f"ambiguous={_thesis.is_ambiguous} | "
@@ -1275,16 +1275,16 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
 
                         if _thesis.is_ambiguous:
                             logger.debug(
-                                f"[SHADOW] Ambiguous thesis for {symbol} {timeframe} "
+                                f"[OVERLAY] Ambiguous thesis for {symbol} {timeframe} "
                                 f"— probabilities too close"
                             )
                     else:
                         logger.debug(
-                            f"[SHADOW] No active scenario for {symbol} {timeframe}"
+                            f"[OVERLAY] No active scenario for {symbol} {timeframe}"
                         )
                 else:
                     logger.debug(
-                        f"[SHADOW] No cached thesis for {symbol} {timeframe}"
+                        f"[OVERLAY] No cached thesis for {symbol} {timeframe}"
                     )
             else:
                 # ── FIRST TIME: build graph + create thesis ──
@@ -1323,7 +1323,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 _dynamic_theses[_cache_key] = _thesis
 
                 logger.debug(
-                    f"[SHADOW] Built initial graph for {symbol} {timeframe}: "
+                    f"[OVERLAY] Built initial graph for {symbol} {timeframe}: "
                     f"{len(_liq_graph.nodes)} nodes"
                 )
 
@@ -1345,7 +1345,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 trade_plan.thesis_source = "market_thesis"
 
                 logger.info(
-                    f"[SHADOW] Market Thesis: {symbol} {timeframe} | "
+                    f"[OVERLAY] Market Thesis: {symbol} {timeframe} | "
                     f"direction={_thesis_opportunity.direction} | "
                     f"score={_thesis_opportunity.scenario_score:.0f} | "
                     f"stability={_thesis_stability:.2f} | "
@@ -1357,7 +1357,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 if _thesis_opportunity.thesis.score_breakdown:
                     bd = _thesis_opportunity.thesis.score_breakdown.breakdown()
                     logger.info(
-                        f"[SHADOW] Score breakdown: OB={bd['ob']:.1f} "
+                        f"[OVERLAY] Score breakdown: OB={bd['ob']:.1f} "
                         f"Sweep={bd['sweep']:.1f} BOS={bd['bos']:.1f} "
                         f"FVG={bd['fvg']:.1f} Liq={bd['liquidity']:.1f} "
                         f"HTF={bd['htf']:.1f} total={bd['total']:.1f}"
@@ -1374,7 +1374,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             )
             if _scenarios:
                 logger.info(
-                    f"[SHADOW] Scenarios ranked: "
+                    f"[OVERLAY] Scenarios ranked: "
                     + " | ".join(
                         f"#{s.alternative_rank + 1} score={s.score:.1f} "
                         f"conf={s.confidence:.0f} rr=1:{s.expected_rr:.1f}"
@@ -1382,14 +1382,14 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                     )
                 )
             else:
-                logger.debug(f"[SHADOW] No thesis for {symbol} {timeframe}")
+                logger.debug(f"[OVERLAY] No thesis for {symbol} {timeframe}")
 
         except Exception as e:
-            logger.debug(f"[SHADOW] Market Thesis Engine error for {symbol} {timeframe}: {e}")
+            logger.debug(f"[OVERLAY] Market Thesis Engine error for {symbol} {timeframe}: {e}")
 
         # ═══ Phase 1.7: Hypothesis Engine + Decision Engine ═══
         # NEW PIPELINE: generates all hypotheses, Decision Engine selects winner.
-        # Runs in parallel with existing shadow mode for comparison.
+        # Runs in parallel with analytical overlays for comparison.
 
         _hypothesis_set = None
         _decision = None
@@ -1608,7 +1608,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         _new_evaluations.append(eval_result)
 
                     logger.info(
-                        f"[SHADOW] ScenarioEngine: {symbol} {timeframe} | "
+                        f"[OVERLAY] ScenarioEngine: {symbol} {timeframe} | "
                         f"detected={len(_new_scenarios)} "
                         f"evaluated={len(_new_evaluations)} | "
                         + " | ".join(
@@ -1632,7 +1632,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                     )
                     if _current_thesis:
                         logger.info(
-                            f"[SHADOW] Thesis: {symbol} {timeframe} | "
+                            f"[OVERLAY] Thesis: {symbol} {timeframe} | "
                             f"status={_current_thesis.status} "
                             f"dir={_current_thesis.direction} "
                             f"scenario={_current_thesis.scenario.name} "
@@ -1641,7 +1641,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         )
 
         except Exception as e:
-            logger.debug(f"[SHADOW] ScenarioEngine error for {symbol} {timeframe}: {e}")
+            logger.debug(f"[OVERLAY] ScenarioEngine error for {symbol} {timeframe}: {e}")
 
         # ═══ Phase 3: Probability Engine ═══
 

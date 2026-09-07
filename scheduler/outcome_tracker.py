@@ -183,12 +183,17 @@ def _calculate_net_pnl(
     created_at: datetime,
     resolved_at: datetime,
 ) -> tuple[float, float]:
-    """Calculate net PnL after costs.
+    """Calculate net PnL after costs (A15: mirror-correct for BUY/SELL).
 
     Costs deducted:
     - Exchange commission (both sides)
     - Slippage (both sides)
-    - Estimated funding for perpetuals
+    - Estimated funding for perpetuals (direction-aware: long pays, short receives in contango)
+
+    Formula:
+        BUY:  gross = (exit - entry) / entry * 100
+        SELL: gross = (entry - exit) / entry * 100
+        net = gross - round_trip_cost_pct - funding_cost_pct
 
     Returns:
         (gross_pnl_pct, net_pnl_pct)

@@ -4,10 +4,14 @@ risk/position_manager.py — Position Management (TZ §8).
 Implements breakeven, partial close, trailing stop, and sweep breach detection.
 Designed for signal-based tracking (no live order execution).
 
-Key formulas:
-- Breakeven: entry ± fee_buffer (0.05%) when current R:R >= 1.5
-- Partial Close: TP1=2R→25%, TP2=3R→35%, TP3=4R→40%
-- Trailing: ATR(14,5m) × 1.5, only after TP2 (3R), only on remaining 40%
+Key formulas (A15: mirror-correct for LONG and SHORT):
+- Breakeven: entry ± fee_buffer when current R:R >= 1.5
+  NOTE: fee_buffer (0.05%) < round-trip costs (~0.20%). This is a move to entry,
+  NOT a net-BE. Net-BE requires accounting for realized PnL from partial closes.
+- Partial Close: TP1=2R→25%, TP2=3R→35%, TP3=4R→40% (of initial position)
+- Trailing: ATR(14) × TRAILING_ATR_MULTIPLIER, only after TP2 (3R), only on remaining 40%
+  Long: new_sl = price - ATR*1.5 (ratchet UP only)
+  Short: new_sl = price + ATR*1.5 (ratchet DOWN only)
 - Sweep Breach: close beyond sweep level = early exit
 """
 from __future__ import annotations
@@ -44,6 +48,84 @@ TIME_STOP_ENABLED = os.getenv("TIME_STOP_ENABLED", "false").lower() == "true"
 
 
 @dataclass
+class ExitPlan:
+    """A13: Versioned exit plan linking TradeEngine TP to PositionManager rules.
+
+    Created BEFORE signal publication. All modules (notification, simulator,
+    risk, model) use this single plan. Immutable after creation.
+
+    The structural TP from TradeEngine defines the primary target.
+    Partial close rules define the scaling-out policy relative to R-multiples.
+    """
+    # Primary target from TradeEngine (liquidity-based)
+    primary_tp_price: float = 0.0
+    primary_tp_source: str = ""  # "liquidity" / "atr" / "ob" / "fvg"
+    primary_tp_rr: float = 0.0   # R-multiples to primary TP
+
+    # Initial SL from TradeEngine
+    initial_sl_price: float = 0.0
+    initial_sl_source: str = ""  # "sweep" / "ob" / "swing" / "bos" / "atr"
+
+    # Partial close policy (R-multiples → % of INITIAL position)
+    # Default: 2R→25%, 3R→35%, 4R→40% (total = 100%)
+    partial_close_targets: list = field(default_factory=lambda: [
+        {"rr": 2.0, "close_pct": 25, "action": "breakeven"},
+        {"rr": 3.0, "close_pct": 35, "action": "trailing"},
+        {"rr": 4.0, "close_pct": 40, "action": "close_all"},
+    ])
+
+    # Breakeven rule
+    breakeven_trigger_rr: float = 1.5
+
+    # Trailing rule
+    trailing_trigger_rr: float = 3.0
+    trailing_atr_multiplier: float = 1.5
+
+    # Time stop
+    time_stop_minutes: float = 0.0  # 0 = disabled
+
+    # Versioning (for A/B analysis and replay)
+    plan_version: str = "1.0"
+    created_at: Optional[datetime] = None
+
+    def gross_r_if_full_path(self) -> float:
+        """Total gross R if all partial closes execute at their R-multiples."""
+        return sum(
+            (t["rr"] * t["close_pct"] / 100.0)
+            for t in self.partial_close_targets
+        )
+
+    def max_rr(self) -> float:
+        """Maximum R-multiple among partial close targets."""
+        if not self.partial_close_targets:
+            return 0.0
+        return max(t["rr"] for t in self.partial_close_targets)
+
+
+def create_exit_plan(
+    tp_price: float,
+    tp_source: str,
+    sl_price: float,
+    sl_source: str,
+    rr_ratio: float,
+    partial_targets: Optional[list] = None,
+) -> ExitPlan:
+    """A13: Factory to create ExitPlan from TradeEngine output.
+
+    Call this when building TradePlan to ensure PositionManager uses the same targets.
+    """
+    return ExitPlan(
+        primary_tp_price=tp_price,
+        primary_tp_source=tp_source,
+        primary_tp_rr=rr_ratio,
+        initial_sl_price=sl_price,
+        initial_sl_source=sl_source,
+        partial_close_targets=partial_targets or PARTIAL_CLOSE_TARGETS,
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+@dataclass
 class ManagedPosition:
     """Position with full lifecycle tracking (TZ §8)."""
     # Core fields
@@ -54,6 +136,9 @@ class ManagedPosition:
     take_profit: Optional[float] = None
     quantity: float = 1.0
     entry_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # A13: Exit plan — links TradeEngine TP to position management rules
+    exit_plan: Optional[ExitPlan] = None
 
     # Breakeven (TZ §8.4)
     breakeven_moved: bool = False
@@ -107,6 +192,7 @@ def calculate_breakeven_sl(position: ManagedPosition) -> float:
     """TZ §8.4: SL = entry ± fee_buffer.
 
     fee_buffer covers round-trip commissions (maker+taker ≈ 0.04-0.06%).
+    NOTE: This is a move-to-entry, not true net-BE. See ExitPlan docstring.
     """
     fee_buffer = position.entry_price * FEE_BUFFER_PERCENT
     if position.direction == "BUY":
@@ -116,10 +202,14 @@ def calculate_breakeven_sl(position: ManagedPosition) -> float:
 
 
 def check_breakeven(position: ManagedPosition, current_price: float) -> Optional[float]:
-    """Check if breakeven should be activated.
+    """Check if breakeven should be activated (mirror-correct for long/short).
 
     Returns new SL if BE should move, None otherwise.
-    TZ §8.4: trigger at 1.5R.
+    TZ §8.4: trigger at BREAKEVEN_RR_TRIGGER R.
+
+    NOTE: fee_buffer (0.05%) covers only commission, not full round-trip costs.
+    This is a "move to entry" not a true net-BE. After partial closes with
+    realized profit, the effective BE for remaining position may differ.
     """
     if position.breakeven_moved:
         return None
@@ -144,12 +234,19 @@ def check_partial_closes(
 ) -> list[dict]:
     """Check all partial close targets.
 
+    Uses ExitPlan.partial_close_targets if available, otherwise module defaults.
     Returns list of actions to execute:
     [{"action": "breakeven"|"trailing"|"close_all", "close_pct": int, "rr": float}]
     """
     actions = []
 
-    for target in PARTIAL_CLOSE_TARGETS:
+    targets = (
+        position.exit_plan.partial_close_targets
+        if position.exit_plan
+        else PARTIAL_CLOSE_TARGETS
+    )
+
+    for target in targets:
         rr = target["rr"]
         if rr in position.completed_targets:
             continue
@@ -211,10 +308,13 @@ def calculate_trailing_stop(
     current_price: float,
     atr: float,
 ) -> Optional[float]:
-    """TZ §8.5: Trailing stop calculation.
+    """TZ §8.5: Trailing stop calculation (mirror-correct for long/short).
 
-    Only active after TP2 (3R). ATR-based, 1.5x multiplier.
+    Only active after TP2 (3R). ATR-based, TRAILING_ATR_MULTIPLIER.
     Only on remaining position (after partial closes).
+
+    Long:  new_sl = price - ATR*1.5, ratchet UP only, never below breakeven
+    Short: new_sl = price + ATR*1.5, ratchet DOWN only, never above breakeven
     """
     if not position.trailing_active:
         return None

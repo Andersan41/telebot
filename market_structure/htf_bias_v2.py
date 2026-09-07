@@ -29,6 +29,9 @@ class HTFBiasResult:
     h4_bias: str
     h1_bias: str
     override_reason: Optional[str] = None
+    # A06: EMA-spread confidence (informational, NOT statistical confidence)
+    # Derived from |EMA21-EMA55|/price*100*10, range [0, 100]
+    confidence: float = 0.0
 
 
 def detect_last_bos(df: pd.DataFrame) -> Optional[dict]:
@@ -120,8 +123,13 @@ def get_htf_bias_v2(
         direction = 'bearish'
         strength = BiasStrength.MODERATE
     else:
-        # Check for weak majority
-        if w1_bias != 'neutral' and d1_bias == w1_bias:
+        # A06: Check for single-TF conviction (one directional, two neutral)
+        directional = [b for b in biases if b != 'neutral']
+        if len(directional) == 1:
+            # Single TF has direction, others are neutral → WEAK
+            direction = directional[0]
+            strength = BiasStrength.WEAK
+        elif w1_bias != 'neutral' and d1_bias == w1_bias:
             direction = w1_bias
             strength = BiasStrength.WEAK
         elif w1_bias != 'neutral' and h4_bias == w1_bias:
@@ -149,6 +157,9 @@ def get_htf_bias_v2(
             override_reason = f"pullback_{h4_bias}_vs_htf_{direction}"
             strength = BiasStrength.MODERATE
 
+    # A06: Combined confidence from constituent TFs (informational only)
+    avg_conf = (w1_conf + d1_conf + h4_conf) / 3.0
+
     return HTFBiasResult(
         direction=direction,
         strength=strength,
@@ -157,4 +168,5 @@ def get_htf_bias_v2(
         h4_bias=h4_bias,
         h1_bias=h1_bias,
         override_reason=override_reason,
+        confidence=round(avg_conf, 1),
     )

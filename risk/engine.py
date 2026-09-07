@@ -224,6 +224,17 @@ class RiskEngine:
 
         # === POSITION SIZING ===
 
+        # A09: EV gate — applies to BOTH fixed and Kelly modes
+        _p = probability.p_tp
+        _b = rr_ratio
+        _ev = _p * _b - (1 - _p)
+        if _ev <= 0:
+            return RiskDecision(
+                should_trade=False,
+                rr_ratio=rr_ratio,
+                rejection_reason=f"negative EV: p={_p:.2f} * rr={_b:.2f} - (1-p) = {_ev:.4f} <= 0",
+            )
+
         _risk_mode = getattr(config, 'risk_mode', 'fixed')
 
         kelly = 0.0
@@ -296,14 +307,17 @@ class RiskEngine:
         # Clamp
         risk_pct = max(self.min_risk_pct, min(risk_pct, self.max_risk_pct))
 
-        # Min notional check (Binance minimum ≈ $5 USDT)
+        # Min notional check (A10 fix — correct dimension: quantity * entry = notional in USDT)
         min_notional = getattr(config, 'min_notional_usdt', 5.0)
-        if portfolio.equity > 0 and entry_price > 0:
-            position_size_usdt = (portfolio.equity * risk_pct / 100.0) / entry_price
-            if position_size_usdt < min_notional:
+        if portfolio.equity > 0 and entry_price > 0 and risk_dist > 0:
+            risk_budget_quote = portfolio.equity * risk_pct / 100.0
+            loss_per_unit = risk_dist  # abs(entry - sl) in price units
+            quantity_base = risk_budget_quote / loss_per_unit
+            notional_quote = quantity_base * entry_price
+            if notional_quote < min_notional:
                 return RiskDecision(
                     should_trade=False,
-                    rejection_reason=f"position size ${position_size_usdt:.2f} < min notional ${min_notional}",
+                    rejection_reason=f"notional ${notional_quote:.2f} < min ${min_notional} (qty={quantity_base:.6f})",
                 )
 
         logger.info(

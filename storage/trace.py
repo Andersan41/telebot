@@ -101,7 +101,7 @@ class DecisionTraceBuilder:
         "symbol", "timeframe", "_gates", "_final_stage",
         "_blocked_reason", "_signal_generated", "_signal_type",
         "_score", "_close_price", "_sl", "_tp",
-        "_features", "_strategy_version", "_config_snapshot",
+        "_features", "_full_feature_vector", "_strategy_version", "_config_snapshot",
         "_execution_snapshot", "_hypothesis_snapshot",
     )
 
@@ -118,6 +118,7 @@ class DecisionTraceBuilder:
         self._sl: Optional[float] = None
         self._tp: Optional[float] = None
         self._features: dict = {}
+        self._full_feature_vector: dict = {}  # A22: unfiltered for ML replay
         self._strategy_version: Optional[str] = None
         self._config_snapshot: Optional[str] = None
         self._execution_snapshot: Optional[ExecutionSnapshot] = None
@@ -163,8 +164,16 @@ class DecisionTraceBuilder:
         self._candidate_id = candidate_id
 
     def set_features(self, features: dict) -> None:
-        """Set feature snapshot — only known keys are kept."""
+        """Set feature snapshot — filtered keys for DB + full vector for ML replay.
+
+        A22: Store both filtered (FEATURE_KEYS for quick access) and full raw vector
+        (for model reproducibility and retraining). Full vector stored in
+        _full_feature_vector, not persisted to DB gate_results but available
+        for serialization via set_full_feature_vector().
+        """
         self._features = {k: v for k, v in features.items() if k in FEATURE_KEYS}
+        # A22: Keep full vector for ML replay (not filtered by FEATURE_KEYS)
+        self._full_feature_vector = dict(features)
 
     def set_version(self, version: str, config_snapshot: Optional[str] = None) -> None:
         """Set strategy version and optional config snapshot JSON."""
@@ -207,6 +216,11 @@ class DecisionTraceBuilder:
         return self._hypothesis_snapshot
 
     @property
+    def full_feature_vector(self) -> dict:
+        """A22: Full unfiltered feature vector for ML replay and debugging."""
+        return self._full_feature_vector
+
+    @property
     def gates(self) -> dict[str, Optional[bool]]:
         return self._gates
 
@@ -242,11 +256,20 @@ class DecisionTraceBuilder:
         signal_id: Optional[int] = None,
         candidate_id: Optional[int] = None,
     ) -> int:
-        """Persist the decision trace. Returns the trace ID."""
+        """Persist the decision trace. Returns the trace ID.
+
+        A22: Full feature vector is included in hypothesis_snapshot['full_features']
+        for ML replay and debugging. Filtered features go to individual columns.
+        """
         try:
             execution_snapshot_dict = None
             if self._execution_snapshot is not None:
                 execution_snapshot_dict = self._execution_snapshot.to_dict()
+
+            # A22: Merge full feature vector into hypothesis snapshot for ML replay
+            hypothesis_with_features = dict(self._hypothesis_snapshot) if self._hypothesis_snapshot else {}
+            if self._full_feature_vector:
+                hypothesis_with_features["full_features"] = self._full_feature_vector
 
             trace = await db.save_decision_trace(
                 symbol=self.symbol,
@@ -267,7 +290,7 @@ class DecisionTraceBuilder:
                 config_snapshot=self._config_snapshot,
                 gate_path=self.build_gate_path(),
                 execution_snapshot=execution_snapshot_dict,
-                hypothesis_snapshot=self._hypothesis_snapshot,
+                hypothesis_snapshot=hypothesis_with_features,
             )
             return trace.id
         except Exception as e:

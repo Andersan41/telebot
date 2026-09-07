@@ -29,8 +29,8 @@ from config.settings import config
 class TradeProbability:
     """Probability assessment for an ICT setup."""
     p_tp: float  # 0.0–1.0 probability of hitting TP
-    expected_rr: float  # expected risk-reward
-    profit_factor: float  # expected profit factor
+    expected_rr: float  # expected net R per trade (A08: E[R] = p*b - (1-p))
+    profit_factor: float  # model profit factor: p*b / (1-p)
     confidence: float  # 0.0–1.0 how confident is the model
     model_type: str  # "rules" / "xgboost" / "random_forest"
     feature_importance: Optional[Dict[str, float]] = None
@@ -339,17 +339,17 @@ class ProbabilityEngine:
         winrate = winrate * winrate_mult
         winrate = max(20.0, min(85.0, winrate))  # clamp
 
-        # Expected RR
-        expected_rr = f.rr_ratio * (winrate / 100.0) * 1.1
-
-        # Profit factor
+        # Expected net R (A08 fix): E[R] = p*b - (1-p)
         p = winrate / 100.0
-        q = 1 - p
-        profit_factor = (p * expected_rr) / max(q * 1.0, 0.01)
+        b = f.rr_ratio
+        expected_net_r = p * b - (1 - p)
+
+        # Profit factor (A08 fix): PF = p*b / (1-p)
+        profit_factor = (p * b) / max(1 - p, 0.01)
 
         return TradeProbability(
-            p_tp=round(winrate / 100.0, 4),
-            expected_rr=round(expected_rr, 2),
+            p_tp=round(p, 4),
+            expected_rr=round(expected_net_r, 2),  # A08: now E[net R] per trade
             profit_factor=round(profit_factor, 2),
             confidence=0.4,  # low confidence — rules-based
             model_type="rules",
@@ -420,9 +420,10 @@ class ProbabilityEngine:
 
                 model_type = self.model.__class__.__name__
 
-            # Profit factor
-            q = 1 - p_tp
-            profit_factor = (p_tp * expected_rr) / max(q * 1.0, 0.01)
+            # Profit factor (A08 fix): PF = p*b / (1-p)
+            p_tp_clamped = max(0.01, min(p_tp, 0.99))
+            b = expected_rr if expected_rr > 0 else 1.0
+            profit_factor = (p_tp_clamped * b) / max(1 - p_tp_clamped, 0.01)
 
             # Feature importance
             importances = None
