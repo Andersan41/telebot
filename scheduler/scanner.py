@@ -87,7 +87,7 @@ _ema_spread_history: dict[str, list[float]] = {}
 # sl_absolute_min/max, max_active_signals, etc.).
 # Required for audit log versioning: signals under different configs
 # are tagged with different config_version for A/B analysis.
-_CONFIG_VERSION = 1
+_CONFIG_VERSION = 2
 
 
 async def _audit_log(

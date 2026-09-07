@@ -769,7 +769,7 @@ class AppConfig:
 
     # ─── Portfolio Risk Gate ─────────────────────────────────────────────
     # Максимальное число одновременно открытых сигналов
-    max_active_signals: int = int(os.getenv("MAX_ACTIVE_SIGNALS", "3"))
+    max_active_signals: int = int(os.getenv("MAX_ACTIVE_SIGNALS", "10"))
     # Максимальный суммарный риск открытых позиций (%)
     max_portfolio_risk_pct: float = float(os.getenv("MAX_PORTFOLIO_RISK_PCT", "3.7"))
 

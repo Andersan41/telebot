@@ -31,7 +31,7 @@ class PortfolioState:
     """Current portfolio state for risk calculations."""
     active_count: int = 0
     total_risk_pct: float = 0.0
-    max_active_signals: int = 3
+    max_active_signals: int = 10
     max_portfolio_risk_pct: float = 3.0
     equity: float = 0.0  # total portfolio equity in USDT
 
