@@ -365,11 +365,11 @@ class RiskConfig:
 
     # ─── Position Limits (TZ §9.4) ─────────────────────────────────────
     # Максимальное общее число открытых позиций
-    max_positions_total: int = int(os.getenv("MAX_POSITIONS_TOTAL", "5"))
+    max_positions_total: int = int(os.getenv("MAX_POSITIONS_TOTAL", "10"))
     # Максимальное число лонг-позиций
-    max_long_positions: int = int(os.getenv("MAX_LONG_POSITIONS", "3"))
+    max_long_positions: int = int(os.getenv("MAX_LONG_POSITIONS", "10"))
     # Максимальное число шорт-позиций
-    max_short_positions: int = int(os.getenv("MAX_SHORT_POSITIONS", "3"))
+    max_short_positions: int = int(os.getenv("MAX_SHORT_POSITIONS", "10"))
 
     # ─── Correlation ─────────────────────────────────────────────────────
     # Множитель риска при misaligned корреляции BTC/ETH
