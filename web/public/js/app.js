@@ -40,7 +40,7 @@ function connect() {
 
 // ── Render ──────────────────────────────────────────
 function renderDashboard(data) {
-  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, waves } = data;
+  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, waves, footprint } = data;
 
   if (error) {
     updateStatus(`Ошибка: ${error}`);
@@ -59,6 +59,8 @@ function renderDashboard(data) {
   if (volumeProfile) renderVolumeProfile(volumeProfile, price);
   if (bookAnomalies) renderBookAnomalies(bookAnomalies);
   if (waves) renderWaves(waves, price);
+
+  if (footprint) footprintChart.updateFromData(footprint);
 
   renderVerdictFromSignal(signal, indicators);
 }
@@ -684,6 +686,528 @@ async function fetchOpenTrades() {
     console.error('Failed to load open trades:', err);
   }
 }
+
+// ── Tab switching ─────────────────────────────────
+let currentTab = 'dashboard';
+let footprintInited = false;
+let sandboxInited = false;
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+});
+
+function switchTab(tab) {
+  if (tab === currentTab) return;
+  currentTab = tab;
+
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.getElementById('tab-dashboard')?.classList.toggle('hidden', tab !== 'dashboard');
+  document.getElementById('tab-footprint')?.classList.toggle('hidden', tab !== 'footprint');
+  document.getElementById('tab-sandbox')?.classList.toggle('hidden', tab !== 'sandbox');
+
+  if (tab === 'footprint' && !footprintInited) {
+    footprintInited = true;
+    footprintChart.init();
+  }
+  if (tab === 'footprint') {
+    footprintChart.draw();
+  }
+  if (tab === 'sandbox' && !sandboxInited) {
+    sandboxInited = true;
+    sandboxModule.init();
+  }
+}
+
+// ── Footprint Chart ─────────────────────────────
+const footprintChart = (() => {
+  const COL_W = 92;
+  const PAD_L = 64;
+  const PAD_TOP = 14;
+  const PAD_BOTTOM = 14;
+
+  let canvas, ctx, chartWrap;
+  let thresholdInput, minStackInput, thresholdValEl, minStackValEl;
+  let bullCountEl, bearCountEl;
+  let LEVEL_H = 20;
+  let fpData = null;
+
+  function computeImbalance(levels, thresholdPct) {
+    for (let i = 0; i < levels.length; i++) {
+      levels[i].buyImb = false;
+      levels[i].sellImb = false;
+    }
+    for (let i = 1; i < levels.length; i++) {
+      const ratioBuy = levels[i].ask / Math.max(0.0001, levels[i - 1].bid) * 100;
+      if (ratioBuy >= thresholdPct) levels[i].buyImb = true;
+    }
+    for (let i = 0; i < levels.length - 1; i++) {
+      const ratioSell = levels[i].bid / Math.max(0.0001, levels[i + 1].ask) * 100;
+      if (ratioSell >= thresholdPct) levels[i].sellImb = true;
+    }
+  }
+
+  function findStacks(levels, minStack) {
+    const stacks = [];
+    let i = 0;
+    while (i < levels.length) {
+      if (levels[i].buyImb) {
+        let j = i; while (j < levels.length && levels[j].buyImb) j++;
+        if (j - i >= minStack) stacks.push({ type: 'buy', from: i, to: j - 1 });
+        i = j;
+      } else if (levels[i].sellImb) {
+        let j = i; while (j < levels.length && levels[j].sellImb) j++;
+        if (j - i >= minStack) stacks.push({ type: 'sell', from: i, to: j - 1 });
+        i = j;
+      } else i++;
+    }
+    return stacks;
+  }
+
+  function layout(levels) {
+    const thresholdPct = +thresholdInput.value;
+    const minStack = +minStackInput.value;
+
+    computeImbalance(levels, thresholdPct);
+    const stacks = findStacks(levels, minStack);
+
+    if (levels.length === 0) return { totalTicks: 0, width: 0, height: 0, stacks };
+
+    const minP = levels[0].price;
+    const maxP = levels[levels.length - 1].price;
+    const tickSize = fpData?.tickSize || 0.01;
+    const totalTicks = Math.round((maxP - minP) / tickSize) + 1;
+    const availH = chartWrap.clientHeight - PAD_TOP - PAD_BOTTOM || 420;
+    LEVEL_H = Math.max(14, Math.min(22, Math.floor(availH / Math.max(totalTicks, 8))));
+    const width = PAD_L + COL_W + 20;
+    const height = PAD_TOP + totalTicks * LEVEL_H + PAD_BOTTOM;
+    canvas.width = width * devicePixelRatio;
+    canvas.height = height * devicePixelRatio;
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    return { minP, totalTicks, width, height, stacks, tickSize };
+  }
+
+  function draw() {
+    if (!canvas || !fpData || !fpData.levels || fpData.levels.length === 0) return;
+
+    const levels = fpData.levels;
+    const { minP, totalTicks, width, height, stacks, tickSize } = layout(levels);
+    if (totalTicks === 0) return;
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, width, height);
+
+    function yFor(price) {
+      const ticksFromBottom = Math.round((price - minP) / tickSize);
+      const rowFromTop = totalTicks - 1 - ticksFromBottom;
+      return PAD_TOP + rowFromTop * LEVEL_H;
+    }
+
+    // grid + price axis
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 1;
+    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillStyle = '#555';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const step = LEVEL_H < 16 ? 8 : 4;
+    for (let t = 0; t < totalTicks; t += step) {
+      const price = minP + t * tickSize;
+      const y = yFor(price) + LEVEL_H / 2;
+      ctx.beginPath();
+      ctx.moveTo(PAD_L - 6, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+      ctx.fillText(price.toFixed(2), PAD_L - 10, y);
+    }
+
+    // single bar
+    const x = PAD_L;
+    const barLevels = new Map();
+    levels.forEach(lv => barLevels.set(lv.price, lv));
+
+    levels.forEach(lv => {
+      const y = yFor(lv.price);
+      ctx.fillStyle = lv.ask >= lv.bid ? 'rgba(163,230,53,0.08)' : 'rgba(248,113,113,0.08)';
+      ctx.fillRect(x + 2, y + 1, COL_W - 4, LEVEL_H - 2);
+
+      ctx.strokeStyle = '#1e1e1e';
+      ctx.beginPath();
+      ctx.moveTo(x + COL_W / 2, y + 1);
+      ctx.lineTo(x + COL_W / 2, y + LEVEL_H - 1);
+      ctx.stroke();
+
+      ctx.font = (LEVEL_H < 16 ? '9px' : '10.5px') + ' ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textBaseline = 'middle';
+
+      ctx.fillStyle = lv.sellImb ? '#f87171' : '#888';
+      ctx.textAlign = 'right';
+      ctx.fillText(formatVol(lv.bid), x + COL_W / 2 - 6, y + LEVEL_H / 2);
+
+      ctx.fillStyle = lv.buyImb ? '#a3e635' : '#888';
+      ctx.textAlign = 'left';
+      ctx.fillText(formatVol(lv.ask), x + COL_W / 2 + 6, y + LEVEL_H / 2);
+    });
+
+    // stack frames
+    stacks.forEach(s => {
+      const top = levels[s.to];
+      const bottom = levels[s.from];
+      const yTop = yFor(top.price);
+      const yBottom = yFor(bottom.price) + LEVEL_H;
+      ctx.fillStyle = s.type === 'buy' ? 'rgba(163,230,53,0.08)' : 'rgba(248,113,113,0.08)';
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(x + 1, yTop, COL_W - 2, yBottom - yTop);
+      ctx.strokeRect(x + 1, yTop, COL_W - 2, yBottom - yTop);
+    });
+
+    // counters
+    let bull = 0, bear = 0;
+    stacks.forEach(s => s.type === 'buy' ? bull++ : bear++);
+    bullCountEl.textContent = bull;
+    bearCountEl.textContent = bear;
+  }
+
+  function formatVol(v) {
+    if (v >= 1000) return (v / 1000).toFixed(1) + 'K';
+    if (v >= 1) return v.toFixed(1);
+    return v.toFixed(4);
+  }
+
+  function updateFromData(data) {
+    fpData = data;
+    draw();
+  }
+
+  function init() {
+    canvas = document.getElementById('fpChart');
+    if (!canvas) return;
+    ctx = canvas.getContext('2d');
+    chartWrap = document.getElementById('fpChartWrap');
+    thresholdInput = document.getElementById('fpThreshold');
+    minStackInput = document.getElementById('fpMinStack');
+    thresholdValEl = document.getElementById('fpThresholdVal');
+    minStackValEl = document.getElementById('fpMinStackVal');
+    bullCountEl = document.getElementById('fpBullCount');
+    bearCountEl = document.getElementById('fpBearCount');
+
+    thresholdInput.addEventListener('input', () => {
+      thresholdValEl.textContent = thresholdInput.value + '%';
+      draw();
+    });
+    minStackInput.addEventListener('input', () => {
+      minStackValEl.textContent = minStackInput.value + ' уровня';
+      draw();
+    });
+
+    window.addEventListener('resize', () => { if (currentTab === 'footprint') draw(); });
+  }
+
+  return { init, draw, updateFromData };
+})();
+
+// ── Sandbox: Signal Logic Visualization ────────────
+const sandboxModule = (() => {
+  let chart = null;
+  let candleSeries = null;
+  let overlayContainer = null;
+  let zoneDivs = [];
+  let currentTrace = null;
+
+  function init() {
+    document.getElementById('sandboxLoadBtn')?.addEventListener('click', loadSignals);
+    document.getElementById('sandboxSymbol')?.addEventListener('change', loadSignals);
+    document.getElementById('sandboxTf')?.addEventListener('change', loadSignals);
+
+    loadSymbols();
+
+    document.getElementById('zoneOpacity')?.addEventListener('input', (e) => {
+      document.getElementById('zoneOpacityVal').textContent = e.target.value + '%';
+      if (currentTrace) renderVisual(currentTrace);
+    });
+
+    ['showSweep','showMss','showBos','showOb','showFvg','showEntry'].forEach(id => {
+      document.getElementById(id)?.addEventListener('change', () => {
+        if (currentTrace) renderVisual(currentTrace);
+      });
+    });
+
+    window.addEventListener('resize', () => {
+      if (currentTab === 'sandbox' && chart) {
+        const wrap = document.getElementById('sandboxChartWrap');
+        if (wrap) chart.applyOptions({ width: wrap.clientWidth, height: wrap.clientHeight });
+      }
+    });
+  }
+
+  async function loadSymbols() {
+    const select = document.getElementById('sandboxSymbol');
+    if (!select) return;
+    try {
+      const res = await fetch('/api/sandbox/symbols');
+      const data = await res.json();
+      if (data.symbols && data.symbols.length > 0) {
+        select.innerHTML = data.symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+        loadSignals();
+      } else {
+        select.innerHTML = '<option value="">Нет принятых сигналов</option>';
+      }
+    } catch (e) {
+      select.innerHTML = '<option value="">Ошибка загрузки</option>';
+    }
+  }
+
+  async function loadSignals() {
+    const symbol = document.getElementById('sandboxSymbol')?.value;
+    const tf = document.getElementById('sandboxTf')?.value || '';
+    const list = document.getElementById('sandboxSignalList');
+    if (!list) return;
+    if (!symbol) {
+      list.innerHTML = '<div class="sandbox-empty">Нет принятых сигналов</div>';
+      return;
+    }
+    list.innerHTML = '<div class="sandbox-empty">Loading...</div>';
+
+    try {
+      let url = `/api/sandbox/signals?symbol=${encodeURIComponent(symbol)}&limit=20`;
+      if (tf) url += `&timeframe=${encodeURIComponent(tf)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!data.signals || data.signals.length === 0) {
+        list.innerHTML = '<div class="sandbox-empty">Нет сигналов</div>';
+        return;
+      }
+      list.innerHTML = data.signals.map(s => {
+        const cls = s.signal_type === 'BUY' ? 'sig-buy' : 'sig-sell';
+        const time = s.created_at ? formatSandboxTime(s.created_at) : '—';
+        return `<div class="sandbox-signal-row" data-id="${s.id}">
+          <div class="sig-header"><span class="sig-dir ${cls}">${s.signal_type}</span><span class="sig-time">${time}</span></div>
+          <div class="sig-prices">E: $${formatPrice(s.entry)} SL: $${formatPrice(s.sl)} TP: $${formatPrice(s.tp)}</div>
+          <div class="sig-meta">TF: ${s.timeframe} | Score: ${s.score ?? '—'}</div>
+        </div>`;
+      }).join('');
+
+      list.querySelectorAll('.sandbox-signal-row').forEach(row => {
+        row.addEventListener('click', () => {
+          list.querySelectorAll('.sandbox-signal-row').forEach(r => r.classList.remove('active'));
+          row.classList.add('active');
+          loadTrace(parseInt(row.dataset.id));
+        });
+      });
+    } catch (e) {
+      list.innerHTML = '<div class="sandbox-empty">Ошибка загрузки</div>';
+      console.error('Sandbox load error:', e);
+    }
+  }
+
+  async function loadTrace(signalId) {
+    const title = document.getElementById('sandboxChartTitle');
+    const info = document.getElementById('sandboxInfo');
+    if (title) title.textContent = `Loading signal #${signalId}...`;
+
+    try {
+      const res = await fetch(`/api/sandbox/trace/${signalId}`);
+      const trace = await res.json();
+      if (trace.error) {
+        if (title) title.textContent = trace.error;
+        return;
+      }
+      currentTrace = trace;
+      renderVisual(trace);
+
+      const sig = trace.signal;
+      if (title) title.textContent = `${sig.symbol} ${sig.direction} | ${sig.timeframe}`;
+      if (info) {
+        const outcome = sig.outcome ? ` | ${sig.outcome}` : '';
+        info.innerHTML = `
+          <div><b>Entry:</b> $${formatPrice(sig.entry)}</div>
+          <div><b>SL:</b> $${formatPrice(sig.sl)}</div>
+          <div><b>TP:</b> $${formatPrice(sig.tp)}</div>
+          <div><b>Score:</b> ${sig.score ?? '—'}</div>
+          <div><b>Confidence:</b> ${sig.confidence ? sig.confidence.toFixed(1) + '%' : '—'}</div>
+          <div><b>Outcome:</b> ${sig.outcome || 'open'}${outcome}</div>
+        `;
+      }
+    } catch (e) {
+      if (title) title.textContent = 'Error loading trace';
+      console.error('Trace load error:', e);
+    }
+  }
+
+  function renderVisual(trace) {
+    const wrap = document.getElementById('sandboxChartWrap');
+    if (!wrap) return;
+
+    // Clear previous
+    if (chart) {
+      chart.remove();
+      chart = null;
+    }
+    zoneDivs.forEach(d => d.remove());
+    zoneDivs = [];
+
+    // Create overlay container
+    overlayContainer = wrap;
+    overlayContainer.style.position = 'relative';
+
+    // Create chart
+    const chartEl = document.getElementById('sandboxChart');
+    chart = LightweightCharts.createChart(chartEl, {
+      width: wrap.clientWidth,
+      height: wrap.clientHeight || 450,
+      layout: { background: { color: '#111' }, textColor: '#888' },
+      grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
+      timeScale: { timeVisible: true, secondsVisible: false },
+      crosshair: { mode: 0 },
+    });
+
+    candleSeries = chart.addCandlestickSeries({
+      upColor: '#a3e635',
+      downColor: '#f87171',
+      borderUpColor: '#a3e635',
+      borderDownColor: '#f87171',
+      wickUpColor: '#a3e635',
+      wickDownColor: '#f87171',
+    });
+
+    if (!trace.candles || trace.candles.length === 0) return;
+    candleSeries.setData(trace.candles);
+    chart.timeScale().fitContent();
+
+    const visual = trace.visual || {};
+    const sig = trace.signal || {};
+
+    // ── Markers ──
+    const markers = [];
+
+    if (document.getElementById('showSweep')?.checked && visual.sweep) {
+      markers.push({
+        time: visual.sweep.time,
+        position: sig.direction === 'buy' ? 'belowBar' : 'aboveBar',
+        color: '#ff9800',
+        shape: 'circle',
+        text: 'SWEEP',
+      });
+    }
+
+    if (document.getElementById('showMss')?.checked && visual.mss) {
+      markers.push({
+        time: visual.mss.time,
+        position: sig.direction === 'buy' ? 'aboveBar' : 'belowBar',
+        color: '#f44336',
+        shape: 'arrowDown',
+        text: 'MSS',
+      });
+      // MSS level line
+      candleSeries.createPriceLine({
+        price: visual.mss.level,
+        color: '#f44336',
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        lineWidth: 1,
+        title: `MSS ${visual.mss.level}`,
+      });
+    }
+
+    if (document.getElementById('showBos')?.checked && visual.bos) {
+      markers.push({
+        time: visual.bos.time,
+        position: sig.direction === 'buy' ? 'aboveBar' : 'belowBar',
+        color: '#2196f3',
+        shape: 'arrowDown',
+        text: 'BOS',
+      });
+      candleSeries.createPriceLine({
+        price: visual.bos.level,
+        color: '#2196f3',
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        lineWidth: 1,
+        title: `BOS ${visual.bos.level}`,
+      });
+    }
+
+    if (markers.length > 0) {
+      markers.sort((a, b) => a.time - b.time);
+      candleSeries.setMarkers(markers);
+    }
+
+    // ── Zones (overlay-div) ──
+    const opacity = (parseInt(document.getElementById('zoneOpacity')?.value || '15') / 100).toFixed(2);
+
+    if (document.getElementById('showOb')?.checked && visual.ob) {
+      const obColor = document.getElementById('colorOb')?.value || '#ffc107';
+      drawZone(visual.ob.time, visual.ob.high, visual.ob.low, obColor, opacity, 'OB');
+    }
+
+    if (document.getElementById('showFvg')?.checked && visual.fvg) {
+      const fvgColor = document.getElementById('colorFvg')?.value || '#9c27b0';
+      drawZone(visual.fvg.time, visual.fvg.top, visual.fvg.bottom, fvgColor, opacity, 'FVG');
+    }
+
+    // ── Entry / SL / TP lines ──
+    if (document.getElementById('showEntry')?.checked) {
+      if (sig.entry) candleSeries.createPriceLine({ price: sig.entry, color: '#2196f3', lineWidth: 1, title: 'Entry' });
+      if (sig.sl) candleSeries.createPriceLine({ price: sig.sl, color: '#ef5350', lineWidth: 1, title: 'SL' });
+      if (sig.tp) candleSeries.createPriceLine({ price: sig.tp, color: '#26a69a', lineWidth: 1, title: 'TP' });
+    }
+  }
+
+  function drawZone(time, priceHigh, priceLow, color, opacity, label) {
+    if (!chart || !candleSeries || !time) return;
+
+    const div = document.createElement('div');
+    div.className = 'sandbox-zone';
+    div.style.background = hexToRgba(color, opacity);
+    div.style.borderLeft = `2px solid ${color}`;
+    div.title = label;
+    overlayContainer.appendChild(div);
+    zoneDivs.push(div);
+
+    function update() {
+      if (!chart || !candleSeries) return;
+      const x = chart.timeScale().timeToCoordinate(time);
+      const y1 = candleSeries.priceToCoordinate(priceHigh);
+      const y2 = candleSeries.priceToCoordinate(priceLow);
+      if (x == null || y1 == null || y2 == null) {
+        div.style.display = 'none';
+        return;
+      }
+      div.style.display = 'block';
+      div.style.left = x + 'px';
+      div.style.top = Math.min(y1, y2) + 'px';
+      div.style.width = '2px';
+      div.style.height = Math.abs(y2 - y1) + 'px';
+    }
+
+    chart.timeScale().subscribeVisibleTimeRangeChange(update);
+    chart.subscribeCrosshairMove(update);
+    update();
+  }
+
+  function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  function formatSandboxTime(isoStr) {
+    try {
+      const d = new Date(isoStr);
+      const day = d.getUTCDate().toString().padStart(2, '0');
+      const month = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+      const hours = d.getUTCHours().toString().padStart(2, '0');
+      const mins = d.getUTCMinutes().toString().padStart(2, '0');
+      return `${day}.${month} ${hours}:${mins}`;
+    } catch {
+      return '—';
+    }
+  }
+
+  return { init };
+})();
 
 // ── Start ──────────────────────────────────────────
 connect();

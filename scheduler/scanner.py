@@ -1674,7 +1674,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             trace.blocked("min_p_tp", reason)
             trace.set_version(VERSION, build_config_snapshot())
             await trace.save(db)
-            _hyp = f",hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}"
+            _rr = abs(tp - entry_price) / abs(entry_price - sl) if entry_price != sl else 0
+            _hyp = f",hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={_rr:.2f},hyp_ptp={probability.p_tp:.3f}"
             await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                              "min_p_tp", MIN_P_TP, False,
                              setup_type=setup.setup_type, direction=setup.direction,
@@ -1741,7 +1742,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                              "risk_engine", _rcode, False,
                              setup_type=setup.setup_type, direction=setup.direction,
-                             meta=f"reason={_rr},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
+                             meta=f"reason={_rr},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={risk_decision.rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
                              as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
             logger.info(f"Risk BLOCKED: {symbol} {timeframe} — {risk_decision.rejection_reason}")
             return None
@@ -1792,7 +1793,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                                  "entry_trigger", ENTRY_TRIGGER_NO, False,
                                  setup_type=setup.setup_type, direction=setup.direction,
-                                 meta=f"reason={trigger_result.reason},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
+                                 meta=f"reason={trigger_result.reason},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={risk_decision.rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
                                  as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
                 return None
 
@@ -1964,7 +1965,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                                  "execution_filter", SPREAD_TOO_WIDE, False,
                                  setup_type=setup.setup_type, direction=setup.direction,
-                                 meta=f"spread={_spread_pct:.4f}%,hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
+                                 meta=f"spread={_spread_pct:.4f}%,hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={risk_decision.rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
                                  as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
                 return None
 
@@ -1988,7 +1989,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                                          "depth_check", DEPTH_TOO_LOW, False,
                                          setup_type=setup.setup_type, direction=setup.direction,
-                                         meta=f"depth=${_total_depth:,.0f},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
+                                         meta=f"depth=${_total_depth:,.0f},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={risk_decision.rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
                                          as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
                         return None
             except Exception as e:
@@ -2106,6 +2107,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         _trace_features["p_tp"] = probability.p_tp
         _trace_features["expected_rr"] = probability.expected_rr
         _trace_features["risk_pct"] = risk_decision.risk_pct
+        _trace_features["visual"] = features.to_visual()
         trace.set_features(_trace_features)
         trace.set_version(VERSION)
         await trace.save(db, signal_id=saved_signal.id)

@@ -134,6 +134,62 @@ def _compute_sr_levels(df, symbol: str, timeframe: str) -> Dict[str, Any]:
     }
 
 
+async def _compute_footprint(symbol: str) -> Optional[Dict[str, Any]]:
+    """Построить footprint chart из реального стакана биржи.
+
+    Берём стакан (order book), группируем уровни по tick size,
+    считаем объём bid/ask на каждом уровне.
+    """
+    from data.exchange_client import exchange_client
+
+    book = await exchange_client.fetch_order_book(symbol, limit=50)
+    if not book:
+        return None
+
+    bids = book.get("bids", [])
+    asks = book.get("asks", [])
+    if not bids and not asks:
+        return None
+
+    tick_size = exchange_client.get_tick_size(symbol) or 0.01
+
+    def round_price(price):
+        return round(round(price / tick_size) * tick_size, 10)
+
+    levels: Dict[float, Dict[str, float]] = {}
+
+    for price, qty in bids:
+        rp = round_price(price)
+        if rp not in levels:
+            levels[rp] = {"bid": 0, "ask": 0}
+        levels[rp]["bid"] += float(qty)
+
+    for price, qty in asks:
+        rp = round_price(price)
+        if rp not in levels:
+            levels[rp] = {"bid": 0, "ask": 0}
+        levels[rp]["ask"] += float(qty)
+
+    if not levels:
+        return None
+
+    sorted_prices = sorted(levels.keys())
+
+    level_list = []
+    for p in sorted_prices:
+        level_list.append({
+            "price": round(p, 6),
+            "bid": round(levels[p]["bid"], 4),
+            "ask": round(levels[p]["ask"], 4),
+        })
+
+    return {
+        "levels": level_list,
+        "tickSize": tick_size,
+        "lastPrice": level_list[-1]["price"] if level_list else 0,
+    }
+
+
 async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
     """Собрать полный payload для отправки клиенту."""
     try:
@@ -154,6 +210,9 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
         liquidity = _compute_liquidity(df, symbol, tf)
         sr_levels = _compute_sr_levels(df, symbol, tf)
         signal_info = _compute_signal_light(df, symbol, tf)
+
+        # Footprint (order book snapshot)
+        footprint = await _compute_footprint(symbol)
 
         # Wave analysis (soft feature)
         wave_data = None
@@ -188,6 +247,7 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             "signal": signal_info,
             "priceHistory": price_history,
             "waves": wave_data,
+            "footprint": footprint,
         }
     except Exception as e:
         import traceback
@@ -405,6 +465,108 @@ async def api_waves(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+# ─── Sandbox API ──────────────────────────────────────────────────────
+
+async def api_sandbox_signals(request):
+    """GET /api/sandbox/signals?symbol=BTC/USDT&timeframe=1h&limit=20
+
+    Returns only ACCEPTED signals (from the `signals` table).
+    """
+    from storage.database import db
+    symbol = request.query.get("symbol", None)
+    timeframe = request.query.get("timeframe", None)
+    limit = int(request.query.get("limit", "20"))
+    try:
+        signals = await db.get_recent_signals_for_sandbox(symbol=symbol, timeframe=timeframe, limit=limit)
+        return web.json_response({"signals": signals})
+    except Exception as e:
+        logger.error(f"api_sandbox_signals error: {e}")
+        return web.json_response({"signals": [], "error": str(e)})
+
+
+async def api_sandbox_symbols(request):
+    """GET /api/sandbox/symbols — distinct symbols with accepted signals."""
+    from storage.database import db
+    try:
+        symbols = await db.get_signal_symbols()
+        return web.json_response({"symbols": symbols})
+    except Exception as e:
+        logger.error(f"api_sandbox_symbols error: {e}")
+        return web.json_response({"symbols": [], "error": str(e)})
+
+
+async def api_sandbox_trace(request):
+    """GET /api/sandbox/trace/{signal_id}"""
+    from storage.database import db
+    signal_id = int(request.match_info["signal_id"])
+    try:
+        trace = await db.get_visual_trace(signal_id)
+        if not trace:
+            return web.json_response({"error": "Signal not found"}, status=404)
+
+        # Fetch OHLCV candles for the chart
+        sig = trace["signal"]
+        symbol = sig["symbol"]
+        timeframe = sig["timeframe"]
+        df = await _fetch_candles(symbol, timeframe, limit=200)
+        candles = []
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                ts = row.name
+                ts_sec = int(ts.timestamp()) if hasattr(ts, "timestamp") else int(ts)
+                candles.append({
+                    "time": ts_sec,
+                    "open": round(float(row["open"]), 2),
+                    "high": round(float(row["high"]), 2),
+                    "low": round(float(row["low"]), 2),
+                    "close": round(float(row["close"]), 2),
+                })
+
+        # Convert visual timestamps to int (UNIX seconds)
+        visual = trace.get("visual", {})
+        for key in ("sweep", "mss", "bos"):
+            if visual.get(key) and visual[key].get("time"):
+                visual[key]["time"] = int(visual[key]["time"])
+        for key in ("ob", "fvg"):
+            if visual.get(key) and visual[key].get("time"):
+                visual[key]["time"] = int(visual[key]["time"])
+
+        return web.json_response({
+            "signal": sig,
+            "candles": candles,
+            "visual": visual,
+        })
+    except Exception as e:
+        logger.error(f"api_sandbox_trace error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_sandbox_candles(request):
+    """GET /api/sandbox/candles?symbol=BTC/USDT&timeframe=1h&limit=200"""
+    symbol = request.query.get("symbol", "BTC/USDT")
+    timeframe = request.query.get("timeframe", "1h")
+    limit = int(request.query.get("limit", "200"))
+    try:
+        df = await _fetch_candles(symbol, timeframe, limit=limit)
+        if df is None or df.empty:
+            return web.json_response({"candles": [], "error": "No data"})
+        candles = []
+        for _, row in df.iterrows():
+            ts = row.name
+            ts_sec = int(ts.timestamp()) if hasattr(ts, "timestamp") else int(ts)
+            candles.append({
+                "time": ts_sec,
+                "open": round(float(row["open"]), 2),
+                "high": round(float(row["high"]), 2),
+                "low": round(float(row["low"]), 2),
+                "close": round(float(row["close"]), 2),
+            })
+        return web.json_response({"candles": candles})
+    except Exception as e:
+        logger.error(f"api_sandbox_candles error: {e}")
+        return web.json_response({"candles": [], "error": str(e)})
+
+
 # ─── App factory ────────────────────────────────────────────────────────
 
 def create_app() -> web.Application:
@@ -423,6 +585,10 @@ def create_app() -> web.Application:
     # API
     app.router.add_get("/api/open-trades", api_open_trades)
     app.router.add_get("/api/waves/{symbol}/{timeframe}", api_waves)
+    app.router.add_get("/api/sandbox/signals", api_sandbox_signals)
+    app.router.add_get("/api/sandbox/symbols", api_sandbox_symbols)
+    app.router.add_get("/api/sandbox/trace/{signal_id}", api_sandbox_trace)
+    app.router.add_get("/api/sandbox/candles", api_sandbox_candles)
 
     # WebSocket
     app.router.add_get("/ws", ws_handler)

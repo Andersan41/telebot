@@ -13,6 +13,41 @@ from loguru import logger
 from config.settings import config, get_active_symbols
 
 
+# BingX error code translation (Chinese → readable)
+_BINGX_ERRORS: dict[int, str] = {
+    100410: "rate limit exceeded",
+    100500: "internal server error",
+    100503: "server busy",
+    100001: "signature verification failed",
+    100004: "API key missing trading permission",
+    100412: "missing signature parameter",
+    100413: "incorrect API key",
+    100419: "IP not in API key whitelist",
+    100421: "timestamp mismatch with server",
+    101204: "insufficient margin",
+    101206: "insufficient balance",
+    101211: "order price out of range",
+    101400: "invalid order parameters",
+    101415: "trading pair suspended",
+    101419: "pending orders limit reached",
+    109425: "trading pair not supported",
+    109500: "internal server error",
+}
+
+
+def _translate_bingx_error(msg: str) -> str:
+    """Try to extract BingX error code and translate Chinese messages."""
+    import json
+    try:
+        obj = json.loads(msg)
+        code = obj.get("code")
+        if isinstance(code, int) and code in _BINGX_ERRORS:
+            return f"[{code}] {_BINGX_ERRORS[code]}"
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return msg
+
+
 class ExchangeClient:
     def __init__(self):
         self._exchange: Optional[ccxt_sync.Exchange] = None
@@ -182,7 +217,7 @@ class ExchangeClient:
                         f"after {max_retries} attempts: {e}"
                     )
             except ccxt_sync.ExchangeError as e:
-                logger.error(f"Exchange error fetching {symbol} {timeframe}: {e}")
+                logger.error(f"Exchange error fetching {symbol} {timeframe}: {_translate_bingx_error(str(e))}")
                 return None
             except Exception as e:
                 logger.error(f"Unexpected error fetching {symbol} {timeframe}: {e}")
@@ -268,6 +303,23 @@ class ExchangeClient:
         if precision is None:
             return None
         return 10 ** (-precision)
+
+    async def fetch_order_book(self, symbol: str, limit: int = 50) -> Optional[dict]:
+        """Получаем стакан (order book) через ccxt."""
+        await self._ensure_markets_loaded()
+        ccxt_symbol = self._resolve_symbol(symbol)
+        if ccxt_symbol not in self._available_symbols:
+            logger.warning(f"Symbol {symbol} not available for order book fetch")
+            return None
+        try:
+            async with self._semaphore:
+                book = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self._exchange.fetch_order_book(ccxt_symbol, limit=limit)
+                )
+                return book
+        except Exception as e:
+            logger.warning(f"Failed to fetch order book for {symbol}: {e}")
+            return None
 
     async def fetch_ohlcv(
         self,

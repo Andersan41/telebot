@@ -95,21 +95,37 @@ def analyze_waves(
     conflict = False
     conflict_details = ""
     if alternatives:
-        alt_dirs = {a.direction for a in alternatives}
-        if direction and len(alt_dirs) > 1:
+        # Use price_direction (bullish/bearish) instead of wave type (impulse/correction)
+        primary_price_dir = primary.price_direction if primary else None
+        alt_price_dirs = {a.price_direction for a in alternatives}
+        if primary_price_dir and len(alt_price_dirs) > 1:
             conflict = True
-            # Build detailed conflict explanation
-            primary_dir = direction.value
-            disagree = [a for a in alternatives if a.direction != direction]
-            agree = [a for a in alternatives if a.direction == direction]
+            disagree = [a for a in alternatives if a.price_direction != primary_price_dir]
+            agree = [a for a in alternatives if a.price_direction == primary_price_dir]
             parts = []
             if disagree:
-                disagree_labels = ", ".join(f"{a.label} ({a.direction.value})" for a in disagree)
-                parts.append(f"Против: {disagree_labels}")
+                # Deduplicate: group by label, show confidence
+                seen = {}
+                for a in disagree:
+                    key = a.label
+                    if key not in seen or a.confidence > seen[key]:
+                        seen[key] = a.confidence
+                disagree_labels = ", ".join(
+                    f"{label} ({conf:.0%})" for label, conf in seen.items()
+                )
+                dir_ru = "бычий" if primary_price_dir == "bearish" else "медвежий"
+                parts.append(f"⚠️ {dir_ru}: {disagree_labels}")
             if agree:
-                agree_labels = ", ".join(f"{a.label}" for a in agree)
-                parts.append(f"Совпадают: {agree_labels}")
-            conflict_details = "; ".join(parts)
+                seen = {}
+                for a in agree:
+                    key = a.label
+                    if key not in seen or a.confidence > seen[key]:
+                        seen[key] = a.confidence
+                agree_labels = ", ".join(
+                    f"{label} ({conf:.0%})" for label, conf in seen.items()
+                )
+                parts.append(f"✅ совпадают: {agree_labels}")
+            conflict_details = " | ".join(parts)
 
     confidence = primary.confidence if primary else 0.0
 

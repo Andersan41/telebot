@@ -49,12 +49,22 @@ Pattern Engine → Feature Builder → Probability Engine → Risk Engine → Te
 - `ContextScore` replaces `ContextVerdict` — score [-1, 1], never blocks
 - Feeds into Probability Engine as a feature
 
+### HTF POI (`strategy/htf_poi.py`)
+- Detects OB/FVG on D1, H4, W1 timeframes
+- Checks proximity to current price (default 2% threshold)
+- Filters POIs by direction (bullish for BUY, bearish for SELL)
+- If price near HTF POI → SL anchored to HTF structure level (tighter SL, better RR)
+- Used by `TradeEngine.build_trade_plan()` via `htf_poi_result` parameter
+- SL source tagged as `htf_poi_1d`, `htf_poi_4h`, etc.
+
 ---
 
 ## 1. OVERVIEW
 
 ```
 [Trigger] → [Data Fetch] → [Indicators] → [Signal Engine] → [Gates] → [Context] → [Risk] → [Confidence] → [DB] → [Telegram]
+                                      ↓
+                              [HTF POI Detection] → [Trade Engine] → SL/TP
 ```
 
 **Всего модулей:** ~73 `.py` файлов

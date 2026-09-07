@@ -43,6 +43,7 @@ class TradeEngine:
         fvgs: Optional[list] = None,
         df: Optional[pd.DataFrame] = None,
         timeframe: str = "1h",
+        htf_poi_result=None,  # HTFPOIResult from strategy.htf_poi
     ) -> TradePlan:
         """Build a complete trade plan.
 
@@ -177,6 +178,27 @@ class TradeEngine:
                     f"tick={tick_buffer:.6f}, atr_buf={atr_buffer:.6f})"
                 )
 
+        # ═══ Step 2.5: HTF POI SL Override ═══
+        # If price is near an HTF POI (D1/H4 OB/FVG), use it as SL anchor.
+        # This places SL behind a higher-timeframe structure level — tighter
+        # SL but backed by a stronger zone = better RR.
+        if htf_poi_result and htf_poi_result.is_near:
+            from strategy.htf_poi import get_htf_sl_level
+            htf_sl = get_htf_sl_level(
+                htf_poi_result,
+                direction=direction,
+                current_price=entry,
+                fallback_level=sl,
+            )
+            if htf_sl is not None:
+                old_sl = sl
+                sl = round(htf_sl - sl_buffer, 8) if direction == "buy" else round(htf_sl + sl_buffer, 8)
+                sl_source = f"htf_poi_{htf_poi_result.nearest.source_tf}"
+                logger.info(
+                    f"SL adjusted to HTF POI: {old_sl:.4f} → {sl:.4f} "
+                    f"({htf_poi_result.nearest.source_tf} {htf_poi_result.nearest.poi_type} "
+                    f"{htf_poi_result.nearest.direction} mid={htf_poi_result.nearest.midpoint:.4f})"
+                )
 
         # ═══ Step 3: Find Targets (TP) ═══
 

@@ -76,6 +76,13 @@ class WaveCount:
         return len(self.points)
 
     @property
+    def price_direction(self) -> str:
+        """Actual price direction: 'bullish' if price rose, 'bearish' if fell."""
+        if len(self.points) < 2:
+            return "neutral"
+        return "bullish" if self.end_price > self.start_price else "bearish"
+
+    @property
     def wave_labels(self) -> List[str]:
         return [p.wave_label for p in self.points]
 

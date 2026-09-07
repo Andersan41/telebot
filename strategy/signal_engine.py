@@ -67,6 +67,9 @@ class SignalResult:
     _fib_level: Optional[float] = None
     _zone_quality_multiplier: float = 1.0
 
+    # HTF POI (multi-timeframe Points of Interest)
+    _htf_poi: Optional[Any] = None  # HTFPOIResult
+
     # Elliott Wave (soft feature)
     _wave_confidence: float = 0.0
     _wave_label: str = ""
@@ -162,14 +165,26 @@ class SignalResult:
             fib_str = f" (fib {self._fib_level:.2f})" if self._fib_level is not None else ""
             lines.append(f"Zone: {zone_upper}{fib_str}")
 
-        lines.append(f"Таймфрейм: {self.timeframe.upper()}")
-
         entry = self.entry_price if self.entry_price is not None else self.close
+
+        # HTF POI (multi-timeframe)
+        if self._htf_poi is not None and self._htf_poi.is_near:
+            poi = self._htf_poi.nearest
+            dist = poi.distance_pct(entry) if entry else 0
+            lines.append(
+                f"🎯 HTF POI: {poi.source_tf.upper()} {poi.poi_type.upper()} "
+                f"{poi.direction} ({dist:.1f}% от цены)"
+            )
+
+        lines.append(f"Таймфрейм: {self.timeframe.upper()}")
         lines.append(f"Entry: <code>{_fmt_price(entry)}</code>")
 
         if self.sl is not None:
             sl_pct = (self.sl - entry) / entry * 100 if entry else 0
-            lines.append(f"SL: <code>{_fmt_price(self.sl)}</code> ({sl_pct:+.2f}%)")
+            sl_source_tag = ""
+            if self._sl_source and "htf_poi" in self._sl_source:
+                sl_source_tag = " 🎯"
+            lines.append(f"SL: <code>{_fmt_price(self.sl)}</code> ({sl_pct:+.2f}%){sl_source_tag}")
         if self.tp is not None:
             tp_pct = (self.tp - entry) / entry * 100 if entry else 0
             lines.append(f"TP: <code>{_fmt_price(self.tp)}</code> ({tp_pct:+.2f}%)")
@@ -189,15 +204,20 @@ class SignalResult:
             lines.append(f"Confidence: {self.confidence:.0f}/100")
         # Elliott Wave
         if self._wave_confidence >= 0.4:
-            direction_icon = "🟢" if self._wave_direction == "bullish" else "🔴" if self._wave_direction == "bearish" else "⚪"
-            direction_text = "бычий" if self._wave_direction == "bullish" else "медвежий" if self._wave_direction == "bearish" else "неопределён"
+            # Use price direction (bullish/bearish) for user-facing display
+            _price_dir = getattr(self, '_wave_price_direction', None)
+            if _price_dir is None:
+                _price_dir = self._wave_direction
+            direction_icon = "🟢" if _price_dir == "bullish" else "🔴" if _price_dir == "bearish" else "⚪"
+            direction_text = "бычий" if _price_dir == "bullish" else "медвежий" if _price_dir == "bearish" else "нейтрально"
             highlighted_label = _highlight_wave(self._wave_label, self._wave_current)
             wave_line = f"🌊 Волна: {highlighted_label} {direction_icon} {direction_text} ({self._wave_confidence:.0%})"
             if self._wave_target > 0:
-                wave_line += f" → целевая {_fmt_price(self._wave_target)}"
+                wave_line += f" → цель {_fmt_price(self._wave_target)}"
             if self._wave_conflict:
-                details = self._wave_conflict_details or "Разные варианты указывают разное направление"
-                wave_line += f"\n⚠️ конфликт: {details}"
+                details = self._wave_conflict_details or ""
+                if details:
+                    wave_line += f"\n{details}"
             lines.append(wave_line)
         return "\n".join(lines)
 

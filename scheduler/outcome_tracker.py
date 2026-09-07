@@ -137,6 +137,9 @@ async def _send_close_notification(
             "TIME_STOP": ("⏰", "Тайм Стоп"),
             "FLIP_BIAS": ("🔄", "Смена Тренда"),
             "SWEEP_BREACH": ("💥", "Пробой Уровня"),
+            "TP1_FULL": ("✅", "Тейк Профит"),
+            "TP2_FULL": ("✅", "Тейк Профит"),
+            "TP3_FULL": ("✅", "Тейк Профит"),
         }
         emoji, action = _STATUS_LABELS.get(status, ("🛑", status))
         pnl_sign = "+" if net_pnl >= 0 else ""
@@ -233,6 +236,28 @@ def _calculate_excursion(
         mfe_pct = ((entry_price - low) / entry_price) * 100 if entry_price > 0 else 0
         mae_pct = ((high - entry_price) / entry_price) * 100 if entry_price > 0 else 0
     return mfe_pct, mae_pct
+
+
+def _normalize_close_reason(reason: str, net_pnl: float) -> str:
+    """Normalize position manager reason to DB status for stats tracking.
+
+    Position manager returns raw reasons like 'TP3_FULL', 'TIME_STOP', etc.
+    Stats filter on 'HIT_TP' / 'HIT_SL' / 'EXPIRED', so we must map:
+      - TP*_FULL → HIT_TP (always, since TP was hit)
+      - TIME_STOP → EXPIRED
+      - FLIP_BIAS / SWEEP_BREACH → HIT_TP or HIT_SL based on PnL
+    """
+    if reason.startswith("TP") and reason.endswith("_FULL"):
+        return "HIT_TP"
+    if reason == "TIME_STOP":
+        return "EXPIRED"
+    # FLIP_BIAS, SWEEP_BREACH, or any other close reason:
+    # classify by actual PnL
+    if net_pnl > 0:
+        return "HIT_TP"
+    elif net_pnl < 0:
+        return "HIT_SL"
+    return reason  # breakeven / zero PnL → keep original
 
 
 async def check_open_outcomes() -> None:
@@ -401,7 +426,7 @@ async def check_open_outcomes() -> None:
 
         # Handle position management actions
         if mgmt["close"]:
-            reason = mgmt["reason"]
+            raw_reason = mgmt["reason"]
             gross_pnl, net_pnl = _calculate_net_pnl(
                 signal.signal_type, signal.close_price, current_price,
                 signal.created_at.replace(tzinfo=timezone.utc), now,
@@ -409,23 +434,24 @@ async def check_open_outcomes() -> None:
             mfe_pct, mae_pct = _calculate_excursion(
                 signal.signal_type, signal.close_price, candle_high, candle_low,
             )
-            await db.close_outcome(outcome.id, reason, current_price, net_pnl)
+            db_status = _normalize_close_reason(raw_reason, net_pnl)
+            await db.close_outcome(outcome.id, db_status, current_price, net_pnl)
             await db.update_signal_excursion(signal.id, mfe_pct, mae_pct)
 
             # Record in metrics
             trade_metrics.record_trade(
                 entry_price=signal.close_price,
                 exit_price=current_price,
-                exit_reason=reason,
+                exit_reason=raw_reason,
                 direction=signal.signal_type,
             )
 
             # Update position DB
             pos_id = await get_position_id(pos)
-            await close_position(pos_id, current_price, reason)
+            await close_position(pos_id, current_price, raw_reason)
 
             try:
-                await db.update_candidate_outcome_by_signal(signal.id, reason, net_pnl)
+                await db.update_candidate_outcome_by_signal(signal.id, db_status, net_pnl)
             except Exception:
                 pass
             try:
@@ -437,22 +463,22 @@ async def check_open_outcomes() -> None:
                     )
                     trace_row = result.scalar_one_or_none()
                     if trace_row:
-                        trace_row.outcome = reason
+                        trace_row.outcome = db_status
                         trace_row.pnl_pct = net_pnl
                         await session.commit()
                         _record_hypothesis_outcome(
-                            trace_row, signal, reason, net_pnl,
+                            trace_row, signal, db_status, net_pnl,
                             mfe_pct, mae_pct, hold_bars,
                         )
             except Exception:
                 pass
             logger.info(
-                f"Outcome RESOLVED: {signal.symbol} {signal.signal_type} -> {reason} "
-                f"at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
+                f"Outcome RESOLVED: {signal.symbol} {signal.signal_type} -> {db_status} "
+                f"(raw={raw_reason}) at {current_price} gross={gross_pnl:+.2f}% net={net_pnl:+.2f}% "
                 f"(entry={signal.close_price}, SL={pos.stop_loss:.6f}, TP={signal.tp})"
             )
             wave_label, wave_dir = await _get_wave_info(signal.id)
-            await _send_close_notification(signal, reason, current_price, net_pnl,
+            await _send_close_notification(signal, db_status, current_price, net_pnl,
                                            actual_sl=pos.stop_loss,
                                            wave_label=wave_label, wave_direction=wave_dir)
             from risk.daily_limits import daily_limits

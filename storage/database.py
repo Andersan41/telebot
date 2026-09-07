@@ -3,7 +3,7 @@ storage/database.py — SQLAlchemy модели и методы работы с 
 """
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, select, desc, ForeignKey, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -1453,6 +1453,93 @@ class Database:
                 )
             )
             return list(result.scalars().all())
+
+    # ── Sandbox API ──────────────────────────────────────────────
+
+    async def get_recent_signals_for_sandbox(self, symbol: str = None, timeframe: str = None, limit: int = 20) -> list[dict]:
+        """Recent accepted signals with entry/SL/TP for sandbox signal list.
+
+        Only reads from the `signals` table — these are signals that passed
+        all pipeline filters and were sent to Telegram.
+        """
+        async with self._session_factory() as session:
+            q = select(Signal).order_by(desc(Signal.created_at)).limit(limit)
+            if symbol:
+                q = q.where(Signal.symbol == symbol)
+            if timeframe:
+                q = q.where(Signal.timeframe == timeframe)
+            result = await session.execute(q)
+            signals = list(result.scalars().all())
+            return [
+                {
+                    "id": s.id,
+                    "symbol": s.symbol,
+                    "timeframe": s.timeframe,
+                    "signal_type": s.signal_type,
+                    "entry": s.close_price,
+                    "sl": s.sl,
+                    "tp": s.tp,
+                    "score": s.score,
+                    "confidence": s.confidence_v2_pct,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                    "sent_at": s.sent_at.isoformat() if s.sent_at else None,
+                }
+                for s in signals
+            ]
+
+    async def get_signal_symbols(self) -> list[str]:
+        """Distinct symbols that have accepted signals in the signals table."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Signal.symbol).distinct().order_by(desc(Signal.symbol))
+            )
+            return [row[0] for row in result.all()]
+
+    async def get_visual_trace(self, signal_id: int) -> Optional[dict]:
+        """Get visual trace data for a signal (features_snapshot.visual + signal entry/SL/TP)."""
+        async with self._session_factory() as session:
+            signal = await session.get(Signal, signal_id)
+            if not signal:
+                return None
+
+            # Find the matching audit log entry (closest ts_event to signal created_at)
+            result = await session.execute(
+                select(SignalAuditLog)
+                .where(
+                    SignalAuditLog.symbol == signal.symbol,
+                    SignalAuditLog.timeframe == signal.timeframe,
+                    SignalAuditLog.passed == True,
+                    SignalAuditLog.ts_event <= signal.created_at + timedelta(minutes=5),
+                    SignalAuditLog.ts_event >= signal.created_at - timedelta(minutes=30),
+                )
+                .order_by(desc(SignalAuditLog.ts_event))
+                .limit(1)
+            )
+            audit = result.scalar_one_or_none()
+
+            visual = {}
+            if audit and audit.features_snapshot:
+                try:
+                    features = json.loads(audit.features_snapshot)
+                    visual = features.get("visual", {})
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            return {
+                "signal": {
+                    "id": signal.id,
+                    "symbol": signal.symbol,
+                    "timeframe": signal.timeframe,
+                    "direction": signal.signal_type,
+                    "entry": signal.close_price,
+                    "sl": signal.sl,
+                    "tp": signal.tp,
+                    "score": signal.score,
+                    "confidence": signal.confidence_v2_pct,
+                    "created_at": signal.created_at.isoformat() if signal.created_at else None,
+                },
+                "visual": visual,
+            }
 
 
 db = Database()

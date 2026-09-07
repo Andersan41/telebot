@@ -135,6 +135,21 @@ class SetupFeatures:
     is_4h_aligned: bool = False     # HTF (4h) trend aligns with direction
     volume_above_avg: bool = False
 
+    # === Visual data (for chart overlay in sandbox) ===
+    sweep_price: float = 0.0
+    sweep_candle_timestamp: Optional[str] = None  # ISO string
+    displacement_candle_timestamp: Optional[str] = None
+    mss_level_price: float = 0.0
+    mss_candle_timestamp: Optional[str] = None
+    ob_high_price: float = 0.0
+    ob_low_price: float = 0.0
+    ob_candle_timestamp: Optional[str] = None
+    fvg_top_price: float = 0.0
+    fvg_bottom_price: float = 0.0
+    fvg_candle_timestamp: Optional[str] = None
+    bos_level_price: float = 0.0
+    bos_candle_timestamp: Optional[str] = None
+
     def to_vector(self) -> Dict[str, Any]:
         """Convert to flat dictionary for ML model input.
 
@@ -271,6 +286,45 @@ class SetupFeatures:
             else:
                 reasons.append(wave_str)
         return reasons
+
+    def to_visual(self) -> Dict[str, Any]:
+        """Dict for chart overlay — raw prices and timestamps.
+
+        Returns dict with sweep/MSS/OB/FVG/BOS data for rendering
+        ICT logic on candlestick charts in the sandbox tab.
+        """
+        def _ts(iso_str):
+            if not iso_str:
+                return None
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(iso_str) if isinstance(iso_str, str) else iso_str
+                return int(dt.timestamp())
+            except (ValueError, TypeError, AttributeError):
+                return None
+
+        visual = {}
+        if self.sweep_price:
+            visual["sweep"] = {"price": self.sweep_price, "time": _ts(self.sweep_candle_timestamp)}
+        if self.mss_level_price:
+            visual["mss"] = {"level": self.mss_level_price, "time": _ts(self.mss_candle_timestamp)}
+        if self.ob_high_price:
+            visual["ob"] = {
+                "high": self.ob_high_price,
+                "low": self.ob_low_price,
+                "time": _ts(self.ob_candle_timestamp),
+            }
+        if self.fvg_top_price:
+            visual["fvg"] = {
+                "top": self.fvg_top_price,
+                "bottom": self.fvg_bottom_price,
+                "time": _ts(self.fvg_candle_timestamp),
+            }
+        if self.bos_level_price:
+            visual["bos"] = {"level": self.bos_level_price, "time": _ts(self.bos_candle_timestamp)}
+        if self.displacement_candle_timestamp:
+            visual["displacement_time"] = _ts(self.displacement_candle_timestamp)
+        return visual
 
 
 class FeatureBuilder:
@@ -496,6 +550,20 @@ class FeatureBuilder:
             wave_conflict=wave_analysis.conflict if wave_analysis else False,
             wave_alternatives_count=len(wave_analysis.alternatives) if wave_analysis else 0,
             wave_primary_label=wave_analysis.primary.label if wave_analysis and wave_analysis.primary else "",
+            # Visual data (for chart overlay)
+            sweep_price=setup.sweep_price,
+            sweep_candle_timestamp=setup.sweep_candle_timestamp.isoformat() if setup.sweep_candle_timestamp else None,
+            displacement_candle_timestamp=setup.displacement_candle_timestamp.isoformat() if setup.displacement_candle_timestamp else None,
+            mss_level_price=setup.mss_level_price,
+            mss_candle_timestamp=setup.mss_candle_timestamp.isoformat() if setup.mss_candle_timestamp else None,
+            ob_high_price=setup.ob_high_price,
+            ob_low_price=setup.ob_low_price,
+            ob_candle_timestamp=setup.ob_candle_timestamp.isoformat() if setup.ob_candle_timestamp else None,
+            fvg_top_price=setup.fvg_top_price,
+            fvg_bottom_price=setup.fvg_bottom_price,
+            fvg_candle_timestamp=setup.fvg_candle_timestamp.isoformat() if setup.fvg_candle_timestamp else None,
+            bos_level_price=setup.bos_level_price,
+            bos_candle_timestamp=setup.bos_candle_timestamp.isoformat() if setup.bos_candle_timestamp else None,
         )
 
 

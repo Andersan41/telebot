@@ -80,6 +80,21 @@ class ICTSetup:
     # ── Rejection info ──
     rejection_reason: Optional[str] = None
 
+    # ── Visual data (for chart overlay in sandbox) ──
+    sweep_price: float = 0.0
+    sweep_candle_timestamp: Optional[datetime] = None
+    displacement_candle_timestamp: Optional[datetime] = None
+    mss_level_price: float = 0.0
+    mss_candle_timestamp: Optional[datetime] = None
+    ob_high_price: float = 0.0
+    ob_low_price: float = 0.0
+    ob_candle_timestamp: Optional[datetime] = None
+    fvg_top_price: float = 0.0
+    fvg_bottom_price: float = 0.0
+    fvg_candle_timestamp: Optional[datetime] = None
+    bos_level_price: float = 0.0
+    bos_candle_timestamp: Optional[datetime] = None
+
     @property
     def components_count(self) -> int:
         return len(self.components_found)
@@ -251,6 +266,8 @@ class PatternEngine:
         sweep_strength = 0.0
         sweep_reclaim = 0
         sweep_candle_index = -1
+        _sweep_price = 0.0
+        _sweep_ts = None
 
         valid_sweeps = [s for s in sweeps if s.is_valid]
         for s in valid_sweeps:
@@ -270,6 +287,8 @@ class PatternEngine:
                 sweep_strength = s.strength
                 sweep_reclaim = s.reclaim_candles
                 sweep_candle_index = s.candle_index
+                _sweep_price = s.swept_level
+                _sweep_ts = s.timestamp
 
         if not has_sweep:
             return ICTSetup(
@@ -297,12 +316,16 @@ class PatternEngine:
         mss_causality = 0.0
         sweep_to_mss = 0
         direction = None
+        _mss_level = 0.0
+        _mss_ts = None
 
         if structure and structure.last_mss is not None:
             mss = structure.last_mss
             has_mss = True
             mss_score = mss.mss_score
             mss_causality = mss.causality_score
+            _mss_level = mss.level
+            _mss_ts = mss.timestamp
             # Direction from MSS + sweep alignment
             if mss.type == "bullish":
                 direction = "buy"
@@ -326,6 +349,8 @@ class PatternEngine:
                 has_sweep=has_sweep, sweep_type=sweep_type,
                 has_displacement=has_displacement,
                 has_mss=has_mss,
+                sweep_price=_sweep_price, sweep_candle_timestamp=_sweep_ts,
+                mss_level_price=_mss_level, mss_candle_timestamp=_mss_ts,
                 rejection_reason="reversal: MSS direction unclear",
             )
 
@@ -344,6 +369,10 @@ class PatternEngine:
             mss_score=mss_score,
             mss_causality=mss_causality,
             sweep_to_mss_bars=sweep_to_mss,
+            sweep_price=_sweep_price,
+            sweep_candle_timestamp=_sweep_ts,
+            mss_level_price=_mss_level,
+            mss_candle_timestamp=_mss_ts,
         )
 
     def _try_continuation(self, structure, sweeps: list = None) -> ICTSetup:
@@ -373,12 +402,16 @@ class PatternEngine:
         bos_type = None
         bos_level = 0.0
         direction = None
+        _bos_price = 0.0
+        _bos_ts = None
 
         if structure.last_bos is not None:
             bos = structure.last_bos
             has_bos = True
             bos_type = bos.type
             bos_level = bos.level
+            _bos_price = bos.level
+            _bos_ts = bos.timestamp
             if bos.type == "bullish":
                 direction = "buy"
             elif bos.type == "bearish":
@@ -405,6 +438,7 @@ class PatternEngine:
                             detected=False,
                             has_bos=has_bos, bos_type=bos_type,
                             structure_trend=trend,
+                            bos_level_price=_bos_price, bos_candle_timestamp=_bos_ts,
                             rejection_reason=f"continuation: BOS level {structure.last_bos.level:.2f} <= last swing high {_last_swing_before.price:.2f}",
                         )
             elif direction == "sell":
@@ -417,6 +451,7 @@ class PatternEngine:
                             detected=False,
                             has_bos=has_bos, bos_type=bos_type,
                             structure_trend=trend,
+                            bos_level_price=_bos_price, bos_candle_timestamp=_bos_ts,
                             rejection_reason=f"continuation: BOS level {structure.last_bos.level:.2f} >= last swing low {_last_swing_before.price:.2f}",
                         )
 
@@ -431,6 +466,7 @@ class PatternEngine:
                 detected=False,
                 has_bos=has_bos, bos_type=bos_type,
                 structure_trend=trend,
+                bos_level_price=_bos_price, bos_candle_timestamp=_bos_ts,
                 rejection_reason=f"continuation: BOS {bos_type} vs trend {trend}",
             )
 
@@ -441,6 +477,8 @@ class PatternEngine:
             has_bos=has_bos,
             bos_type=bos_type,
             bos_level=bos_level,
+            bos_level_price=_bos_price,
+            bos_candle_timestamp=_bos_ts,
         )
 
     def _detect_entry_zones(
@@ -466,6 +504,9 @@ class PatternEngine:
                 setup.has_ob = True
                 setup.ob_type = ob.type
                 setup.ob_midpoint = ob.midpoint
+                setup.ob_high_price = ob.high
+                setup.ob_low_price = ob.low
+                setup.ob_candle_timestamp = ob.timestamp
                 if current_price > 0:
                     setup.ob_distance_pct = abs(current_price - ob.midpoint) / current_price * 100
                 break
@@ -481,6 +522,9 @@ class PatternEngine:
                 setup.fvg_type = f.type
                 setup.fvg_size_pct = f.size_pct
                 setup.fvg_midpoint = (f.top + f.bottom) / 2
+                setup.fvg_top_price = f.top
+                setup.fvg_bottom_price = f.bottom
+                setup.fvg_candle_timestamp = f.timestamp
                 break
 
     def _check_entry_armed(self, setup: ICTSetup, current_price: float) -> bool:

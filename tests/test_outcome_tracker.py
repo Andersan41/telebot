@@ -28,6 +28,9 @@ async def setup_db(tmp_path):
     )
     async with db._engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Clear module-level position state between tests
+    from scheduler.outcome_tracker import _position_state
+    _position_state.clear()
     yield
     await db._engine.dispose()
 

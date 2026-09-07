@@ -18,3 +18,4 @@ env/
 logs/*.log
 logs/*.zip
 venv/
+scripts/data/
