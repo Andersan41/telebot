@@ -60,3 +60,39 @@
   3. **Confirmation score < 2** = sweep count — потому что sweep = MSS для reversal.
   4. **Continuation доминирует** (69-91% detected) — primarily BOS-based.
   5. **OB detection крайне низкий** (0-5.8%) — Order Block детекция не находит OB на типичных свечах.
+
+## H-007: Score gate — убрать hardcoded floor=5, вернуться к конфигу
+
+- **Дата:** 2026-09-15
+- **Что:** `scheduler/scanner.py:592` — `max(_min_score, 5)` → `_min_score`. CONFIG_VERSION 4→5.
+- **Причина:** Hardcoded floor=5 делал score gate невосприимчивым к конфигу `MIN_SCORE_FOR_SIGNAL=2`. Continuation сетапы (max 4 компонента) блокировались на 100%. За 3 дня — 0 сигналов (104 entered, 72 blocked by score_gate).
+- **Impact:** Continuation сетапы с score >= 2 теперь проходят. Risk engine downstream фильтрует по R:R, Kelly, portfolio limits.
+- **Risk:** Больше сигналов низкого качества. При сборе данных — анализ winrate по score для data-driven порога.
+
+## H-008: HTF POI — BOS requirement, mitigation filter, dynamic proximity
+
+- **Дата:** 2026-09-15
+- **Что:** `strategy/htf_poi.py` — три изменения:
+  1. `require_bos=False` → `require_bos=True` для HTF OB (SMC: OB должен быть у основания импульса, сломавшего структуру)
+  2. Пропуск `ob.retested=True` (mitigated zones) и `fvg.filled=True` (>70% penetration)
+  3. Proximity: фиксированные 2% → `max(1.0%, zone_width * 1.5)` (динамически привязан к ширине зоны)
+  4. Confidence bonus +0.15 для OB с BOS
+- **Причина:** Старая реализация отклонялась от SMC теории: OB без BOS, митигированные зоны считались валидными, фиксированный proximity не учитывал ширину зоны.
+- **Impact:** Меньше HTF POI детектится (фильтрация митигации + BOS), но те что проходят — качественнее. SL placement через HTF POI будет точнее.
+- **Risk:** Слишком строгая фильтрация HTF POI может вернуть SL по умолчанию (invalidation/swing) для большинства сигналов.
+
+## H-009: Sweep-only reversals — soft MSS gate
+
+- **Дата:** 2026-09-16
+- **Что:** `strategy/pattern_engine.py:346-358` — `_try_reversal` теперь возвращает `detected=True` даже без MSS (has_mss=False). `scheduler/scanner.py:641-650` — MSS gate стал SOFT (log only, не блокирует).
+- **Причина:** pattern_engine блокировал 50/104 сетапов как "reversal: no MSS (strong CHoCH)". Sweep сам по себе уже POI в SMC — MSS подтверждает силу, но не обязателен для входа.
+- **Impact:** ~50 reversal сетапов в ciclo теперь доходят до confirmation_score и risk engine. MSS влияет на confidence/quality, но не блокирует.
+- **Risk:** Больше слабых reversal сигналов. Risk engine downstream фильтрует по R:R.
+
+## H-010: Trend component для continuation сетапов
+
+- **Дата:** 2026-09-16
+- **Что:** `strategy/pattern_engine.py:572-591` — `_build_components` добавляет "Trend" для continuation если `structure_trend in (bullish, bearish)`. Continuation BOS-only теперь score=2 (Trend+BOS) вместо 1 (BOS).
+- **Причина:** BOS-only continuations (score=1) блокировались score_gate (min=2). Trend alignment — обязательный компонент continuation по теории (trend + BOS).
+- **Impact:** BOS-only continuations проходят score_gate. Больше continuation сигналов для сбора данных.
+- **Risk:** Trend не добавляет информативности — это констатация факта, а не подтверждение.

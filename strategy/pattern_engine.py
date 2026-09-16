@@ -42,6 +42,7 @@ class ICTSetup:
     sweep_type: Optional[str] = None
     sweep_strength: float = 0.0
     sweep_reclaim_candles: int = 0
+    sweep_failed_reversal: bool = False  # sweep detected but reversal path failed (no MSS)
 
     has_displacement: bool = False
     displacement_body_pct: float = 0.0
@@ -195,6 +196,13 @@ class PatternEngine:
             if continuation.detected:
                 direction = continuation.direction
                 setup_type = "continuation"
+                # TZ fix: if sweep was detected but reversal failed (no MSS),
+                # mark it so probability engine doesn't count sweep as +3.0 edge
+                if reversal.has_sweep:
+                    continuation.has_sweep = reversal.has_sweep
+                    continuation.sweep_type = reversal.sweep_type
+                    continuation.sweep_strength = reversal.sweep_strength
+                    continuation.sweep_failed_reversal = True
                 reversal = continuation
             else:
                 continuation_rejection = continuation.rejection_reason
@@ -336,11 +344,21 @@ class PatternEngine:
                 sweep_to_mss = max(0, mss.candle_index - sweep_candle_index)
 
         if not has_mss:
+            # Soft: sweep without MSS is still a reversal idea, just weaker.
+            # MSS becomes a quality signal downstream, not a hard gate.
             return ICTSetup(
-                detected=False,
+                detected=True,
+                direction=direction,
+                setup_type="reversal",
                 has_sweep=has_sweep, sweep_type=sweep_type,
+                sweep_strength=sweep_strength,
+                sweep_reclaim_candles=sweep_reclaim,
                 has_displacement=has_displacement,
-                rejection_reason="reversal: no MSS (strong CHoCH)",
+                displacement_body_pct=disp_body,
+                displacement_atr_ratio=disp_atr,
+                has_mss=False,
+                sweep_price=_sweep_price, sweep_candle_timestamp=_sweep_ts,
+                rejection_reason="reversal: sweep only (no MSS)",
             )
 
         if direction is None:
@@ -562,6 +580,8 @@ class PatternEngine:
             if setup.has_mss:
                 components.append("MSS")
         elif setup.setup_type == "continuation":
+            if setup.structure_trend and setup.structure_trend in ("bullish", "bearish"):
+                components.append("Trend")
             if setup.has_bos:
                 components.append("BOS")
         if setup.has_ob:

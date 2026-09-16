@@ -1,14 +1,19 @@
 """
 strategy/htf_poi.py — Multi-Timeframe Points of Interest.
 
-Detects OB/FVG on higher timeframes (D1, H4) and checks if current price
+Detects OB/FVG on higher timeframes (D1, H4, W1) and checks if current price
 is approaching them. Professional traders use HTF POI as primary zones,
 then look for entry triggers on LTF.
 
 Flow:
-1. Detect OB/FVG on D1, H4
-2. Check proximity to current price
+1. Detect OB/FVG on D1, H4, W1 (with BOS validation + mitigation filter)
+2. Check proximity to current price (dynamic, based on zone width)
 3. If price near HTF POI → pass to trade engine for SL placement
+
+SMC theory:
+- OB must be preceded by BOS/CHoCH (impulse that broke structure)
+- Mitigated zones (already retested) are weak/invalid
+- FVG filled >70% is inactive
 """
 from __future__ import annotations
 
@@ -31,6 +36,7 @@ class HTFPOI:
     low: float
     source_tf: str  # "1d", "4h", "1w"
     confidence: float = 0.5  # 0-1, based on OB quality or FVG size
+    mitigated: bool = False  # True if zone was already retested (weaker)
 
     @property
     def midpoint(self) -> float:
@@ -66,15 +72,34 @@ class HTFPOIResult:
         return len(self.pois) > 0
 
 
+def _dynamic_proximity(zone_range_pct: float, min_proximity: float = 1.0) -> float:
+    """Dynamic proximity threshold based on zone width.
+
+    Theory: wider zones should have wider proximity.
+    Formula: max(min_proximity, zone_width * 1.5)
+    - 0.5% zone → 1.0% proximity (minimum)
+    - 1.0% zone → 1.5% proximity
+    - 2.0% zone → 3.0% proximity
+    - 3.0% zone → 4.5% proximity
+    """
+    return max(min_proximity, zone_range_pct * 1.5)
+
+
 def detect_htf_pois(
     df_1d: Optional[pd.DataFrame] = None,
     df_4h: Optional[pd.DataFrame] = None,
     df_1w: Optional[pd.DataFrame] = None,
     current_price: float = 0.0,
     direction: Optional[str] = None,  # "buy" / "sell" — filter POIs by direction
-    proximity_pct: float = 2.0,  # max distance to consider "near"
+    proximity_pct: float = 2.0,  # fallback, overridden by dynamic proximity
 ) -> HTFPOIResult:
     """Detect POIs on higher timeframes and check proximity.
+
+    SMC theory applied:
+    - OB requires BOS validation (impulse that broke structure)
+    - Mitigated zones (retested) are excluded or penalized
+    - FVG filled >70% is excluded
+    - Proximity scales with zone width
 
     Args:
         df_1d: Daily OHLCV DataFrame.
@@ -83,34 +108,43 @@ def detect_htf_pois(
         current_price: Current market price.
         direction: Signal direction ("buy"/"sell") to filter relevant POIs.
                    If None, returns all POIs.
-        proximity_pct: Max distance from price to POI midpoint to consider "near".
+        proximity_pct: Fallback max distance (overridden by dynamic proximity).
 
     Returns:
         HTFPOIResult with detected POIs and proximity info.
     """
     pois: list[HTFPOI] = []
 
-    # Detect on each available TF
     for tf_name, df in [("1w", df_1w), ("1d", df_1d), ("4h", df_4h)]:
         if df is None or len(df) < 20:
             continue
 
-        # OBs on HTF — use relaxed thresholds (HTF OBs are more significant)
+        # ── OB detection: require_bos=True, retest_required=False ──
+        # require_bos=True: OB must be followed by BOS (structure break)
+        # retest_required=False: we detect all OBs but filter mitigated ones below
         try:
             htf_obs = detect_order_blocks(
                 df,
                 lookback=50,
-                require_bos=False,  # HTF OBs don't always need BOS validation
+                require_bos=True,   # SMC: OB at base of impulse that broke structure
                 retest_required=False,
             )
             for ob in htf_obs:
-                # Filter by direction if specified
                 if direction:
                     ob_dir = "buy" if ob.type == "bullish" else "sell"
                     if ob_dir != direction:
                         continue
 
-                confidence = min(1.0, ob.displacement_atr / 2.0)  # normalize
+                # ── Mitigation filter ──
+                # SMC: retested zone is weak — skip it
+                if ob.retested:
+                    continue
+
+                # Confidence: displacement quality + BOS bonus
+                confidence = min(1.0, ob.displacement_atr / 2.0)
+                if ob.has_bos:
+                    confidence = min(1.0, confidence + 0.15)  # BOS bonus
+
                 pois.append(HTFPOI(
                     poi_type="ob",
                     direction=ob.type,
@@ -118,20 +152,25 @@ def detect_htf_pois(
                     low=ob.low,
                     source_tf=tf_name,
                     confidence=confidence,
+                    mitigated=False,
                 ))
         except Exception as e:
             logger.debug(f"HTF OB detection failed on {tf_name}: {e}")
 
-        # FVGs on HTF
+        # ── FVG detection: skip filled FVGs ──
         try:
             htf_fvgs = detect_fvg(df, lookback=50)
             for fvg in htf_fvgs:
+                # SMC: filled FVG (>70% penetrated) is inactive
+                if fvg.filled:
+                    continue
+
                 if direction:
                     fvg_dir = "buy" if fvg.type == "bullish" else "sell"
                     if fvg_dir != direction:
                         continue
 
-                confidence = min(1.0, fvg.size_pct / 1.0)  # normalize by size
+                confidence = min(1.0, fvg.size_pct / 1.0)
                 pois.append(HTFPOI(
                     poi_type="fvg",
                     direction=fvg.type,
@@ -139,6 +178,7 @@ def detect_htf_pois(
                     low=fvg.bottom,
                     source_tf=tf_name,
                     confidence=confidence,
+                    mitigated=False,
                 ))
         except Exception as e:
             logger.debug(f"HTF FVG detection failed on {tf_name}: {e}")
@@ -151,12 +191,19 @@ def detect_htf_pois(
 
     # Find nearest to current price
     nearest = min(pois, key=lambda p: p.distance_pct(current_price)) if current_price > 0 else None
-    is_near = nearest is not None and nearest.distance_pct(current_price) <= proximity_pct
+
+    # Dynamic proximity: scales with zone width
+    if nearest is not None:
+        dyn_prox = _dynamic_proximity(nearest.range_pct)
+        is_near = nearest.distance_pct(current_price) <= dyn_prox
+    else:
+        is_near = False
 
     if is_near and nearest:
         logger.info(
             f"HTF POI near: {nearest.source_tf} {nearest.poi_type} {nearest.direction} "
-            f"mid={nearest.midpoint:.4f} dist={nearest.distance_pct(current_price):.2f}%"
+            f"mid={nearest.midpoint:.4f} dist={nearest.distance_pct(current_price):.2f}% "
+            f"zone={nearest.range_pct:.2f}% prox_thr={dyn_prox:.2f}%"
         )
 
     return HTFPOIResult(
