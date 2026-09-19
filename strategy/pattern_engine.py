@@ -242,7 +242,8 @@ class PatternEngine:
         setup.structure_trend = structure.trend if structure else None
 
         # Extract sweep timestamp for temporal binding (TZ §6.0)
-        _sweep_ts = sweep_timestamp
+        # Prefer timestamp from the sweep actually selected by classifier (via setup)
+        _sweep_ts = sweep_timestamp or getattr(setup, 'sweep_candle_timestamp', None)
         if _sweep_ts is None:
             for s in sweeps:
                 if s.is_valid:
@@ -288,6 +289,16 @@ class PatternEngine:
         _sweep_ts = None
 
         valid_sweeps = [s for s in sweeps if s.is_valid]
+        candidate_mss = structure.last_mss if structure is not None else None
+        if candidate_mss is not None:
+            matched_index = getattr(candidate_mss, "sweep_candle_index", None)
+            matched_level = getattr(candidate_mss, "sweep_level", None)
+            if matched_index is not None and matched_level is not None:
+                valid_sweeps = [
+                    s for s in valid_sweeps
+                    if s.candle_index == matched_index
+                    and s.swept_level == matched_level
+                ]
         sweep_reject_reasons = []
         for s in valid_sweeps:
             # Apply false sweep filters (TZ §5.3)

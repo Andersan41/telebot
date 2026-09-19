@@ -57,6 +57,8 @@ class CHoCH:
     reclaim_bars: int = 0
     causality_score: float = 0.0  # exponential decay from sweep (0-1)
     mss_score: float = 0.0  # 0-100 quality score (equal weights v1)
+    sweep_candle_index: Optional[int] = None
+    sweep_level: Optional[float] = None
 
 
 @dataclass
@@ -138,26 +140,21 @@ def classify_choch(
     """
     choch.displacement_score = displacement_atr
 
-    # Find matching sweep (OPPOSITE direction, within causal window)
+    # Find matching sweep (SAME direction, within causal window)
+    # Bullish sweep (= sell-side grab) precedes bullish CHoCH
+    # Bearish sweep (= buy-side grab) precedes bearish CHoCH
     matching_sweep = None
     bars_since = 999
 
     for s in sweeps:
-        if not s.is_valid:
-            continue
-        # Sweep direction must OPPOSE CHoCH direction
-        # Bullish CHoCH = structure shifts up AFTER bearish sweep (sell-side grab)
-        # Bearish CHoCH = structure shifts down AFTER bullish sweep (buy-side grab)
-        sweep_dir = "buy" if s.type == "bullish" else "sell"
-        choch_dir = "buy" if choch.type == "bullish" else "sell"
-        if sweep_dir == choch_dir:
+        if not s.is_valid or s.type != choch.type:
             continue
 
         # Check causal window
         if choch.candle_index >= 0 and s.candle_index >= 0:
             delta = choch.candle_index - s.candle_index
         else:
-            delta = 0  # unknown index, assume close
+            delta = 0
         if 0 <= delta <= max_causal_bars:
             if matching_sweep is None or delta < bars_since:
                 matching_sweep = s
@@ -170,6 +167,8 @@ def classify_choch(
         choch.causality_score = calc_causality(bars_since)
         reclaim_bars = matching_sweep.reclaim_candles
         choch.reclaim_bars = reclaim_bars
+        choch.sweep_candle_index = matching_sweep.candle_index
+        choch.sweep_level = matching_sweep.swept_level
 
         # Measure displacement as max body/ATR between sweep and CHoCH
         # (not just the CHoCH candle — ICT: displacement leg causes the structure break)

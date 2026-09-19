@@ -183,7 +183,7 @@ class TestMSSClassification:
 
     def test_classify_choch_as_mss(self):
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=5)
-        sweep = MockSweep(type="bullish", candle_index=2, is_valid=True, reclaim_candles=1)  # bullish sweep precedes bearish CHoCH
+        sweep = MockSweep(type="bearish", candle_index=2, is_valid=True, reclaim_candles=1)  # bearish sweep precedes bearish CHoCH
         result = classify_choch(
             choch, sweeps=[sweep],
             displacement_atr=1.5,
@@ -192,6 +192,8 @@ class TestMSSClassification:
         assert result.strength == "mss"
         assert result.mss_score > 50
         assert result.has_sweep_reference is True
+        assert result.sweep_candle_index == 2
+        assert result.sweep_level == 50000.0
 
     def test_classify_choch_weak_no_sweep(self):
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=5)
@@ -201,16 +203,20 @@ class TestMSSClassification:
         )
         assert result.strength == "weak"
         assert result.mss_score == 0.0
+        assert result.sweep_candle_index is None
+        assert result.sweep_level is None
 
     def test_classify_choch_normal_with_sweep(self):
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=5)
-        sweep = MockSweep(type="bullish", candle_index=2, is_valid=True, reclaim_candles=3)  # bullish sweep precedes bearish CHoCH
+        sweep = MockSweep(type="bearish", candle_index=2, is_valid=True, reclaim_candles=3)  # bearish sweep precedes bearish CHoCH
         result = classify_choch(
             choch, sweeps=[sweep],
             displacement_atr=0.6,
         )
         assert result.strength == "normal"
         assert result.mss_score > 0
+        assert result.sweep_candle_index == 2
+        assert result.sweep_level == 50000.0
 
     def test_classify_choch_too_far_from_sweep(self):
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=20)
@@ -222,6 +228,8 @@ class TestMSSClassification:
         )
         assert result.strength == "weak"
         assert result.has_sweep_reference is False
+        assert result.sweep_candle_index is None
+        assert result.sweep_level is None
 
 
 # ============================================================
