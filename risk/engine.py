@@ -62,8 +62,8 @@ class RiskEngine:
 
     def __init__(
         self,
-        min_rr_ratio: float = 2.0,
-        sl_absolute_min_pct: float = 0.8,
+        min_rr_ratio: float = 2.5,
+        sl_absolute_min_pct: float = 0.25,
         sl_absolute_max_pct: float = 5.0,
         base_risk_pct: float = 1.0,
         min_risk_pct: float = 0.1,
@@ -150,6 +150,16 @@ class RiskEngine:
                 rejection_reason="invalid price data",
             )
 
+        # U10: Geometric validation
+        # Infer direction from price geometry: BUY = SL < entry < TP, SELL = TP < entry < SL
+        _is_buy_geo = sl < entry and tp > entry
+        _is_sell_geo = sl > entry and tp < entry
+        if not _is_buy_geo and not _is_sell_geo:
+            return RiskDecision(
+                should_trade=False,
+                rejection_reason=f"GEOMETRY_INVALID: SL={sl:.4f}, entry={entry:.4f}, TP={tp:.4f} — no valid direction (need SL<entry<TP or TP<entry<SL)",
+            )
+
         risk_dist = abs(entry_price - sl)
         reward_dist = abs(tp - entry_price)
 
@@ -174,6 +184,15 @@ class RiskEngine:
         rr_ratio = effective_reward / effective_risk if effective_risk > 0 else 0
         sl_distance_pct = risk_dist / entry_price * 100
 
+        # 1b. Raw RR must be >= 1.0 (reward >= risk before fees)
+        raw_rr = reward_dist / risk_dist if risk_dist > 0 else 0
+        if raw_rr < 1.0:
+            return RiskDecision(
+                should_trade=False,
+                rr_ratio=raw_rr,
+                rejection_reason=f"RAW_RR={raw_rr:.2f} < 1.0: reward={reward_dist:.4f} < risk={risk_dist:.4f}",
+            )
+
         # 2. R:R minimum
         if rr_ratio < self.min_rr_ratio:
             return RiskDecision(
@@ -191,11 +210,10 @@ class RiskEngine:
             )
 
         # Dynamic SL max: A1 fix — dead zone eliminated
-        # Formula: sl_max = max(5.0%, ATR × 2.2), clamp ≤ 8.0%
+        # Formula: sl_max = max(sl_absolute_max_pct, ATR × 2.2)
         # If sl_min_atr > sl_max → relaxed (see 3b below)
         atr_pct = atr / entry_price * 100 if entry_price > 0 else 0.0
         dynamic_sl_max = max(self.sl_absolute_max_pct, atr_pct * 2.2)
-        dynamic_sl_max = min(dynamic_sl_max, 8.0)  # hard cap at 8%
 
         if sl_distance_pct > dynamic_sl_max:
             return RiskDecision(
@@ -255,13 +273,17 @@ class RiskEngine:
                     rejection_reason=f"kelly={kelly:.4f} <= 0 (negative EV: p={p:.2f}, rr={rr_ratio:.2f})",
                 )
 
-            kelly = min(kelly, 0.20)  # cap at 20% (half-Kelly)
+            # U08 fix: actual half-Kelly = kelly * 0.5, then cap
+            kelly *= 0.5  # half-Kelly for conservative sizing
+            kelly = min(kelly, 0.10)  # cap at 10% (half of full Kelly cap)
 
             # Scale by model confidence
             kelly *= probability.confidence
 
-            # Final risk = min(kelly, base_risk)
-            risk_pct = min(kelly * 100, self.base_risk_pct)
+            # Risk = kelly fraction as percentage
+            # U08 fix: no floor — let Kelly determine the size.
+            # Floor artificially inflates tiny Kelly values (e.g. 0.0001 → 0.1% = 25x increase).
+            risk_pct = kelly * 100
 
         # Scenario score scaling (from MarketThesisEngine)
         # Higher scenario quality → larger position (up to 1.2x)
@@ -311,7 +333,9 @@ class RiskEngine:
         min_notional = getattr(config, 'min_notional_usdt', 5.0)
         if portfolio.equity > 0 and entry_price > 0 and risk_dist > 0:
             risk_budget_quote = portfolio.equity * risk_pct / 100.0
-            loss_per_unit = risk_dist  # abs(entry - sl) in price units
+            # U02 fix: loss_per_unit must include round-trip fees + slippage
+            # loss = |entry - sl| + entry_fee + exit_fee + slippage_entry + slippage_exit
+            loss_per_unit = risk_dist + _cost_dist  # _cost_dist = entry_price * round_trip_cost
             quantity_base = risk_budget_quote / loss_per_unit
             notional_quote = quantity_base * entry_price
             if notional_quote < min_notional:

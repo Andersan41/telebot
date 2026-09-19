@@ -123,7 +123,6 @@ def classify_choch(
     choch: CHoCH,
     sweeps: list,
     displacement_atr: float = 0.0,
-    reclaim_bars: int = 0,
     volume_ratio: float = 1.0,
     htf_aligned: bool = False,
     max_causal_bars: int = 10,
@@ -135,10 +134,9 @@ def classify_choch(
     MSS criteria (all must pass):
     1. Sweep within causal window (max_causal_bars, default 10)
     2. Displacement >= 0.2 ATR (measured as max body between sweep and CHoCH)
-    3. Reclaim <= 2 bars
+    3. Reclaim <= 2 bars (from matching_sweep, NOT externally passed)
     """
     choch.displacement_score = displacement_atr
-    choch.reclaim_bars = reclaim_bars
 
     # Find matching sweep (OPPOSITE direction, within causal window)
     matching_sweep = None
@@ -165,9 +163,13 @@ def classify_choch(
                 matching_sweep = s
                 bars_since = delta
 
+    # Reclaim bars from the ACTUAL matching sweep, not externally passed
+    reclaim_bars = 0
     if matching_sweep is not None:
         choch.has_sweep_reference = True
         choch.causality_score = calc_causality(bars_since)
+        reclaim_bars = matching_sweep.reclaim_candles
+        choch.reclaim_bars = reclaim_bars
 
         # Measure displacement as max body/ATR between sweep and CHoCH
         # (not just the CHoCH candle — ICT: displacement leg causes the structure break)
@@ -193,6 +195,7 @@ def classify_choch(
         logger.debug(
             f"classify_choch: disp_param={choch.displacement_score:.3f} "
             f"sweep_idx={matching_sweep.candle_index} choch_idx={choch.candle_index} "
+            f"reclaim_bars={reclaim_bars} "
             f"atr={atr_value:.2f} df_len={len(df) if df is not None else 0}"
         )
     else:
@@ -434,7 +437,6 @@ def analyze_structure(
     swing_window: int = 5,
     sweeps: Optional[list] = None,
     displacement_atr: float = 0.0,
-    reclaim_bars: int = 0,
     volume_ratio: float = 1.0,
     htf_aligned: bool = False,
     atr_value: float = 0.0,
@@ -448,7 +450,6 @@ def analyze_structure(
         swing_window: window size for swing point detection.
         sweeps: optional list of SweepEvent for MSS classification.
         displacement_atr: displacement / ATR ratio for MSS classification.
-        reclaim_bars: bars to reclaim for MSS classification.
         volume_ratio: volume / average volume for MSS scoring.
         htf_aligned: HTF alignment for MSS scoring.
         atr_value: actual ATR value for max displacement calculation.
@@ -467,7 +468,6 @@ def analyze_structure(
             last_choch,
             sweeps=sweeps or [],
             displacement_atr=displacement_atr,
-            reclaim_bars=reclaim_bars,
             volume_ratio=volume_ratio,
             htf_aligned=htf_aligned,
             df=df,

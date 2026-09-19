@@ -183,10 +183,10 @@ class TestMSSClassification:
 
     def test_classify_choch_as_mss(self):
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=5)
-        sweep = MockSweep(type="bullish", candle_index=2, is_valid=True)  # bullish sweep precedes bearish CHoCH
+        sweep = MockSweep(type="bullish", candle_index=2, is_valid=True, reclaim_candles=1)  # bullish sweep precedes bearish CHoCH
         result = classify_choch(
             choch, sweeps=[sweep],
-            displacement_atr=1.5, reclaim_bars=1,
+            displacement_atr=1.5,
             volume_ratio=2.0, htf_aligned=True,
         )
         assert result.strength == "mss"
@@ -197,17 +197,17 @@ class TestMSSClassification:
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=5)
         result = classify_choch(
             choch, sweeps=[],
-            displacement_atr=1.5, reclaim_bars=1,
+            displacement_atr=1.5,
         )
         assert result.strength == "weak"
         assert result.mss_score == 0.0
 
     def test_classify_choch_normal_with_sweep(self):
         choch = CHoCH(type="bearish", level=49000, timestamp=datetime.now(timezone.utc), candle_index=5)
-        sweep = MockSweep(type="bullish", candle_index=2, is_valid=True)  # bullish sweep precedes bearish CHoCH
+        sweep = MockSweep(type="bullish", candle_index=2, is_valid=True, reclaim_candles=3)  # bullish sweep precedes bearish CHoCH
         result = classify_choch(
             choch, sweeps=[sweep],
-            displacement_atr=0.6, reclaim_bars=3,
+            displacement_atr=0.6,
         )
         assert result.strength == "normal"
         assert result.mss_score > 0
@@ -217,7 +217,7 @@ class TestMSSClassification:
         sweep = MockSweep(type="bearish", candle_index=0, is_valid=True)
         result = classify_choch(
             choch, sweeps=[sweep],
-            displacement_atr=1.5, reclaim_bars=1,
+            displacement_atr=1.5,
             max_causal_bars=5,
         )
         assert result.strength == "weak"

@@ -198,6 +198,8 @@ class TradingConfig:
     compression_enabled: bool = os.getenv("COMPRESSION_ENABLED", "true").lower() == "true"
     # Block all signals in compression regime (WR 37.7%, no edge)
     block_compression_regime: bool = os.getenv("BLOCK_COMPRESSION_REGIME", "true").lower() == "true"
+    # Block signals during low-WR hours (UTC) — live data: 09,11,12,16 = 0% WR
+    blocked_hours: str = os.getenv("BLOCKED_HOURS", "9,11,12,16")
 
     # ─── Candles ─────────────────────────────────────────────────────────
     # Лимит свечей при запросе OHLCV
@@ -215,7 +217,7 @@ class TradingConfig:
     # Минимальный ATR % (ниже — блок所有 сигналов)
     volatility_min_atr_percent: float = float(os.getenv("VOLATILITY_MIN_ATR_PERCENT", "0.3"))
     # Максимальный ATR % (выше — блок所有 сигналов)
-    volatility_max_atr_percent: float = float(os.getenv("VOLATILITY_MAX_ATR_PERCENT", "5.0"))
+    volatility_max_atr_percent: float = float(os.getenv("VOLATILITY_MAX_ATR_PERCENT", "8.0"))
 
 
 @dataclass
@@ -252,7 +254,7 @@ class LiquidityConfig:
     # Макс. % тела за пределами уровня (от ATR) — фильтр ложных sweep
     sweep_max_body_beyond_level: float = float(os.getenv("SWEEP_MAX_BODY_BEYOND_LEVEL", "0.3"))
     # Мин. % фитиля за пределами уровня (от цены)
-    sweep_min_wick_beyond_level: float = float(os.getenv("SWEEP_MIN_WICK_BEYOND_LEVEL", "0.1"))
+    sweep_min_wick_beyond_level: float = float(os.getenv("SWEEP_MIN_WICK_BEYOND_LEVEL", "0.01"))
     # Мин. % размера тела свечи (от цены)
     sweep_min_body_size: float = float(os.getenv("SWEEP_MIN_BODY_SIZE", "0.05"))
     # Макс. возраст пула в свечах для sweep
@@ -612,7 +614,7 @@ class WaveConfig:
     # Max alternatives to store per count
     max_alternatives: int = int(os.getenv("WAVE_MAX_ALTERNATIVES", "3"))
     # Minimum swing amplitude (ATR multiple) for wave pivot detection
-    min_swing_atr: float = float(os.getenv("WAVE_MIN_SWING_ATR", "0.5"))
+    min_swing_atr: float = float(os.getenv("WAVE_MIN_SWING_ATR", "1.5"))
     # Max lookback candles for wave analysis
     max_lookback: int = int(os.getenv("WAVE_MAX_LOOKBACK", "200"))
 
@@ -652,11 +654,11 @@ class RiskEngineConfig:
     """Risk Engine — Layer 3 capital protection."""
 
     # Minimum R:R ratio (hard gate) — TZ §7.1: min 2.5
-    min_rr_ratio: float = float(os.getenv("RISK_ENGINE_MIN_RR", "2.0"))
+    min_rr_ratio: float = float(os.getenv("RISK_ENGINE_MIN_RR", "2.5"))
     # Absolute SL minimum % (hard gate)
     sl_absolute_min_pct: float = float(os.getenv("RISK_ENGINE_SL_MIN_PCT", "0.25"))
-    # Absolute SL maximum % (hard gate)
-    sl_absolute_max_pct: float = float(os.getenv("RISK_ENGINE_SL_MAX_PCT", "5.0"))
+    # Absolute SL maximum % (hard gate) — live data avg SL=3.69%, max was too loose
+    sl_absolute_max_pct: float = float(os.getenv("RISK_ENGINE_SL_MAX_PCT", "3.0"))
     # Base risk % per trade
     base_risk_pct: float = float(os.getenv("RISK_ENGINE_BASE_RISK_PCT", "1.0"))
     # Minimum risk % (floor)
@@ -715,8 +717,6 @@ class AppConfig:
     session_hard_gate: bool = os.getenv("SESSION_HARD_GATE", "false").lower() == "true"
     # v2.5: Trading sessions (comma-separated: london,ny)
     trading_sessions_str: str = os.getenv("TRADING_SESSIONS", "london,ny")
-    # v2.5: Block all signals when HTF bias is neutral/ranging (no edge)
-    block_neutral_htf: bool = os.getenv("BLOCK_NEUTRAL_HTF", "true").lower() == "true"
     # v2.5: Block SHORT signals when HTF bias is bullish (no edge)
     block_short_in_bullish_htf: bool = os.getenv("BLOCK_SHORT_IN_BULLISH_HTF", "true").lower() == "true"
     # v2.5: Block LONG signals when HTF bias is bearish (no edge)

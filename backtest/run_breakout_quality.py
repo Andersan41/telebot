@@ -183,15 +183,11 @@ async def run_symbol(symbol, timeframe, candles):
             candle_quality = None
 
         _disp_atr = 0.0
-        _reclaim = 0
         if candle_quality and ind.atr and ind.atr > 0:
             _disp_atr = getattr(candle_quality, 'body_atr_ratio', 0.0) or 0.0
-        valid_sw = [s for s in sweeps if s.is_valid] if sweeps else []
-        if valid_sw:
-            _reclaim = valid_sw[0].reclaim_candles
         try:
             structure = analyze_structure(window, lookback=50, sweeps=sweeps,
-                                          displacement_atr=_disp_atr, reclaim_bars=_reclaim,
+                                          displacement_atr=_disp_atr,
                                           atr_value=ind.atr if ind.atr else 0.0)
         except Exception:
             structure = None

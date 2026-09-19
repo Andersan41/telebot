@@ -15,6 +15,12 @@ POSITION_LIMIT_HIT = "position_limit_hit"
 DATA_INTEGRITY_FAIL = "data_integrity_fail"
 VOLATILITY_TOO_LOW = "volatility_too_low"
 VOLATILITY_TOO_HIGH = "volatility_too_high"
+REGIME_BLOCKED = "regime_blocked"
+SCORE_TOO_LOW = "score_too_low"
+SWEEP_CONTINUATION_MISMATCH = "sweep_continuation_mismatch"
+BOS_NO_RETEST = "bos_no_retest"
+SL_STRUCTURAL_TIGHT = "sl_structural_tight"
+TIME_OF_DAY_BLOCKED = "time_of_day_blocked"
 
 # ── Phase 1: Pattern Engine ────────────────────────────────────────
 PATTERN_NO_SETUP = "pattern_no_setup"

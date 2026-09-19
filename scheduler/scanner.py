@@ -90,7 +90,7 @@ _ema_spread_history: dict[str, list[float]] = {}
 # sl_absolute_min/max, max_active_signals, etc.).
 # Required for audit log versioning: signals under different configs
 # are tagged with different config_version for A/B analysis.
-_CONFIG_VERSION = 7  # v7: sweep-only reversals (soft MSS), Trend component for continuations
+_CONFIG_VERSION = 10  # v10: volatility_max_atr=8%, sweep_min_wick=0.01% (H-014)
 
 
 async def _audit_log(
@@ -523,21 +523,15 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                                 f"for sweep at idx={sweep_idx}"
                             )
 
-                # Compute displacement_atr and reclaim for MSS classification
+                # Compute displacement_atr for MSS classification
                 _disp_atr = 0.0
-                _reclaim = 0
                 if candle_quality and ind.atr and ind.atr > 0:
                     _disp_atr = candle_quality.body_atr_ratio if hasattr(candle_quality, 'body_atr_ratio') else 0.0
-                if sweeps:
-                    _valid_sw = [s for s in sweeps if s.is_valid]
-                    if _valid_sw:
-                        _reclaim = _valid_sw[0].reclaim_candles
 
                 structure = analyze_structure(
                     _df_clean, lookback=50,
                     sweeps=sweeps,
                     displacement_atr=_disp_atr,
-                    reclaim_bars=_reclaim,
                     atr_value=ind.atr if ind.atr else 0.0,
                 )
         except Exception as e:
@@ -707,7 +701,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         # Weighted: BOS=2, FVG=1, OB=1. Minimum=2 for entry.
         _conf_score = setup.confirmation_score
         if _conf_score < 2:
-            reason = f"confirmation_score={_conf_score} < min 2 (BOS=2,FVG=1,OB=1)"
+            reason = f"confirmation_score={_conf_score} < min 2 (reversal: Sweep=2,MSS=1,FVG=1,OB=1; continuation: BOS=2,FVG=1,OB=1)"
             _current_funnel.log_gate(symbol, timeframe, "confirmation_score", "BLOCKED", reason)
             trace.blocked("confirmation_score", reason)
             trace.set_version(VERSION, build_config_snapshot())

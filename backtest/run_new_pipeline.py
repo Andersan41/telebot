@@ -380,19 +380,14 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
 
         # MSS classification params
         _disp_atr = 0.0
-        _reclaim = 0
         if candle_quality and ind.atr and ind.atr > 0:
             _disp_atr = candle_quality.body_atr_ratio if hasattr(candle_quality, 'body_atr_ratio') else 0.0
-        valid_sw = [s for s in sweeps if s.is_valid] if sweeps else []
-        if valid_sw:
-            _reclaim = valid_sw[0].reclaim_candles
 
         try:
             structure = analyze_structure(
                 window, lookback=50,
                 sweeps=sweeps,
                 displacement_atr=_disp_atr,
-                reclaim_bars=_reclaim,
                 atr_value=ind.atr if ind.atr else 0.0,
             )
         except Exception:

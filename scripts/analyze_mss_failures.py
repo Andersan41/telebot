@@ -62,17 +62,10 @@ async def analyze(symbol: str, timeframe: str, candles: int = 500):
             if cq and hasattr(cq, 'body_atr_ratio'):
                 _disp_atr = cq.body_atr_ratio if cq.body_atr_ratio else 0.0
 
-            _reclaim = 0
-            if sweeps:
-                _valid_sw = [s for s in sweeps if s.is_valid]
-                if _valid_sw:
-                    _reclaim = _valid_sw[0].reclaim_candles
-
             structure = analyze_structure(
                 window, lookback=50,
                 sweeps=sweeps,
                 displacement_atr=_disp_atr,
-                reclaim_bars=_reclaim,
                 atr_value=atr_val,
             )
 
