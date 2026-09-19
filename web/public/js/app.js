@@ -8,6 +8,11 @@ let priceChart = null;
 let reconnectTimer = null;
 let currentTimeframe = null;
 
+// Wave chart (Lightweight Charts)
+let waveChart = null;
+let waveCandleSeries = null;
+let waveLineSeries = null;
+
 // ── Init ────────────────────────────────────────────
 function connect() {
   socket = new WebSocket(WS_URL);
@@ -40,7 +45,7 @@ function connect() {
 
 // ── Render ──────────────────────────────────────────
 function renderDashboard(data) {
-  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, waves, footprint } = data;
+  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, waves, fundingRate, candleHistory, waveOverlay, breakoutQuality } = data;
 
   if (error) {
     updateStatus(`Ошибка: ${error}`);
@@ -56,11 +61,17 @@ function renderDashboard(data) {
   if (structure) renderSMC(structure, liquidity);
   if (priceHistory) updatePriceChart(priceHistory);
   if (openInterest) renderOpenInterest(openInterest);
+  if (fundingRate != null) renderFundingRate(fundingRate);
   if (volumeProfile) renderVolumeProfile(volumeProfile, price);
   if (bookAnomalies) renderBookAnomalies(bookAnomalies);
   if (waves) renderWaves(waves, price);
+  if (breakoutQuality) renderBreakoutQuality(breakoutQuality);
 
-  if (footprint) footprintChart.updateFromData(footprint);
+  // Wave chart: init + update
+  if (candleHistory && candleHistory.length > 0) {
+    if (!waveChart) initWaveChart();
+    updateWaveChart(candleHistory, waveOverlay, waves);
+  }
 
   renderVerdictFromSignal(signal, indicators);
 }
@@ -338,44 +349,30 @@ function updatePriceChart(history) {
   }
 }
 
-// ── Open Interest ──────────────────────────────────
+// ── Open Interest (compact) ────────────────────────
 function renderOpenInterest(oi) {
-  const value = oi.current || 0;
-  const change = oi.change_pct || 0;
-  const trend = oi.trend || 'none';
-
-  setText('val-oi', value > 1000000 ? (value / 1000000).toFixed(2) + 'M' : value > 1000 ? (value / 1000).toFixed(1) + 'K' : value.toFixed(0));
-
-  const changeEl = document.getElementById('oi-change');
-  if (changeEl) {
-    const sign = change >= 0 ? '+' : '';
-    changeEl.textContent = `${sign}${change.toFixed(1)}%`;
-    changeEl.className = `oi-change ${change > 0 ? 'bull' : change < 0 ? 'bear' : 'neu'}`;
+  const val = oi.value || oi.current || 0;
+  const delta = oi.delta_pct || oi.change_pct || 0;
+  const el = document.getElementById('oiValue');
+  if (el) {
+    const formatted = val > 1e6 ? (val / 1e6).toFixed(2) + 'M' : val > 1e3 ? (val / 1e3).toFixed(1) + 'K' : val.toFixed(2);
+    el.textContent = formatted;
   }
-
-  const trendEl = document.getElementById('oi-trend');
-  if (trendEl) {
-    const trendMap = { increasing: 'Растёт', decreasing: 'Снижается', stable: 'Стабилен' };
-    trendEl.textContent = trendMap[trend] || '—';
-    trendEl.className = `oi-detail-value ${trend === 'increasing' ? 'bull' : trend === 'decreasing' ? 'bear' : 'neu'}`;
+  const deltaEl = document.getElementById('oiDelta');
+  if (deltaEl && delta !== 0) {
+    const sign = delta > 0 ? '+' : '';
+    deltaEl.textContent = `${sign}${delta.toFixed(1)}%`;
+    deltaEl.className = `deriv-delta ${delta > 0 ? 'bull' : 'bear'}`;
   }
+}
 
-  setText('oi-value-usd', oi.value_usd ? '$' + formatLargeNumber(oi.value_usd) : '—');
-
-  const badge = document.getElementById('badge-oi');
-  if (badge) {
-    const badgeInfo = change > 5 ? { text: 'Рост', cls: 'badge-bull' }
-      : change < -5 ? { text: 'Снижение', cls: 'badge-bear' }
-      : { text: 'Стабильно', cls: 'badge-neu' };
-    badge.textContent = badgeInfo.text;
-    badge.className = `badge ${badgeInfo.cls}`;
-  }
-
-  const bar = document.getElementById('bar-oi');
-  if (bar) {
-    const pct = clamp(50 + change * 3, 0, 100);
-    bar.className = `bar-fill ${change > 0 ? 'bar-green' : change < 0 ? 'bar-red' : 'bar-orange'}`;
-    bar.style.width = pct + '%';
+// ── Funding Rate (compact) ────────────────────────
+function renderFundingRate(rate) {
+  const el = document.getElementById('frValue');
+  if (el) {
+    const pct = typeof rate === 'number' ? rate : parseFloat(rate);
+    el.textContent = isNaN(pct) ? '—' : pct.toFixed(4) + '%';
+    el.className = 'deriv-value ' + (pct > 0.01 ? 'bear' : pct < -0.01 ? 'bull' : '');
   }
 }
 
@@ -384,11 +381,11 @@ function renderVolumeProfile(vp, currentPrice) {
   setText('vp-poc', vp.poc ? '$' + formatPrice(vp.poc) : '—');
   setText('vp-vah', vp.vah ? '$' + formatPrice(vp.vah) : '—');
   setText('vp-val', vp.val ? '$' + formatPrice(vp.val) : '—');
+  setText('vp-in-va', vp.price_in_va ? 'Да' : 'Нет');
 
   const container = document.getElementById('vp-histogram');
   if (!container || !vp.profile || vp.profile.length === 0) return;
 
-  const maxPct = Math.max(...vp.profile.map(p => p.pct), 1);
   const pocPrice = vp.poc || 0;
 
   container.innerHTML = vp.profile.slice().reverse().map(bar => {
@@ -401,6 +398,21 @@ function renderVolumeProfile(vp, currentPrice) {
 
     return `<div class="${cls}" style="width:${bar.pct}%" title="$${formatPrice(bar.price)}: ${bar.volume}"></div>`;
   }).join('');
+}
+
+// ── Breakout Quality ───────────────────────────────
+function renderBreakoutQuality(bq) {
+  const verdictColors = { real: '#4caf50', fake: '#f44336', ambiguous: '#ff9800' };
+  setText('bq-verdict', bq.verdict || '—');
+  const verdictEl = document.getElementById('bq-verdict');
+  if (verdictEl && bq.verdict) {
+    verdictEl.style.color = verdictColors[bq.verdict] || '#fff';
+  }
+  setText('bq-direction', bq.direction || '—');
+  setText('bq-score', bq.score != null ? bq.score.toFixed(1) : '—');
+  setText('bq-body', bq.body_pct != null ? bq.body_pct.toFixed(1) + '%' : '—');
+  setText('bq-retention', bq.retention_pct != null ? bq.retention_pct.toFixed(1) + '%' : '—');
+  setText('bq-volume', bq.volume_ratio != null ? bq.volume_ratio.toFixed(1) + 'x' : '—');
 }
 
 // ── Book Anomalies ─────────────────────────────────
@@ -506,16 +518,34 @@ function renderWaves(waves, currentPrice) {
     conflictHtml = `<div class="wave-conflict-block">⚠️ <span class="wave-conflict-title">Конфликт:</span> ${details}</div>`;
   }
 
-  // Alternatives with direction info and target
+  // Alternatives with direction info, target, and highlighted current wave
   let altHtml = '';
   if (waves.alternatives.length > 0) {
     const altItems = waves.alternatives.map(a => {
       const aDirEmoji = a.direction === 'impulse' ? '🟢' : '🔵';
+      const aDirCls = a.direction === 'impulse' ? 'wave-alt-impulse' : 'wave-alt-correction';
       const aConf = Math.round(a.confidence * 100);
       const aTarget = a.target ? formatPrice(a.target) : '—';
-      return `${aDirEmoji} ${a.label} <span class="wave-alt-conf">(${aConf}%) → ${aTarget}</span>`;
-    }).join('<br>');
-    altHtml = `<div class="wave-alt-block"><span class="wave-alt-label">Альтернативы:</span><br>${altItems}</div>`;
+
+      // Split: "impulse (1-2-3-4-5)" → prefix + wavesPart
+      let prefix = a.label;
+      let wavesPart = '';
+      if (a.label.includes('(')) {
+        const idx = a.label.indexOf('(');
+        prefix = a.label.substring(0, idx);
+        wavesPart = a.label.substring(idx + 1, a.label.length - 1); // "1-2-3-4-5"
+      }
+
+      // Highlight wave labels that match current phase from primary
+      let highlightedWaves = wavesPart;
+      if (wavesPart) {
+        const waves = wavesPart.split('-');
+        highlightedWaves = '(' + waves.map(w => curSet.has(w) ? `<span class="${aDirCls}-phase"><b>${w}</b></span>` : `<span class="${aDirCls}-phase">${w}</span>`).join('-') + ')';
+      }
+
+      return `<div class="wave-alt-item">${aDirEmoji} ${prefix}${highlightedWaves} <span class="wave-alt-conf">(${aConf}%) → ${aTarget}</span></div>`;
+    }).join('');
+    altHtml = `<div class="wave-alt-block"><span class="wave-alt-label">Альтернативы:</span>${altItems}</div>`;
   }
 
   el.innerHTML = `
@@ -525,6 +555,105 @@ function renderWaves(waves, currentPrice) {
     ${conflictHtml}
     ${altHtml}
   `;
+}
+
+// ── Wave Chart (Lightweight Charts) ────────────────
+function initWaveChart() {
+  const el = document.getElementById('waveChart');
+  const wrap = document.getElementById('waveChartWrap');
+  if (!el || !wrap || waveChart) return;
+
+  waveChart = LightweightCharts.createChart(el, {
+    width: wrap.clientWidth,
+    height: wrap.clientHeight || 250,
+    layout: { background: { color: '#0d0d0d' }, textColor: '#888' },
+    grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
+    timeScale: { timeVisible: true, secondsVisible: false },
+    crosshair: { mode: 0 },
+  });
+
+  waveCandleSeries = waveChart.addCandlestickSeries({
+    upColor: '#a3e635',
+    downColor: '#f87171',
+    borderUpColor: '#a3e635',
+    borderDownColor: '#f87171',
+    wickUpColor: '#a3e635',
+    wickDownColor: '#f87171',
+  });
+
+  waveLineSeries = waveChart.addLineSeries({
+    color: '#facc15',
+    lineWidth: 2,
+    lastValueVisible: false,
+    priceLineVisible: false,
+  });
+
+  // Resize
+  new ResizeObserver(() => {
+    if (waveChart) {
+      waveChart.applyOptions({ width: wrap.clientWidth });
+    }
+  }).observe(wrap);
+}
+
+function updateWaveChart(candles, waveOverlay, waves) {
+  if (!waveCandleSeries) return;
+  if (!candles || candles.length === 0) return;
+
+  waveCandleSeries.setData(candles);
+
+  // Wave lines: соединяем start→end для каждого сегмента
+  if (waveOverlay && waveOverlay.length > 0) {
+    const lineData = [];
+    for (const seg of waveOverlay) {
+      if (seg.start_time && seg.end_time) {
+        lineData.push({ time: seg.start_time, value: seg.start_price });
+        lineData.push({ time: seg.end_time, value: seg.end_price });
+      }
+    }
+    // Deduplicate by time (keep last value for each timestamp)
+    const byTime = new Map();
+    for (const pt of lineData) {
+      byTime.set(pt.time, pt.value);
+    }
+    const sorted = Array.from(byTime.entries())
+      .map(([time, value]) => ({ time, value }))
+      .sort((a, b) => a.time - b.time);
+    waveLineSeries.setData(sorted);
+  } else {
+    waveLineSeries.setData([]);
+  }
+
+  // Wave markers на candleSeries
+  if (waves && waves.primary && waves.primary.points) {
+    const markers = waves.primary.points
+      .filter(pt => pt.time != null)
+      .map(pt => {
+        const isUp = waves.primary.price_direction === 'bullish';
+        const labelNum = parseInt(pt.label);
+        let shape = 'circle';
+        let color = '#facc15';
+        if (!isNaN(labelNum) && labelNum % 2 === 1) {
+          // Impulse waves (1,3,5) — arrows
+          shape = isUp ? 'arrowUp' : 'arrowDown';
+          color = '#a3e635';
+        } else if (!isNaN(labelNum) && labelNum % 2 === 0) {
+          // Correction waves (2,4) — arrows opposite
+          shape = isUp ? 'arrowDown' : 'arrowUp';
+          color = '#f87171';
+        }
+        return {
+          time: pt.time,
+          position: 'aboveBar',
+          color,
+          shape,
+          text: pt.label,
+        };
+      });
+    waveCandleSeries.setMarkers(markers);
+  }
+
+  waveChart.timeScale().fitContent();
 }
 
 // ── Utils для нового функционала ───────────────────
@@ -689,7 +818,6 @@ async function fetchOpenTrades() {
 
 // ── Tab switching ─────────────────────────────────
 let currentTab = 'dashboard';
-let footprintInited = false;
 let sandboxInited = false;
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -702,212 +830,17 @@ function switchTab(tab) {
 
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.getElementById('tab-dashboard')?.classList.toggle('hidden', tab !== 'dashboard');
-  document.getElementById('tab-footprint')?.classList.toggle('hidden', tab !== 'footprint');
+  document.getElementById('tab-scan')?.classList.toggle('hidden', tab !== 'scan');
   document.getElementById('tab-sandbox')?.classList.toggle('hidden', tab !== 'sandbox');
 
-  if (tab === 'footprint' && !footprintInited) {
-    footprintInited = true;
-    footprintChart.init();
-  }
-  if (tab === 'footprint') {
-    footprintChart.draw();
+  if (tab === 'scan') {
+    loadScanStats();
   }
   if (tab === 'sandbox' && !sandboxInited) {
     sandboxInited = true;
     sandboxModule.init();
   }
 }
-
-// ── Footprint Chart ─────────────────────────────
-const footprintChart = (() => {
-  const COL_W = 92;
-  const PAD_L = 64;
-  const PAD_TOP = 14;
-  const PAD_BOTTOM = 14;
-
-  let canvas, ctx, chartWrap;
-  let thresholdInput, minStackInput, thresholdValEl, minStackValEl;
-  let bullCountEl, bearCountEl;
-  let LEVEL_H = 20;
-  let fpData = null;
-
-  function computeImbalance(levels, thresholdPct) {
-    for (let i = 0; i < levels.length; i++) {
-      levels[i].buyImb = false;
-      levels[i].sellImb = false;
-    }
-    for (let i = 1; i < levels.length; i++) {
-      const ratioBuy = levels[i].ask / Math.max(0.0001, levels[i - 1].bid) * 100;
-      if (ratioBuy >= thresholdPct) levels[i].buyImb = true;
-    }
-    for (let i = 0; i < levels.length - 1; i++) {
-      const ratioSell = levels[i].bid / Math.max(0.0001, levels[i + 1].ask) * 100;
-      if (ratioSell >= thresholdPct) levels[i].sellImb = true;
-    }
-  }
-
-  function findStacks(levels, minStack) {
-    const stacks = [];
-    let i = 0;
-    while (i < levels.length) {
-      if (levels[i].buyImb) {
-        let j = i; while (j < levels.length && levels[j].buyImb) j++;
-        if (j - i >= minStack) stacks.push({ type: 'buy', from: i, to: j - 1 });
-        i = j;
-      } else if (levels[i].sellImb) {
-        let j = i; while (j < levels.length && levels[j].sellImb) j++;
-        if (j - i >= minStack) stacks.push({ type: 'sell', from: i, to: j - 1 });
-        i = j;
-      } else i++;
-    }
-    return stacks;
-  }
-
-  function layout(levels) {
-    const thresholdPct = +thresholdInput.value;
-    const minStack = +minStackInput.value;
-
-    computeImbalance(levels, thresholdPct);
-    const stacks = findStacks(levels, minStack);
-
-    if (levels.length === 0) return { totalTicks: 0, width: 0, height: 0, stacks };
-
-    const minP = levels[0].price;
-    const maxP = levels[levels.length - 1].price;
-    const tickSize = fpData?.tickSize || 0.01;
-    const totalTicks = Math.round((maxP - minP) / tickSize) + 1;
-    const availH = chartWrap.clientHeight - PAD_TOP - PAD_BOTTOM || 420;
-    LEVEL_H = Math.max(14, Math.min(22, Math.floor(availH / Math.max(totalTicks, 8))));
-    const width = PAD_L + COL_W + 20;
-    const height = PAD_TOP + totalTicks * LEVEL_H + PAD_BOTTOM;
-    canvas.width = width * devicePixelRatio;
-    canvas.height = height * devicePixelRatio;
-    canvas.style.width = width + 'px';
-    canvas.style.height = height + 'px';
-    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-    return { minP, totalTicks, width, height, stacks, tickSize };
-  }
-
-  function draw() {
-    if (!canvas || !fpData || !fpData.levels || fpData.levels.length === 0) return;
-
-    const levels = fpData.levels;
-    const { minP, totalTicks, width, height, stacks, tickSize } = layout(levels);
-    if (totalTicks === 0) return;
-
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = '#111';
-    ctx.fillRect(0, 0, width, height);
-
-    function yFor(price) {
-      const ticksFromBottom = Math.round((price - minP) / tickSize);
-      const rowFromTop = totalTicks - 1 - ticksFromBottom;
-      return PAD_TOP + rowFromTop * LEVEL_H;
-    }
-
-    // grid + price axis
-    ctx.strokeStyle = '#1a1a1a';
-    ctx.lineWidth = 1;
-    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillStyle = '#555';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    const step = LEVEL_H < 16 ? 8 : 4;
-    for (let t = 0; t < totalTicks; t += step) {
-      const price = minP + t * tickSize;
-      const y = yFor(price) + LEVEL_H / 2;
-      ctx.beginPath();
-      ctx.moveTo(PAD_L - 6, y);
-      ctx.lineTo(width, y);
-      ctx.stroke();
-      ctx.fillText(price.toFixed(2), PAD_L - 10, y);
-    }
-
-    // single bar
-    const x = PAD_L;
-    const barLevels = new Map();
-    levels.forEach(lv => barLevels.set(lv.price, lv));
-
-    levels.forEach(lv => {
-      const y = yFor(lv.price);
-      ctx.fillStyle = lv.ask >= lv.bid ? 'rgba(163,230,53,0.08)' : 'rgba(248,113,113,0.08)';
-      ctx.fillRect(x + 2, y + 1, COL_W - 4, LEVEL_H - 2);
-
-      ctx.strokeStyle = '#1e1e1e';
-      ctx.beginPath();
-      ctx.moveTo(x + COL_W / 2, y + 1);
-      ctx.lineTo(x + COL_W / 2, y + LEVEL_H - 1);
-      ctx.stroke();
-
-      ctx.font = (LEVEL_H < 16 ? '9px' : '10.5px') + ' ui-monospace, SFMono-Regular, Menlo, monospace';
-      ctx.textBaseline = 'middle';
-
-      ctx.fillStyle = lv.sellImb ? '#f87171' : '#888';
-      ctx.textAlign = 'right';
-      ctx.fillText(formatVol(lv.bid), x + COL_W / 2 - 6, y + LEVEL_H / 2);
-
-      ctx.fillStyle = lv.buyImb ? '#a3e635' : '#888';
-      ctx.textAlign = 'left';
-      ctx.fillText(formatVol(lv.ask), x + COL_W / 2 + 6, y + LEVEL_H / 2);
-    });
-
-    // stack frames
-    stacks.forEach(s => {
-      const top = levels[s.to];
-      const bottom = levels[s.from];
-      const yTop = yFor(top.price);
-      const yBottom = yFor(bottom.price) + LEVEL_H;
-      ctx.fillStyle = s.type === 'buy' ? 'rgba(163,230,53,0.08)' : 'rgba(248,113,113,0.08)';
-      ctx.strokeStyle = '#facc15';
-      ctx.lineWidth = 1.5;
-      ctx.fillRect(x + 1, yTop, COL_W - 2, yBottom - yTop);
-      ctx.strokeRect(x + 1, yTop, COL_W - 2, yBottom - yTop);
-    });
-
-    // counters
-    let bull = 0, bear = 0;
-    stacks.forEach(s => s.type === 'buy' ? bull++ : bear++);
-    bullCountEl.textContent = bull;
-    bearCountEl.textContent = bear;
-  }
-
-  function formatVol(v) {
-    if (v >= 1000) return (v / 1000).toFixed(1) + 'K';
-    if (v >= 1) return v.toFixed(1);
-    return v.toFixed(4);
-  }
-
-  function updateFromData(data) {
-    fpData = data;
-    draw();
-  }
-
-  function init() {
-    canvas = document.getElementById('fpChart');
-    if (!canvas) return;
-    ctx = canvas.getContext('2d');
-    chartWrap = document.getElementById('fpChartWrap');
-    thresholdInput = document.getElementById('fpThreshold');
-    minStackInput = document.getElementById('fpMinStack');
-    thresholdValEl = document.getElementById('fpThresholdVal');
-    minStackValEl = document.getElementById('fpMinStackVal');
-    bullCountEl = document.getElementById('fpBullCount');
-    bearCountEl = document.getElementById('fpBearCount');
-
-    thresholdInput.addEventListener('input', () => {
-      thresholdValEl.textContent = thresholdInput.value + '%';
-      draw();
-    });
-    minStackInput.addEventListener('input', () => {
-      minStackValEl.textContent = minStackInput.value + ' уровня';
-      draw();
-    });
-
-    window.addEventListener('resize', () => { if (currentTab === 'footprint') draw(); });
-  }
-
-  return { init, draw, updateFromData };
-})();
 
 // ── Sandbox: Signal Logic Visualization ────────────
 const sandboxModule = (() => {
@@ -1205,6 +1138,120 @@ const sandboxModule = (() => {
       return '—';
     }
   }
+
+  // ── Scan Engine ─────────────────────────────────────────────
+  async function loadScanStats() {
+    const hours = document.getElementById('scanHours')?.value || 24;
+    try {
+      const resp = await fetch(`/api/scan-stats?hours=${hours}`);
+      const data = await resp.json();
+      renderScanStats(data);
+    } catch (e) {
+      console.error('Scan stats error:', e);
+    }
+  }
+
+  function renderScanStats(data) {
+    const totalEl = document.getElementById('scanTotal');
+    const sentEl = document.getElementById('scanSent');
+    const lastEl = document.getElementById('scanLastTs');
+    const verEl = document.getElementById('scanConfigVer');
+    const funnelEl = document.getElementById('scanFunnel');
+    const reasonsEl = document.getElementById('scanReasons');
+
+    if (totalEl) totalEl.textContent = data.total_entries ?? '—';
+    if (verEl) verEl.textContent = data.config_version ?? '—';
+
+    // Find "sent" from stage data (passed=TRUE at final stage)
+    const stages = data.stages || {};
+    let sentCount = 0;
+    if (stages['risk_engine']) sentCount = stages['risk_engine'].passed || 0;
+    if (sentEl) sentEl.textContent = sentCount;
+
+    // Last scan
+    if (lastEl) {
+      if (data.last_scan_ts) {
+        const d = new Date(data.last_scan_ts);
+        const now = new Date();
+        const diffMin = Math.round((now - d) / 60000);
+        lastEl.textContent = diffMin < 1 ? 'just now' : diffMin < 60 ? `${diffMin}m ago` : `${Math.round(diffMin/60)}h ago`;
+      } else {
+        lastEl.textContent = 'no scans';
+      }
+    }
+
+    // Funnel
+    if (funnelEl) {
+      const stageOrder = [
+        'cooldown', 'portfolio_risk', 'daily_limits', 'position_limits',
+        'indicators', 'volatility_filter', 'pattern_engine', 'score_gate',
+        'displacement_gate', 'mss_gate', 'bos_gate', 'confirmation_score',
+        'htf_bias', 'trade_plan', 'entry_trigger', 'probability_engine',
+        'risk_engine', 'dedup', 'spread', 'depth', 'correlated_entry',
+      ];
+      const stageLabels = {
+        cooldown: 'Cooldown', portfolio_risk: 'Portfolio Risk', daily_limits: 'Daily Limits',
+        position_limits: 'Position Limits', indicators: 'Indicators', volatility_filter: 'Volatility',
+        pattern_engine: 'Pattern Engine', score_gate: 'Score Gate',
+        displacement_gate: 'Displacement', mss_gate: 'MSS', bos_gate: 'BOS',
+        confirmation_score: 'Confirmation', htf_bias: 'HTF Bias', trade_plan: 'Trade Plan',
+        entry_trigger: 'Entry Trigger', probability_engine: 'Probability',
+        risk_engine: 'Risk Engine', dedup: 'Dedup', spread: 'Spread',
+        depth: 'Depth', correlated_entry: 'Correlated',
+      };
+
+      // Only show stages that have data
+      const activeStages = stageOrder.filter(s => stages[s]);
+      if (activeStages.length === 0) {
+        funnelEl.innerHTML = '<div class="scan-funnel-empty">No audit data for this period</div>';
+      } else {
+        const maxTotal = Math.max(...activeStages.map(s => {
+          const st = stages[s];
+          return (st.passed || 0) + (st.blocked || 0);
+        }), 1);
+
+        funnelEl.innerHTML = activeStages.map(stage => {
+          const st = stages[stage];
+          const pass = st.passed || 0;
+          const block = st.blocked || 0;
+          const total = pass + block;
+          const passPct = (pass / maxTotal * 100).toFixed(1);
+          const blockPct = (block / maxTotal * 100).toFixed(1);
+          const label = stageLabels[stage] || stage;
+          return `<div class="scan-funnel-row">
+            <div class="scan-funnel-label">${label}</div>
+            <div class="scan-funnel-bar-wrap">
+              <div class="scan-funnel-bar-pass" style="width:${passPct}%"></div>
+              <div class="scan-funnel-bar-block" style="width:${blockPct}%"></div>
+            </div>
+            <div class="scan-funnel-count"><span class="pass">${pass}</span> / <span class="block">${block}</span></div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Top rejection reasons
+    if (reasonsEl) {
+      const reasons = data.top_rejection_reasons || [];
+      if (reasons.length === 0) {
+        reasonsEl.innerHTML = '<div class="scan-funnel-empty">No rejections</div>';
+      } else {
+        const maxCount = Math.max(...reasons.map(r => r.count), 1);
+        reasonsEl.innerHTML = `<div class="scan-reasons-list">${reasons.map(r => {
+          const pct = (r.count / maxCount * 100).toFixed(0);
+          return `<div class="scan-reason-row">
+            <div class="scan-reason-code" title="${r.reason}">${r.reason}</div>
+            <div class="scan-reason-bar"><div class="scan-reason-bar-fill" style="width:${pct}%"></div></div>
+            <div class="scan-reason-count">${r.count}</div>
+          </div>`;
+        }).join('')}</div>`;
+      }
+    }
+  }
+
+  // Bind refresh button
+  document.getElementById('scanRefreshBtn')?.addEventListener('click', loadScanStats);
+  document.getElementById('scanHours')?.addEventListener('change', loadScanStats);
 
   return { init };
 })();

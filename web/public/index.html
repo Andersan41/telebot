@@ -21,7 +21,7 @@
     <!-- Tab bar -->
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
-      <button class="tab-btn" data-tab="footprint">Footprint</button>
+      <button class="tab-btn" data-tab="scan">Scan Engine</button>
       <button class="tab-btn" data-tab="sandbox">Signal Logic</button>
     </div>
 
@@ -41,27 +41,33 @@
       </div>
     </div>
 
-    <!-- Signal card -->
+    <!-- Signal card (compact) -->
     <div class="signal-card no" id="signalCard">
-      <div class="signal-header">
+      <div class="signal-row">
         <span class="signal-type no" id="signalType">ОЖИДАНИЕ...</span>
-        <span id="signalScore" style="font-size:12px;color:#555;">Score: —</span>
-      </div>
-      <div class="signal-details">
-        <div class="signal-detail">
-          <div class="signal-detail-label">Вход</div>
-          <div class="signal-detail-value" id="signalEntry">—</div>
-        </div>
-        <div class="signal-detail">
-          <div class="signal-detail-label">Stop Loss</div>
-          <div class="signal-detail-value" id="signalSL">—</div>
-        </div>
-        <div class="signal-detail">
-          <div class="signal-detail-label">Take Profit</div>
-          <div class="signal-detail-value" id="signalTP">—</div>
-        </div>
+        <span class="signal-score" id="signalScore">Score: —</span>
+        <span class="signal-sep">|</span>
+        <span class="signal-field">Вход <b id="signalEntry">—</b></span>
+        <span class="signal-sep">|</span>
+        <span class="signal-field">SL <b id="signalSL">—</b></span>
+        <span class="signal-sep">|</span>
+        <span class="signal-field">TP <b id="signalTP">—</b></span>
       </div>
       <div class="signal-reasons" id="signalReasons"></div>
+    </div>
+
+    <!-- Derivatives row: OI + Funding -->
+    <div class="deriv-row">
+      <div class="deriv-card" id="oiCard">
+        <div class="deriv-label">Open Interest</div>
+        <div class="deriv-value" id="oiValue">—</div>
+        <div class="deriv-delta" id="oiDelta"></div>
+      </div>
+      <div class="deriv-card" id="frCard">
+        <div class="deriv-label">Funding Rate</div>
+        <div class="deriv-value" id="frValue">—</div>
+        <div class="deriv-sub" id="frSub">8h swap</div>
+      </div>
     </div>
 
     <!-- Indicators: 6 cards -->
@@ -166,6 +172,64 @@
       <div id="wave-info">
         <div class="wave-empty">Wave: disabled</div>
       </div>
+      <div class="wave-chart-wrap" id="waveChartWrap">
+        <div id="waveChart"></div>
+      </div>
+    </div>
+
+    <!-- Volume Profile -->
+    <div class="card">
+      <div class="card-label">Volume Profile</div>
+      <div class="vp-stats">
+        <div class="vp-stat">
+          <div class="vp-stat-label">POC</div>
+          <div class="vp-stat-value" id="vp-poc">—</div>
+        </div>
+        <div class="vp-stat">
+          <div class="vp-stat-label">VAH</div>
+          <div class="vp-stat-value" id="vp-vah">—</div>
+        </div>
+        <div class="vp-stat">
+          <div class="vp-stat-label">VAL</div>
+          <div class="vp-stat-value" id="vp-val">—</div>
+        </div>
+        <div class="vp-stat">
+          <div class="vp-stat-label">В зоне VA</div>
+          <div class="vp-stat-value" id="vp-in-va">—</div>
+        </div>
+      </div>
+      <div class="vp-histogram" id="vp-histogram"></div>
+    </div>
+
+    <!-- Breakout Quality -->
+    <div class="card">
+      <div class="card-label">Breakout Quality</div>
+      <div class="bq-stats">
+        <div class="bq-stat">
+          <div class="bq-stat-label">Вердикт</div>
+          <div class="bq-stat-value" id="bq-verdict">—</div>
+        </div>
+        <div class="bq-stat">
+          <div class="bq-stat-label">Направление</div>
+          <div class="bq-stat-value" id="bq-direction">—</div>
+        </div>
+        <div class="bq-stat">
+          <div class="bq-stat-label">Score</div>
+          <div class="bq-stat-value" id="bq-score">—</div>
+        </div>
+        <div class="bq-stat">
+          <div class="bq-stat-label">Body %</div>
+          <div class="bq-stat-value" id="bq-body">—</div>
+        </div>
+        <div class="bq-stat">
+          <div class="bq-stat-label">Retention</div>
+          <div class="bq-stat-value" id="bq-retention">—</div>
+        </div>
+        <div class="bq-stat">
+          <div class="bq-stat-label">Volume Ratio</div>
+          <div class="bq-stat-value" id="bq-volume">—</div>
+        </div>
+      </div>
     </div>
 
     <!-- Timeframe picker -->
@@ -203,40 +267,55 @@
 
     </div><!-- /tab-dashboard -->
 
-    <!-- Footprint tab -->
-    <div class="tab-content hidden" id="tab-footprint">
-      <div class="fp-header">
-        <div>
-          <div class="fp-title">Stacked Imbalance — order flow monitor</div>
-          <div class="fp-subtitle">Футпринт-график: диагональное сравнение объёма покупок/продаж по соседним ценовым уровням, подсветка зон имбаланса.</div>
-        </div>
-        <div class="fp-controls">
-          <div class="fp-field">
-            <label>Порог имбаланса</label>
-            <input type="range" id="fpThreshold" min="150" max="500" step="25" value="300">
-            <span class="fp-field-val mono" id="fpThresholdVal">300%</span>
-          </div>
-          <div class="fp-field">
-            <label>Мин. длина стека</label>
-            <input type="range" id="fpMinStack" min="2" max="6" step="1" value="3">
-            <span class="fp-field-val mono" id="fpMinStackVal">3 уровня</span>
-          </div>
+    <!-- Scan Engine tab -->
+    <div class="tab-content hidden" id="tab-scan">
+      <div class="scan-header">
+        <div class="scan-title">Scan Engine — Funnel Statistics</div>
+        <div class="scan-controls">
+          <select id="scanHours" class="scan-select">
+            <option value="1">1 hour</option>
+            <option value="6">6 hours</option>
+            <option value="24" selected>24 hours</option>
+            <option value="72">3 days</option>
+            <option value="168">7 days</option>
+          </select>
+          <button id="scanRefreshBtn" class="scan-btn">Refresh</button>
         </div>
       </div>
-      <div class="fp-stage">
-        <div class="fp-chart-wrap" id="fpChartWrap">
-          <canvas id="fpChart"></canvas>
+
+      <!-- Summary cards -->
+      <div class="scan-summary">
+        <div class="scan-card">
+          <div class="scan-card-label">Total Entries</div>
+          <div class="scan-card-value mono" id="scanTotal">—</div>
+        </div>
+        <div class="scan-card">
+          <div class="scan-card-label">Signals Sent</div>
+          <div class="scan-card-value mono accent" id="scanSent">—</div>
+        </div>
+        <div class="scan-card">
+          <div class="scan-card-label">Last Scan</div>
+          <div class="scan-card-value mono" id="scanLastTs" style="font-size:12px">—</div>
+        </div>
+        <div class="scan-card">
+          <div class="scan-card-label">Config Version</div>
+          <div class="scan-card-value mono" id="scanConfigVer">—</div>
         </div>
       </div>
-      <div class="fp-footer">
-        <div class="fp-legend">
-          <div class="fp-legend-item"><span class="fp-swatch fp-swatch-buy"></span>покупатели доминируют</div>
-          <div class="fp-legend-item"><span class="fp-swatch fp-swatch-sell"></span>продавцы доминируют</div>
-          <div class="fp-legend-item"><span class="fp-swatch fp-swatch-amber"></span>стек имбалансов</div>
+
+      <!-- Funnel chart -->
+      <div class="scan-section">
+        <div class="scan-section-title">Pipeline Funnel</div>
+        <div class="scan-funnel" id="scanFunnel">
+          <div class="scan-funnel-empty">Loading...</div>
         </div>
-        <div class="fp-stats">
-          <div class="fp-stat fp-stat-buy"><div class="fp-stat-n mono" id="fpBullCount">0</div><div class="fp-stat-l">бычьих стеков</div></div>
-          <div class="fp-stat fp-stat-sell"><div class="fp-stat-n mono" id="fpBearCount">0</div><div class="fp-stat-l">медвежьих стеков</div></div>
+      </div>
+
+      <!-- Top rejection reasons -->
+      <div class="scan-section">
+        <div class="scan-section-title">Top Rejection Reasons</div>
+        <div class="scan-reasons" id="scanReasons">
+          <div class="scan-funnel-empty">Loading...</div>
         </div>
       </div>
     </div>

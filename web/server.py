@@ -23,6 +23,9 @@ _client_symbols: Dict[web.WebSocketResponse, str] = {}
 _client_tfs: Dict[web.WebSocketResponse, str] = {}
 _broadcast_task: Optional[asyncio.Task] = None
 
+# Cache for OI/Funding (updated every 60s in background)
+_deriv_cache: Dict[str, Dict[str, Any]] = {}  # {symbol: {"oi": ..., "fr": ..., "ts": ...}}
+
 
 async def _fetch_candles(symbol: str, timeframe: str, limit: int = 200):
     """Получить свечи через exchange_client (sync в executor)."""
@@ -92,7 +95,7 @@ def _compute_structure(df, symbol: str, timeframe: str) -> Dict[str, Any]:
 
 
 def _compute_liquidity(df, symbol: str, timeframe: str) -> Dict[str, Any]:
-    """Рассчитать ликвидность (sweeps, OB, FVG)."""
+    """Рассчитать ликвидность (sweeps, OB, FVG, breakout quality)."""
     from liquidity.order_blocks import detect_order_blocks
     from liquidity.fvg import detect_fvg
     from liquidity.sweep import detect_sweeps
@@ -101,7 +104,7 @@ def _compute_liquidity(df, symbol: str, timeframe: str) -> Dict[str, Any]:
     fvgs = detect_fvg(df)
     sweeps = detect_sweeps(df)
 
-    return {
+    result = {
         "order_blocks": [
             {"type": getattr(ob, "type", ""), "price": round(getattr(ob, "midpoint", 0), 2)}
             for ob in (obs[-3:] if obs else [])
@@ -115,6 +118,8 @@ def _compute_liquidity(df, symbol: str, timeframe: str) -> Dict[str, Any]:
             "type": getattr(sweeps[-1], "type", "") if sweeps else "",
         } if sweeps else {"detected": False, "type": ""},
     }
+
+    return result
 
 
 def _compute_sr_levels(df, symbol: str, timeframe: str) -> Dict[str, Any]:
@@ -211,8 +216,16 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
         sr_levels = _compute_sr_levels(df, symbol, tf)
         signal_info = _compute_signal_light(df, symbol, tf)
 
-        # Footprint (order book snapshot)
-        footprint = await _compute_footprint(symbol)
+        # Footprint removed — scan engine tab replaced it
+        footprint = None
+
+        # Open Interest + Funding Rate (from cache, non-blocking)
+        oi_data = None
+        funding_rate = None
+        cached = _deriv_cache.get(symbol)
+        if cached:
+            oi_data = cached.get("oi")
+            funding_rate = cached.get("fr")
 
         # Wave analysis (soft feature)
         wave_data = None
@@ -225,6 +238,50 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             except Exception as e:
                 logger.debug(f"Wave analysis failed for {symbol}/{tf}: {e}")
 
+        # Volume Profile (POC/VAH/VAL)
+        volume_profile = None
+        try:
+            from liquidity.volume_profile import compute_volume_profile
+            vp = compute_volume_profile(df, bins=50, lookback=100)
+            if vp and vp.is_valid:
+                current_price = float(df["close"].iloc[-1]) if len(df) > 0 else 0
+                profile = []
+                if vp.volume_at_price:
+                    max_vol = max(vp.volume_at_price.values()) if vp.volume_at_price else 1
+                    for price, vol in sorted(vp.volume_at_price.items()):
+                        profile.append({
+                            "price": round(price, 2),
+                            "volume": round(vol, 2),
+                            "pct": round(vol / max_vol * 100, 1),
+                        })
+                volume_profile = {
+                    "poc": round(vp.poc, 2),
+                    "vah": round(vp.vah, 2),
+                    "val": round(vp.val, 2),
+                    "price_in_va": vp.price_in_value_area(current_price),
+                    "price_range_pct": round(vp.price_range_pct, 2),
+                    "profile": profile,
+                }
+        except Exception as e:
+            logger.debug(f"Volume profile failed for {symbol}/{tf}: {e}")
+
+        # Breakout Quality (AMD vs real)
+        breakout_quality = None
+        try:
+            from liquidity.breakout_quality import classify_breakout
+            bq = classify_breakout(df, lookback=40)
+            if bq:
+                breakout_quality = {
+                    "verdict": bq.verdict,
+                    "direction": bq.direction,
+                    "score": bq.score,
+                    "body_pct": round(bq.body_pct, 2),
+                    "retention_pct": round(bq.retention_pct, 2),
+                    "volume_ratio": round(bq.volume_ratio, 2),
+                }
+        except Exception as e:
+            logger.debug(f"Breakout quality failed for {symbol}/{tf}: {e}")
+
         # Price history for chart (последние 20 свечей)
         price_history = []
         for _, row in df.tail(20).iterrows():
@@ -234,6 +291,49 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             else:
                 ts_ms = int(ts)
             price_history.append({"time": ts_ms, "close": round(float(row["close"]), 2)})
+
+        # Candle history for wave chart (все свечи из df, OHLC)
+        candle_history = []
+        for _, row in df.iterrows():
+            ts = row.name
+            if hasattr(ts, 'timestamp'):
+                ts_sec = int(ts.timestamp())
+            else:
+                ts_sec = int(ts) // 1000 if int(ts) > 1e12 else int(ts)
+            candle_history.append({
+                "time": ts_sec,
+                "open": round(float(row["open"]), 2),
+                "high": round(float(row["high"]), 2),
+                "low": round(float(row["low"]), 2),
+                "close": round(float(row["close"]), 2),
+            })
+
+        # Wave overlay — segments с timestamp для отрисовки линий на графике
+        wave_overlay = []
+        if wave_data and wave_data.get("primary") and wave_data["primary"].get("segments"):
+            for seg in wave_data["primary"]["segments"]:
+                si = seg.get("start_index")
+                ei = seg.get("end_index")
+                if si is None or ei is None:
+                    continue
+                if si >= len(df) or ei >= len(df):
+                    continue
+                try:
+                    start_ts = df.index[si]
+                    end_ts = df.index[ei]
+                    start_sec = int(start_ts.timestamp()) if hasattr(start_ts, 'timestamp') else int(start_ts) // 1000
+                    end_sec = int(end_ts.timestamp()) if hasattr(end_ts, 'timestamp') else int(end_ts) // 1000
+                    if start_sec > 0 and end_sec > 0:
+                        wave_overlay.append({
+                            "start_time": start_sec,
+                            "start_price": seg.get("start_price", 0),
+                            "end_time": end_sec,
+                            "end_price": seg.get("end_price", 0),
+                            "label": seg.get("label", ""),
+                            "direction": seg.get("direction", "impulse"),
+                        })
+                except Exception:
+                    pass
 
         return {
             "type": "update",
@@ -246,8 +346,13 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             "levels": sr_levels,
             "signal": signal_info,
             "priceHistory": price_history,
+            "candleHistory": candle_history,
+            "waveOverlay": wave_overlay,
             "waves": wave_data,
-            "footprint": footprint,
+            "openInterest": oi_data,
+            "fundingRate": funding_rate,
+            "volumeProfile": volume_profile,
+            "breakoutQuality": breakout_quality,
         }
     except Exception as e:
         import traceback
@@ -362,6 +467,46 @@ async def _broadcast_loop():
         except Exception as e:
             logger.error(f"Broadcast loop error: {e}")
             await asyncio.sleep(5)
+
+
+async def _deriv_cache_updater():
+    """Background task: update OI/funding cache every 60s."""
+    while True:
+        try:
+            from data.exchange_client import exchange_client
+            ex = exchange_client._exchange
+            if ex is not None:
+                # Update for all subscribed symbols
+                symbols = set(_client_symbols.values())
+                for symbol in symbols:
+                    try:
+                        ccxt_symbol = exchange_client._resolve_symbol(symbol)
+                        fr, oi = None, None
+                        if ex.has.get("fetchFundingRate"):
+                            try:
+                                r = await asyncio.get_event_loop().run_in_executor(
+                                    None, ex.fetch_funding_rate, ccxt_symbol)
+                                if r and r.get("fundingRate") is not None:
+                                    fr = round(float(r["fundingRate"]) * 100, 4)
+                            except Exception:
+                                pass
+                        if ex.has.get("fetchOpenInterest"):
+                            try:
+                                r = await asyncio.get_event_loop().run_in_executor(
+                                    None, ex.fetch_open_interest, ccxt_symbol)
+                                if r:
+                                    val = r.get("openInterestAmount") or r.get("openInterestValue") or 0
+                                    oi = {"value": float(val), "delta_pct": 0}
+                            except Exception:
+                                pass
+                        _deriv_cache[symbol] = {"oi": oi, "fr": fr}
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Deriv cache update error: {e}")
+        await asyncio.sleep(60)
 
 
 # ─── HTTP handlers ──────────────────────────────────────────────────────
@@ -567,6 +712,24 @@ async def api_sandbox_candles(request):
         return web.json_response({"candles": [], "error": str(e)})
 
 
+# ─── Scan Stats API ──────────────────────────────────────────────────
+
+async def api_scan_stats(request):
+    """GET /api/scan-stats?hours=24 — funnel statistics from audit_log.
+
+    Lightweight: aggregated counts only, no raw rows.
+    """
+    from storage.database import db
+    hours = int(request.query.get("hours", "24"))
+    hours = min(hours, 168)  # max 7 days
+    try:
+        stats = await db.get_scan_stats(hours=hours)
+        return web.json_response(stats)
+    except Exception as e:
+        logger.error(f"api_scan_stats error: {e}")
+        return web.json_response({"total_entries": 0, "stages": {}, "top_rejection_reasons": [], "error": str(e)})
+
+
 # ─── App factory ────────────────────────────────────────────────────────
 
 def create_app() -> web.Application:
@@ -589,6 +752,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/sandbox/symbols", api_sandbox_symbols)
     app.router.add_get("/api/sandbox/trace/{signal_id}", api_sandbox_trace)
     app.router.add_get("/api/sandbox/candles", api_sandbox_candles)
+    app.router.add_get("/api/scan-stats", api_scan_stats)
 
     # WebSocket
     app.router.add_get("/ws", ws_handler)
@@ -615,8 +779,9 @@ async def start_web_server():
 
     app = create_app()
 
-    # Запускаем broadcast loop
+    # Запускаем broadcast loop + deriv cache updater
     _broadcast_task = asyncio.create_task(_broadcast_loop())
+    asyncio.create_task(_deriv_cache_updater())
 
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
