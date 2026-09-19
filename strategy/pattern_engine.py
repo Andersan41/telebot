@@ -102,11 +102,21 @@ class ICTSetup:
 
     @property
     def confirmation_score(self) -> int:
-        """Weighted confirmation score (TZ §6.4): BOS=2, FVG=1, OB=1.
+        """Weighted confirmation score (TZ §6.4, H-013):
+        Continuation: BOS=2, FVG=1, OB=1
+        Reversal: Sweep=2, MSS=1, FVG=1, OB=1
         Minimum score for entry: 2."""
         score = 0
-        if self.has_bos:
-            score += 2
+        if self.setup_type == "reversal":
+            # Reversal: sweep is the trigger (analogous to BOS for continuation)
+            if self.has_sweep:
+                score += 2
+            if self.has_mss:
+                score += 1
+        else:
+            # Continuation: BOS is the trigger
+            if self.has_bos:
+                score += 2
         if self.has_fvg:
             score += 1
         if self.has_ob:
@@ -278,13 +288,26 @@ class PatternEngine:
         _sweep_ts = None
 
         valid_sweeps = [s for s in sweeps if s.is_valid]
+        sweep_reject_reasons = []
         for s in valid_sweeps:
             # Apply false sweep filters (TZ §5.3)
             passes, filter_reason = s.passes_false_sweep_filters(
                 atr=s.atr, pool_age_bars=s.pool_age_bars
             )
             if not passes:
-                logger.debug(f"Sweep rejected by false filter: {filter_reason}")
+                wick_pct = 0.0
+                if s.swept_level > 0:
+                    if s.type == "bearish":
+                        wick_pct = max(0, s.sweep_high - s.swept_level) / s.swept_level * 100
+                    else:
+                        wick_pct = max(0, s.swept_level - s.sweep_low) / s.swept_level * 100
+                body_pct = abs(s.sweep_high - s.sweep_low) / max(s.swept_level, 1e-10) * 100
+                logger.info(
+                    f"Sweep REJECTED: {s.type} swept={s.swept_level:.4f} "
+                    f"wick={wick_pct:.4f}% body={body_pct:.4f}% "
+                    f"reclaim={s.reclaim_candles} reason={filter_reason}"
+                )
+                sweep_reject_reasons.append(filter_reason)
                 continue
             # Pick strongest sweep (highest strength, most recent if tied)
             if not has_sweep or s.strength > sweep_strength or (
@@ -299,6 +322,17 @@ class PatternEngine:
                 _sweep_ts = s.timestamp
 
         if not has_sweep:
+            total_valid = len(valid_sweeps)
+            rejected_count = len(sweep_reject_reasons)
+            if total_valid > 0:
+                reason_counts = {}
+                for r in sweep_reject_reasons:
+                    key = r.split(" ")[0:3]
+                    reason_counts[" ".join(key)] = reason_counts.get(" ".join(key), 0) + 1
+                logger.info(
+                    f"Sweep summary: {total_valid} valid, {rejected_count} rejected "
+                    f"by false filters, 0 accepted. Top rejections: {reason_counts}"
+                )
             return ICTSetup(
                 detected=False,
                 rejection_reason="reversal: no sweep",
@@ -344,11 +378,11 @@ class PatternEngine:
                 sweep_to_mss = max(0, mss.candle_index - sweep_candle_index)
 
         if not has_mss:
-            # Soft: sweep without MSS is still a reversal idea, just weaker.
-            # MSS becomes a quality signal downstream, not a hard gate.
+            # Sweep without MSS: not a valid reversal, but don't suppress continuation.
+            # Return detected=False so detect() can try the continuation path.
             return ICTSetup(
-                detected=True,
-                direction=direction,
+                detected=False,
+                direction=None,
                 setup_type="reversal",
                 has_sweep=has_sweep, sweep_type=sweep_type,
                 sweep_strength=sweep_strength,

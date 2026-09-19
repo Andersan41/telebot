@@ -581,7 +581,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
 
         # 1.0b Score Quality Gate — controlled by MIN_SCORE_FOR_SIGNAL (default 2)
         # components_count = number of detected ICT components
-        _min_score = getattr(config.trading, 'min_score_for_signal', 2)
+        _min_score = config.scoring.min_score_for_signal
         if setup.components_count < _min_score:
             reason = f"score={setup.components_count} < min {_min_score} (components: {setup.components_found})"
             _current_funnel.log_gate(symbol, timeframe, "score_gate", "BLOCKED", reason)

@@ -138,7 +138,7 @@ def detect_sweeps(
     Returns:
         List of SweepEvent objects.
     """
-    data = df.tail(lookback).reset_index(drop=True)
+    data = df.tail(lookback)
     if len(data) < swing_window * 2 + 2:
         return []
 
@@ -160,7 +160,7 @@ def detect_sweeps(
     for i in range(len(data)):
         current = data.iloc[i]
 
-        ts = _to_datetime(data.index[i])
+        ts = _to_datetime(df.index[offset + i])
 
         for swing_high in swing_highs:
             if swing_high["index"] >= i:
@@ -225,19 +225,19 @@ def _calc_volume_ratio(df: pd.DataFrame, index: int) -> float:
 
 
 def _count_candles_to_reclaim_bullish(df: pd.DataFrame, sweep_index: int, level: float, max_check: int = 10) -> int:
-    """Count candles until price reclaims above level after a bullish sweep."""
-    for j in range(sweep_index + 1, min(sweep_index + max_check + 1, len(df))):
+    """Count candles until price reclaims above level after a bullish sweep. Zero = same-bar reclaim."""
+    for j in range(sweep_index, min(sweep_index + max_check + 1, len(df))):
         if df["close"].iloc[j] > level:
             return j - sweep_index
-    return max_check
+    return max_check + 1
 
 
 def _count_candles_to_reclaim_bearish(df: pd.DataFrame, sweep_index: int, level: float, max_check: int = 10) -> int:
-    """Count candles until price reclaims below level after a bearish sweep."""
-    for j in range(sweep_index + 1, min(sweep_index + max_check + 1, len(df))):
+    """Count candles until price reclaims below level after a bearish sweep. Zero = same-bar reclaim."""
+    for j in range(sweep_index, min(sweep_index + max_check + 1, len(df))):
         if df["close"].iloc[j] < level:
             return j - sweep_index
-    return max_check
+    return max_check + 1
 
 
 def _calc_wick_body_ratio(df: pd.DataFrame, index: int) -> float:

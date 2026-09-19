@@ -188,7 +188,7 @@ def classify_choch(
                     disp = body / atr_value
                 if disp > max_disp:
                     max_disp = disp
-            if max_disp > displacement_atr:
+            if max_disp > 0:
                 displacement_atr = max_disp
                 choch.displacement_score = displacement_atr
         from loguru import logger

@@ -152,12 +152,12 @@ class RiskEngine:
 
         # U10: Geometric validation
         # Infer direction from price geometry: BUY = SL < entry < TP, SELL = TP < entry < SL
-        _is_buy_geo = sl < entry and tp > entry
-        _is_sell_geo = sl > entry and tp < entry
+        _is_buy_geo = sl < entry_price < tp
+        _is_sell_geo = tp < entry_price < sl
         if not _is_buy_geo and not _is_sell_geo:
             return RiskDecision(
                 should_trade=False,
-                rejection_reason=f"GEOMETRY_INVALID: SL={sl:.4f}, entry={entry:.4f}, TP={tp:.4f} — no valid direction (need SL<entry<TP or TP<entry<SL)",
+                rejection_reason=f"GEOMETRY_INVALID: SL={sl:.4f}, entry={entry_price:.4f}, TP={tp:.4f} — no valid direction (need SL<entry<TP or TP<entry<SL)",
             )
 
         risk_dist = abs(entry_price - sl)
