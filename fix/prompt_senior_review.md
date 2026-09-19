@@ -171,3 +171,107 @@ Given the 7-day data, rank these by expected impact:
 - Must NOT send false signals (risk management is priority)
 - Currently 0 signals/week is unacceptable — need at least 2-5 quality signals/week
 - Config version is 10 (latest: H-014 volatility_max_atr 5→8%, sweep_min_wick 0.02→0.01%)
+
+---
+
+## Output: create file fix/bot_fix_v1.3.md
+
+After completing your review, save your findings to `fix/bot_fix_v1.3.md` using the
+template below. This file will be given to a junior AI (mimo) that will implement
+every fix you specify. Your instructions must be **precise, unambiguous, and
+machine-actionable**.
+
+### Template for bot_fix_v1.3.md:
+
+```markdown
+# bot_fix_v1.3.md — Senior model audit
+
+## Date: [YYYY-MM-DD]
+## Auditor: [model name]
+## Branch: feat/htf-bias-v2-premium-discount
+## Config version: 10
+
+---
+
+## I. Executive summary
+
+[2-3 paragraphs: overall health of codebase, top 3 critical issues,
+expected impact of fixing them]
+
+---
+
+## II. Findings
+
+For EACH finding use this EXACT format:
+
+### [ID] — [Short title] — [Severity: CRITICAL/HIGH/MEDIUM/LOW]
+
+**File:** `path/to/file.py`
+**Lines:** XX-YY (or "class Foo, method bar")
+**Current behavior:** [what the code does now]
+**Expected behavior:** [what it should do]
+**Why it matters:** [impact on signals, false positives, or risk]
+
+**Evidence:**
+```python
+# exact code snippet that demonstrates the issue
+```
+
+**Fix:**
+```python
+# exact replacement code (copy-paste ready)
+```
+
+**Verification:** [how to confirm — specific test or log output]
+
+---
+
+## III. Summary table
+
+| ID | Title | Severity | File | Status |
+|----|-------|----------|------|--------|
+| B-001 | ... | CRITICAL | scanner.py | OPEN |
+| B-002 | ... | HIGH | pattern_engine.py | OPEN |
+
+---
+
+## IV. Priority order
+
+Ranked by (signal_volume_impact × confidence):
+
+1. B-XXX — [title] — [why first]
+2. B-XXX — [title] — [why second]
+
+---
+
+## V. Config recommendations
+
+| Param | Current | Recommended | Reason |
+|-------|---------|-------------|--------|
+| min_score_for_signal | 2 | ? | ... |
+
+---
+
+## VI. Questions for the team
+
+[Anything ambiguous needing human decision]
+
+---
+
+## VII. Implementation notes for mimo
+
+- Which fixes are safe to apply immediately
+- Which fixes need A/B testing
+- Which fixes require server config changes
+- Dependencies between fixes ("fix B-003 before B-004")
+- Test files that need updating
+```
+
+### Rules for findings:
+
+1. **Every finding MUST have a code snippet.** No vague statements.
+2. **Every fix MUST be syntactically correct Python.** mimo will copy-paste directly.
+3. **Do not report issues fixed in v1.2** — check `bot_fix_v1.2.md` section "Fixes applied".
+4. **Number findings sequentially** (B-001, B-002, ...) and reference in summary table.
+5. **Severity:** CRITICAL = crashes/wrong signals, HIGH = >5% signal loss, MEDIUM = suboptimal, LOW = code quality.
+6. **Mark uncertain findings** with "(UNCERTAIN)" in the title.
