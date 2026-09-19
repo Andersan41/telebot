@@ -166,14 +166,21 @@
       </div>
     </div>
 
-    <!-- Wave Info -->
-    <div class="card wave-card">
-      <div class="card-label">Elliott Wave <span class="badge" id="badge-wave">—</span></div>
-      <div id="wave-info">
-        <div class="wave-empty">Wave: disabled</div>
+    <!-- CVD (Cumulative Volume Delta) -->
+    <div class="card">
+      <div class="card-label">CVD <span class="badge" id="cvd-trend">—</span></div>
+      <div class="cvd-stats">
+        <div class="cvd-stat">
+          <div class="cvd-stat-label">Текущий</div>
+          <div class="cvd-stat-value" id="cvd-current">—</div>
+        </div>
+        <div class="cvd-stat">
+          <div class="cvd-stat-label">Тренд</div>
+          <div class="cvd-stat-value" id="cvd-trend-text">—</div>
+        </div>
       </div>
-      <div class="wave-chart-wrap" id="waveChartWrap">
-        <div id="waveChart"></div>
+      <div class="cvd-chart-wrap">
+        <div id="cvdChart"></div>
       </div>
     </div>
 

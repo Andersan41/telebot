@@ -8,10 +8,9 @@ let priceChart = null;
 let reconnectTimer = null;
 let currentTimeframe = null;
 
-// Wave chart (Lightweight Charts)
-let waveChart = null;
-let waveCandleSeries = null;
-let waveLineSeries = null;
+// CVD chart (Lightweight Charts)
+let cvdChart = null;
+let cvdSeries = null;
 
 // ── Init ────────────────────────────────────────────
 function connect() {
@@ -45,7 +44,7 @@ function connect() {
 
 // ── Render ──────────────────────────────────────────
 function renderDashboard(data) {
-  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, waves, fundingRate, candleHistory, waveOverlay, breakoutQuality } = data;
+  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, cvd, fundingRate, candleHistory, waveOverlay, breakoutQuality } = data;
 
   if (error) {
     updateStatus(`Ошибка: ${error}`);
@@ -64,14 +63,8 @@ function renderDashboard(data) {
   if (fundingRate != null) renderFundingRate(fundingRate);
   if (volumeProfile) renderVolumeProfile(volumeProfile, price);
   if (bookAnomalies) renderBookAnomalies(bookAnomalies);
-  if (waves) renderWaves(waves, price);
+  if (cvd) renderCVD(cvd);
   if (breakoutQuality) renderBreakoutQuality(breakoutQuality);
-
-  // Wave chart: init + update
-  if (candleHistory && candleHistory.length > 0) {
-    if (!waveChart) initWaveChart();
-    updateWaveChart(candleHistory, waveOverlay, waves);
-  }
 
   renderVerdictFromSignal(signal, indicators);
 }
@@ -461,199 +454,43 @@ function renderBookAnomalies(book) {
   }
 }
 
-// ── Elliott Wave ──────────────────────────────────────────
-function renderWaves(waves, currentPrice) {
-  const el = document.getElementById('wave-info');
-  if (!el) return;
+// ── CVD (Cumulative Volume Delta) ──────────────────
+function renderCVD(cvd) {
+  if (!cvd) return;
+  const trendColors = { bullish: '#4caf50', bearish: '#f44336', neutral: '#888' };
+  const trendLabels = { bullish: 'Bullish', bearish: 'Bearish', neutral: 'Neutral' };
+  setText('cvd-current', cvd.current != null ? formatLargeNumber(cvd.current) : '—');
+  setText('cvd-trend-text', trendLabels[cvd.trend] || '—');
+  setText('cvd-trend', trendLabels[cvd.trend] || '—');
+  const trendEl = document.getElementById('cvd-trend');
+  if (trendEl && cvd.trend) trendEl.style.color = trendColors[cvd.trend] || '#fff';
+  const cvdCurrentEl = document.getElementById('cvd-current');
+  if (cvdCurrentEl && cvd.current != null) cvdCurrentEl.style.color = cvd.current >= 0 ? '#4caf50' : '#f44336';
 
-  if (!waves || !waves.primary) {
-    el.innerHTML = '<div class="wave-empty">Wave: no count</div>';
-    return;
+  const el = document.getElementById('cvdChart');
+  const wrap = el && el.parentElement;
+  if (!el || !wrap) return;
+  if (!cvdChart) {
+    cvdChart = LightweightCharts.createChart(el, {
+      width: wrap.clientWidth, height: 120,
+      layout: { background: { color: '#1a1a2e' }, textColor: '#888' },
+      grid: { vertLines: { color: '#2a2a3e' }, horzLines: { color: '#2a2a3e' } },
+      rightPriceScale: { borderColor: '#333' },
+      timeScale: { timeVisible: false, borderColor: '#333' },
+      crosshair: { mode: 0 },
+    });
+    cvdSeries = cvdChart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'right' });
+    new ResizeObserver(() => { if (cvdChart) cvdChart.applyOptions({ width: wrap.clientWidth }); }).observe(wrap);
   }
-
-  const p = waves.primary;
-  const dirEmoji = p.direction === 'impulse' ? '🟢' : '🔵';
-  const confPct = Math.round(waves.confidence * 100);
-
-  // Determine current wave label from points
-  let currentLabel = '';
-  if (currentPrice && p.points && p.points.length >= 2) {
-    for (let i = 0; i < p.points.length - 1; i++) {
-      const lo = Math.min(p.points[i].price, p.points[i + 1].price);
-      const hi = Math.max(p.points[i].price, p.points[i + 1].price);
-      if (currentPrice >= lo && currentPrice <= hi) {
-        if (i === 0) currentLabel = p.points[i].label;
-        else if (i === p.points.length - 2) currentLabel = p.points[i + 1].label;
-        else currentLabel = `${p.points[i].label}-${p.points[i + 1].label}`;
-        break;
-      }
-    }
-    if (!currentLabel && p.points.length > 0) {
-      currentLabel = p.points[p.points.length - 1].label;
-    }
+  if (cvd.timestamps && cvd.deltas) {
+    const data = cvd.timestamps.map((ts, i) => ({
+      time: Math.floor(ts / 1000),
+      value: cvd.deltas[i],
+      color: cvd.deltas[i] >= 0 ? 'rgba(76,175,80,0.7)' : 'rgba(244,67,54,0.7)',
+    }));
+    cvdSeries.setData(data);
+    cvdChart.timeScale().fitContent();
   }
-
-  const curSet = new Set(currentLabel.split('-'));
-
-  // Highlight points — mark current wave(s) with bold
-  let pointsStr = p.points.map(pt => {
-    if (curSet.has(pt.label)) return `<b>${pt.label}</b>`;
-    return pt.label;
-  }).join(' → ');
-
-  // Also highlight label parentheses (e.g. "1-2-3-4-5")
-  let highlightedLabel = p.label;
-  if (p.label.includes('(')) {
-    const labelParts = p.label.split('(');
-    const wavesStr = labelParts[1].replace(')', '');
-    const waves = wavesStr.split('-');
-    const highlighted = waves.map(w => curSet.has(w) ? `<b>${w}</b>` : w).join('-');
-    highlightedLabel = `${labelParts[0]}(${highlighted})`;
-  }
-
-  // Conflict details
-  let conflictHtml = '';
-  if (waves.conflict) {
-    const details = waves.conflict_details || 'Разные варианты указывают разное направление';
-    conflictHtml = `<div class="wave-conflict-block">⚠️ <span class="wave-conflict-title">Конфликт:</span> ${details}</div>`;
-  }
-
-  // Alternatives with direction info, target, and highlighted current wave
-  let altHtml = '';
-  if (waves.alternatives.length > 0) {
-    const altItems = waves.alternatives.map(a => {
-      const aDirEmoji = a.direction === 'impulse' ? '🟢' : '🔵';
-      const aDirCls = a.direction === 'impulse' ? 'wave-alt-impulse' : 'wave-alt-correction';
-      const aConf = Math.round(a.confidence * 100);
-      const aTarget = a.target ? formatPrice(a.target) : '—';
-
-      // Split: "impulse (1-2-3-4-5)" → prefix + wavesPart
-      let prefix = a.label;
-      let wavesPart = '';
-      if (a.label.includes('(')) {
-        const idx = a.label.indexOf('(');
-        prefix = a.label.substring(0, idx);
-        wavesPart = a.label.substring(idx + 1, a.label.length - 1); // "1-2-3-4-5"
-      }
-
-      // Highlight wave labels that match current phase from primary
-      let highlightedWaves = wavesPart;
-      if (wavesPart) {
-        const waves = wavesPart.split('-');
-        highlightedWaves = '(' + waves.map(w => curSet.has(w) ? `<span class="${aDirCls}-phase"><b>${w}</b></span>` : `<span class="${aDirCls}-phase">${w}</span>`).join('-') + ')';
-      }
-
-      return `<div class="wave-alt-item">${aDirEmoji} ${prefix}${highlightedWaves} <span class="wave-alt-conf">(${aConf}%) → ${aTarget}</span></div>`;
-    }).join('');
-    altHtml = `<div class="wave-alt-block"><span class="wave-alt-label">Альтернативы:</span>${altItems}</div>`;
-  }
-
-  el.innerHTML = `
-    <div class="wave-header">${dirEmoji} ${highlightedLabel}</div>
-    <div class="wave-detail">${pointsStr}</div>
-    <div class="wave-confidence">Confidence: ${confPct}%</div>
-    ${conflictHtml}
-    ${altHtml}
-  `;
-}
-
-// ── Wave Chart (Lightweight Charts) ────────────────
-function initWaveChart() {
-  const el = document.getElementById('waveChart');
-  const wrap = document.getElementById('waveChartWrap');
-  if (!el || !wrap || waveChart) return;
-
-  waveChart = LightweightCharts.createChart(el, {
-    width: wrap.clientWidth,
-    height: wrap.clientHeight || 250,
-    layout: { background: { color: '#0d0d0d' }, textColor: '#888' },
-    grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
-    timeScale: { timeVisible: true, secondsVisible: false },
-    crosshair: { mode: 0 },
-  });
-
-  waveCandleSeries = waveChart.addCandlestickSeries({
-    upColor: '#a3e635',
-    downColor: '#f87171',
-    borderUpColor: '#a3e635',
-    borderDownColor: '#f87171',
-    wickUpColor: '#a3e635',
-    wickDownColor: '#f87171',
-  });
-
-  waveLineSeries = waveChart.addLineSeries({
-    color: '#facc15',
-    lineWidth: 2,
-    lastValueVisible: false,
-    priceLineVisible: false,
-  });
-
-  // Resize
-  new ResizeObserver(() => {
-    if (waveChart) {
-      waveChart.applyOptions({ width: wrap.clientWidth });
-    }
-  }).observe(wrap);
-}
-
-function updateWaveChart(candles, waveOverlay, waves) {
-  if (!waveCandleSeries) return;
-  if (!candles || candles.length === 0) return;
-
-  waveCandleSeries.setData(candles);
-
-  // Wave lines: соединяем start→end для каждого сегмента
-  if (waveOverlay && waveOverlay.length > 0) {
-    const lineData = [];
-    for (const seg of waveOverlay) {
-      if (seg.start_time && seg.end_time) {
-        lineData.push({ time: seg.start_time, value: seg.start_price });
-        lineData.push({ time: seg.end_time, value: seg.end_price });
-      }
-    }
-    // Deduplicate by time (keep last value for each timestamp)
-    const byTime = new Map();
-    for (const pt of lineData) {
-      byTime.set(pt.time, pt.value);
-    }
-    const sorted = Array.from(byTime.entries())
-      .map(([time, value]) => ({ time, value }))
-      .sort((a, b) => a.time - b.time);
-    waveLineSeries.setData(sorted);
-  } else {
-    waveLineSeries.setData([]);
-  }
-
-  // Wave markers на candleSeries
-  if (waves && waves.primary && waves.primary.points) {
-    const markers = waves.primary.points
-      .filter(pt => pt.time != null)
-      .map(pt => {
-        const isUp = waves.primary.price_direction === 'bullish';
-        const labelNum = parseInt(pt.label);
-        let shape = 'circle';
-        let color = '#facc15';
-        if (!isNaN(labelNum) && labelNum % 2 === 1) {
-          // Impulse waves (1,3,5) — arrows
-          shape = isUp ? 'arrowUp' : 'arrowDown';
-          color = '#a3e635';
-        } else if (!isNaN(labelNum) && labelNum % 2 === 0) {
-          // Correction waves (2,4) — arrows opposite
-          shape = isUp ? 'arrowDown' : 'arrowUp';
-          color = '#f87171';
-        }
-        return {
-          time: pt.time,
-          position: 'aboveBar',
-          color,
-          shape,
-          text: pt.label,
-        };
-      });
-    waveCandleSeries.setMarkers(markers);
-  }
-
-  waveChart.timeScale().fitContent();
 }
 
 // ── Utils для нового функционала ───────────────────

@@ -238,6 +238,44 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             except Exception as e:
                 logger.debug(f"Wave analysis failed for {symbol}/{tf}: {e}")
 
+        # CVD (Cumulative Volume Delta) — approximation from OHLCV
+        cvd_data = None
+        try:
+            if len(df) > 1:
+                closes = df["close"].values
+                opens = df["open"].values
+                volumes = df["volume"].values
+                # Bullish candle: close > open → +volume
+                # Bearish candle: close < open → -volume
+                deltas = np.where(closes > opens, volumes,
+                         np.where(closes < opens, -volumes, 0.0))
+                cumulative = np.cumsum(deltas)
+                # Last 50 candles for chart
+                lookback = min(50, len(df))
+                timestamps = []
+                for idx in df.index[-lookback:]:
+                    if hasattr(idx, 'timestamp'):
+                        timestamps.append(int(idx.timestamp() * 1000))
+                    else:
+                        ts = int(idx)
+                        timestamps.append(ts * 1000 if ts < 1e12 else ts)
+                cvd_values = [round(float(v), 2) for v in cumulative[-lookback:]]
+                cvd_deltas = [round(float(d), 2) for d in deltas[-lookback:]]
+                current_cvd = round(float(cumulative[-1]), 2)
+                # Determine CVD trend (last 10 candles)
+                recent = cumulative[-min(10, len(cumulative)):]
+                cvd_trend = "bullish" if len(recent) >= 2 and recent[-1] > recent[0] else \
+                            "bearish" if len(recent) >= 2 and recent[-1] < recent[0] else "neutral"
+                cvd_data = {
+                    "timestamps": timestamps,
+                    "cumulative": cvd_values,
+                    "deltas": cvd_deltas,
+                    "current": current_cvd,
+                    "trend": cvd_trend,
+                }
+        except Exception as e:
+            logger.debug(f"CVD failed for {symbol}/{tf}: {e}")
+
         # Volume Profile (POC/VAH/VAL)
         volume_profile = None
         try:
@@ -348,7 +386,7 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             "priceHistory": price_history,
             "candleHistory": candle_history,
             "waveOverlay": wave_overlay,
-            "waves": wave_data,
+            "cvd": cvd_data,
             "openInterest": oi_data,
             "fundingRate": funding_rate,
             "volumeProfile": volume_profile,
