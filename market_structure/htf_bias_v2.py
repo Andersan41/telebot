@@ -1,8 +1,8 @@
 """
 market_structure/htf_bias_v2.py — HTF Bias V2 with Multi-Timeframe Alignment.
 
-Full top-down: W1 -> D1 -> H4 -> H1 with priority and override logic.
-Replicates MTT Trading Bot ICT fidelity.
+Direction from D1 + H4 majority vote (fast enough to react to trend changes).
+W1 is informational only — too slow, stays bullish/bearish for months.
 """
 from __future__ import annotations
 
@@ -92,73 +92,52 @@ def get_htf_bias_v2(
     df_1h: Optional[pd.DataFrame],
 ) -> HTFBiasResult:
     """
-    Мульти-таймфрейм bias с priority и override logic.
+    Direction from D1 + H4 majority vote. W1 is informational only.
 
-    Priority:
-    1. W1: EMA21/55 alignment + structure (BOS/CHoCH)
-    2. D1: EMA21/55 alignment + structure
-    3. H4: EMA21/55 alignment + structure
-    4. H1: EMA21/55 alignment (только для zone classification)
+    Voting:
+      - D1 + H4 both bullish → bullish (STRONG)
+      - D1 + H4 both bearish → bearish (STRONG)
+      - D1 or H4 has direction, other neutral → WEAK
+      - Both neutral → neutral
     """
     w1_bias, w1_conf = get_tf_bias(df_1w, use_structure=True) if df_1w is not None else ('neutral', 0)
     d1_bias, d1_conf = get_tf_bias(df_1d, use_structure=True)
     h4_bias, h4_conf = get_tf_bias(df_4h, use_structure=True)
     h1_bias, h1_conf = get_tf_bias(df_1h, use_structure=False) if df_1h is not None else ('neutral', 0)
 
-    # Majority voting on W1, D1, H4
-    biases = [w1_bias, d1_bias, h4_bias]
-    bullish_count = biases.count('bullish')
-    bearish_count = biases.count('bearish')
-
-    if bullish_count >= 3:
-        direction = 'bullish'
+    # Majority voting on D1 + H4 only (W1 too slow — ignored for direction)
+    if d1_bias == h4_bias and d1_bias != 'neutral':
+        direction = d1_bias
         strength = BiasStrength.STRONG
-    elif bearish_count >= 3:
-        direction = 'bearish'
-        strength = BiasStrength.STRONG
-    elif bullish_count >= 2:
-        direction = 'bullish'
-        strength = BiasStrength.MODERATE
-    elif bearish_count >= 2:
-        direction = 'bearish'
-        strength = BiasStrength.MODERATE
+    elif d1_bias != 'neutral' and h4_bias == 'neutral':
+        direction = d1_bias
+        strength = BiasStrength.WEAK
+    elif h4_bias != 'neutral' and d1_bias == 'neutral':
+        direction = h4_bias
+        strength = BiasStrength.WEAK
     else:
-        # A06: Check for single-TF conviction (one directional, two neutral)
-        directional = [b for b in biases if b != 'neutral']
-        if len(directional) == 1:
-            # Single TF has direction, others are neutral → WEAK
-            direction = directional[0]
-            strength = BiasStrength.WEAK
-        elif w1_bias != 'neutral' and d1_bias == w1_bias:
-            direction = w1_bias
-            strength = BiasStrength.WEAK
-        elif w1_bias != 'neutral' and h4_bias == w1_bias:
-            direction = w1_bias
-            strength = BiasStrength.WEAK
-        elif d1_bias != 'neutral' and h4_bias == d1_bias:
-            direction = d1_bias
-            strength = BiasStrength.WEAK
-        else:
-            direction = 'neutral'
-            strength = BiasStrength.NEUTRAL
+        direction = 'neutral'
+        strength = BiasStrength.NEUTRAL
 
-    # Override logic
+    # Override: D1 and H4 disagree — use the one aligned with W1
     override_reason = None
-
-    # W1 conflict with D1/H4
-    if w1_bias != direction and w1_bias != 'neutral':
-        if d1_bias == h4_bias == direction:
-            override_reason = f"{direction}_override_w1_{w1_bias}"
+    if d1_bias != h4_bias and d1_bias != 'neutral' and h4_bias != 'neutral':
+        if w1_bias == d1_bias:
+            direction = d1_bias
             strength = BiasStrength.MODERATE
-
-    # H4 conflict with W1/D1 (pullback detection)
-    if h4_bias != direction and h4_bias != 'neutral':
-        if w1_bias == d1_bias == direction:
-            override_reason = f"pullback_{h4_bias}_vs_htf_{direction}"
+            override_reason = f"d1_{d1_bias}_wins_over_h4_{h4_bias}_w1_aligned"
+        elif w1_bias == h4_bias:
+            direction = h4_bias
             strength = BiasStrength.MODERATE
+            override_reason = f"h4_{h4_bias}_wins_over_d1_{d1_bias}_w1_aligned"
+        else:
+            # No W1 alignment — H4 is more recent, give it priority
+            direction = h4_bias
+            strength = BiasStrength.WEAK
+            override_reason = f"h4_{h4_bias}_wins_over_d1_{d1_bias}_no_w1_alignment"
 
-    # A06: Combined confidence from constituent TFs (informational only)
-    avg_conf = (w1_conf + d1_conf + h4_conf) / 3.0
+    # Confidence from D1 + H4 only
+    avg_conf = (d1_conf + h4_conf) / 2.0
 
     return HTFBiasResult(
         direction=direction,

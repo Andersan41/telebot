@@ -99,37 +99,37 @@ class TestGetHtfBiasV2:
         assert result.strength == BiasStrength.STRONG
 
     def test_majority_bullish(self):
-        """W1=neutral, D1=H4=bullish → moderate bullish."""
+        """D1=H4=bullish → strong bullish (W1 ignored for direction)."""
         df_1w = _make_neutral_df()
         df_1d = _make_bullish_df(close_start=49000, step=50, n=60)
         df_4h = _make_bullish_df(close_start=49500, step=30, n=60)
 
         result = get_htf_bias_v2(df_1w, df_1d, df_4h, None)
         assert result.direction == 'bullish'
-        assert result.strength == BiasStrength.MODERATE
+        assert result.strength == BiasStrength.STRONG
 
     def test_w1_conflict_override(self):
-        """W1=bearish, D1=H4=bullish → bullish with override."""
+        """W1=bearish, D1=H4=bullish → strong bullish (W1 ignored for direction)."""
         df_1w = _make_bearish_df(close_start=52000, step=80, n=60)
         df_1d = _make_bullish_df(close_start=49000, step=50, n=60)
         df_4h = _make_bullish_df(close_start=49500, step=30, n=60)
 
         result = get_htf_bias_v2(df_1w, df_1d, df_4h, None)
         assert result.direction == 'bullish'
-        assert result.strength == BiasStrength.MODERATE
-        assert result.override_reason is not None
-        assert 'override' in result.override_reason
+        assert result.strength == BiasStrength.STRONG
+        assert result.override_reason is None
 
     def test_pullback_detected(self):
-        """W1=D1=bullish, H4=bearish → pullback."""
+        """W1=D1=bullish, H4=bearish → D1 wins via W1 alignment."""
         df_1w = _make_bullish_df(close_start=48000, step=80, n=60)
         df_1d = _make_bullish_df(close_start=49000, step=50, n=60)
         df_4h = _make_bearish_df(close_start=50200, step=20, n=60)
 
         result = get_htf_bias_v2(df_1w, df_1d, df_4h, None)
         assert result.direction == 'bullish'
+        assert result.strength == BiasStrength.MODERATE
         assert result.override_reason is not None
-        assert 'pullback' in result.override_reason
+        assert 'w1_aligned' in result.override_reason
 
     def test_all_neutral(self):
         """All neutral → neutral."""
