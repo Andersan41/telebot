@@ -2261,8 +2261,29 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
 
         await _set_cooldown(symbol, timeframe)
 
+        # Generate signal chart PNG
+        _chart_png = None
         try:
-            await notify_callback(result, context_verdict)
+            from charts.signal_chart import generate_signal_chart
+            _visual = features.to_visual() if features else {}
+            _chart_png = generate_signal_chart(
+                df=_df_clean,
+                direction=setup.direction,
+                entry_price=entry_price,
+                sl=risk_decision.sl_price,
+                tp=risk_decision.tp_price,
+                symbol=symbol,
+                timeframe=timeframe,
+                visual=_visual,
+                score=features.components_count if features else 0,
+                p_tp=probability.p_tp,
+                expected_rr=risk_decision.rr_ratio,
+            )
+        except Exception as e:
+            logger.debug(f"Chart generation failed for {symbol} {timeframe}: {e}")
+
+        try:
+            await notify_callback(result, context_verdict, chart_png=_chart_png)
         except Exception as e:
             logger.error(f"Failed to send notification for {result.signal} {symbol} {timeframe}: {e}")
 

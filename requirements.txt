@@ -19,3 +19,6 @@ aiolimiter>=1.1
 
 # T3.4 — Prometheus metrics
 prometheus_client>=0.20
+
+# Signal chart generation
+matplotlib>=3.8

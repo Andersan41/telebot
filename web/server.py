@@ -322,17 +322,32 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"Breakout quality failed for {symbol}/{tf}: {e}")
 
+        # Dynamic decimals based on price magnitude
+        def _price_decimals(price: float) -> int:
+            if price >= 1000:
+                return 2
+            if price >= 1:
+                return 4
+            if price >= 0.01:
+                return 6
+            if price >= 0.001:
+                return 8
+            return 10
+
+        _ref_price = float(df.iloc[-1]["close"]) if len(df) > 0 else 1.0
+        _dec = _price_decimals(_ref_price)
+
         # Price history for chart (последние 20 свечей)
         price_history = []
         for _, row in df.tail(20).iterrows():
-            ts = row.name  # timestamp — это индекс DataFrame
+            ts = row.name
             if hasattr(ts, 'timestamp'):
                 ts_ms = int(ts.timestamp() * 1000)
             else:
                 ts_ms = int(ts)
-            price_history.append({"time": ts_ms, "close": round(float(row["close"]), 2)})
+            price_history.append({"time": ts_ms, "close": round(float(row["close"]), _dec)})
 
-        # Candle history for wave chart (все свечи из df, OHLC)
+        # Candle history (OHLC)
         candle_history = []
         for _, row in df.iterrows():
             ts = row.name
@@ -342,10 +357,10 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
                 ts_sec = int(ts) // 1000 if int(ts) > 1e12 else int(ts)
             candle_history.append({
                 "time": ts_sec,
-                "open": round(float(row["open"]), 2),
-                "high": round(float(row["high"]), 2),
-                "low": round(float(row["low"]), 2),
-                "close": round(float(row["close"]), 2),
+                "open": round(float(row["open"]), _dec),
+                "high": round(float(row["high"]), _dec),
+                "low": round(float(row["low"]), _dec),
+                "close": round(float(row["close"]), _dec),
             })
 
         # Wave overlay — segments с timestamp для отрисовки линий на графике
@@ -577,15 +592,23 @@ async def ws_handler(request):
 
     try:
         # Отправить init с доступными таймфреймами
-        await ws.send_json({
-            "type": "init",
-            "timeframes": config.trading.primary_timeframes,
-            "currentTimeframe": default_tf,
-        })
+        try:
+            await ws.send_json({
+                "type": "init",
+                "timeframes": config.trading.primary_timeframes,
+                "currentTimeframe": default_tf,
+            })
+        except ConnectionResetError:
+            _clients.discard(ws)
+            return ws
 
         # Отправить текущее состояние
-        payload = await _build_payload(default_symbol, default_tf)
-        await ws.send_json(payload)
+        try:
+            payload = await _build_payload(default_symbol, default_tf)
+            await ws.send_json(payload)
+        except ConnectionResetError:
+            _clients.discard(ws)
+            return ws
 
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
@@ -599,14 +622,20 @@ async def ws_handler(request):
                         logger.info(f"WS client subscribed to {new_symbol}")
                         tf = _client_tfs.get(ws, default_tf)
                         payload = await _build_payload(new_symbol, tf)
-                        await ws.send_json(payload)
+                        try:
+                            await ws.send_json(payload)
+                        except ConnectionResetError:
+                            break
                     elif data.get("type") == "set_timeframe" and data.get("timeframe"):
                         new_tf = data["timeframe"]
                         _client_tfs[ws] = new_tf
                         logger.info(f"WS client timeframe → {new_tf}")
                         symbol = _client_symbols.get(ws, default_symbol)
                         payload = await _build_payload(symbol, new_tf)
-                        await ws.send_json(payload)
+                        try:
+                            await ws.send_json(payload)
+                        except ConnectionResetError:
+                            break
                 except json.JSONDecodeError:
                     pass
             elif msg.type == web.WSMsgType.ERROR:
@@ -700,15 +729,17 @@ async def api_sandbox_trace(request):
             df = None
         candles = []
         if df is not None and not df.empty:
+            _ref = float(df.iloc[-1]["close"])
+            _dec = 2 if _ref >= 1000 else 4 if _ref >= 1 else 6 if _ref >= 0.01 else 8 if _ref >= 0.001 else 10
             for _, row in df.iterrows():
                 ts = row.name
                 ts_sec = int(ts.timestamp()) if hasattr(ts, "timestamp") else int(ts)
                 candles.append({
                     "time": ts_sec,
-                    "open": round(float(row["open"]), 2),
-                    "high": round(float(row["high"]), 2),
-                    "low": round(float(row["low"]), 2),
-                    "close": round(float(row["close"]), 2),
+                    "open": round(float(row["open"]), _dec),
+                    "high": round(float(row["high"]), _dec),
+                    "low": round(float(row["low"]), _dec),
+                    "close": round(float(row["close"]), _dec),
                 })
 
         # Convert visual timestamps to int (UNIX seconds)

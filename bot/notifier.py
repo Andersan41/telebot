@@ -3,6 +3,7 @@ bot/notifier.py — Отправка сигналов в Telegram канал
 """
 import asyncio
 import html
+import io
 from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
@@ -79,8 +80,12 @@ def format_context_block(verdict: ContextVerdict) -> str:
     return "\n".join(lines)
 
 
-async def send_signal(result: SignalResult, context_verdict: ContextVerdict = None, retries: int = None):
-    """Отправляем сигнал в канал с повторными попытками при ошибке."""
+async def send_signal(result: SignalResult, context_verdict: ContextVerdict = None, retries: int = None,
+                       chart_png: bytes = None):
+    """Отправляем сигнал в канал с повторными попытками при ошибке.
+
+    Если chart_png передан — отправляем как фото с подписью.
+    """
     if retries is None:
         retries = config.notifier.send_retries
     if not config.telegram.channel_id:
@@ -92,11 +97,19 @@ async def send_signal(result: SignalResult, context_verdict: ContextVerdict = No
 
     for attempt in range(retries):
         try:
-            await bot.send_message(
-                chat_id=config.telegram.channel_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-            )
+            if chart_png:
+                await bot.send_photo(
+                    chat_id=config.telegram.channel_id,
+                    photo=io.BytesIO(chart_png),
+                    caption=text,
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=config.telegram.channel_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                )
             logger.info(f"Signal sent to channel: {result.signal} {result.symbol} {result.timeframe}")
             return
         except TelegramError as e:

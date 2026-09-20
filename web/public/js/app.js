@@ -300,7 +300,7 @@ function updatePriceChart(history, candleHistory) {
   if (!priceChart) {
     priceChart = LightweightCharts.createChart(el, {
       width: wrap.clientWidth,
-      height: 110,
+      height: 160,
       layout: { background: { color: '#111' }, textColor: '#555' },
       grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
       rightPriceScale: { borderColor: '#222', scaleMargins: { top: 0.1, bottom: 0.1 } },
