@@ -1002,7 +1002,8 @@ const sandboxModule = (() => {
     // Find "sent" from stage data (passed=TRUE at final stage)
     const stages = data.stages || {};
     let sentCount = 0;
-    if (stages['risk_engine']) sentCount = stages['risk_engine'].passed || 0;
+    if (stages['pipeline']) sentCount = stages['pipeline'].passed || 0;
+    else if (stages['risk_engine']) sentCount = stages['risk_engine'].passed || 0;
     if (sentEl) sentEl.textContent = sentCount;
 
     // Last scan
