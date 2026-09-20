@@ -13,6 +13,8 @@ from typing import Set, Dict, Any, Optional
 from aiohttp import web
 from loguru import logger
 
+import numpy as np
+
 from config.settings import config
 
 STATIC_DIR = Path(__file__).parent / "public"
