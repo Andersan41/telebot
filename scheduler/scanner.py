@@ -408,6 +408,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         ind, df = ind_result
         trace.passed("indicators")
         _current_funnel.log_gate(symbol, timeframe, "indicators", "PASS")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "indicators", "ok", passed=True)
 
         # Compute point-in-time snapshot: as_of_utc = last closed candle timestamp
         # Note: exchange_client already drops the forming candle (iloc[:-1]),
@@ -436,6 +438,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 return None
         trace.passed("volatility_filter")
         _current_funnel.log_gate(symbol, timeframe, "volatility_filter", "PASS")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "volatility_filter", "ok", passed=True)
 
         # 0.4b Compression Regime Gate (data-driven: 67% SL in compression)
         # block_compression_regime was dead code — now real gate
@@ -578,6 +582,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         _current_funnel.log_gate(symbol, timeframe, "pattern_engine", "PASS",
                                  f"direction={setup.direction} components={setup.components_found}")
         trace.passed("pattern_engine")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "pattern_engine", "ok", passed=True)
 
         # 1.0b Score Quality Gate — controlled by MIN_SCORE_FOR_SIGNAL (default 2)
         # components_count = number of detected ICT components
@@ -595,6 +601,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         _current_funnel.log_gate(symbol, timeframe, "score_gate", "PASS",
                                  f"score={setup.components_count}")
         trace.passed("score_gate")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "score_gate", "ok", passed=True)
 
         # ═══ Phase 1.4: Setup-Type-Specific Gates ═══
         # Reversal: sweep + displacement + MSS (all hard gates)
@@ -657,6 +665,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             trace.passed("bos_gate")
             _current_funnel.log_gate(symbol, timeframe, "bos_gate", "PASS",
                                      f"bos_type={setup.bos_type}")
+            await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                            "bos_gate", "ok", passed=True)
 
             # 1.4b BOS Retest Filter (data-driven: 57% SL on impulse tail)
             # Require at least 2 bars after BOS to ensure retest, not impulse entry
@@ -715,6 +725,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         _current_funnel.log_gate(symbol, timeframe, "confirmation_score", "PASS",
                                  f"score={_conf_score}")
         trace.passed("confirmation_score")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "confirmation_score", "ok", passed=True)
 
         # ═══ Phase 1.44: SMT Divergence (soft feature — no blocking) ═══
         _smt_result = None
@@ -875,6 +887,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 _current_funnel.log_gate(symbol, timeframe, "ob_retest", "PASS",
                                          f"OB retested + confirmed")
                 trace.passed("ob_retest")
+                await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                "ob_retest", "ok", passed=True)
             else:
                 reason = _ob_gate_reason or "OB retest gate failed"
                 _current_funnel.log_gate(symbol, timeframe, "ob_retest", "BLOCKED", reason)
@@ -1002,6 +1016,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                             symbol, timeframe, "htf_bias", "PASS",
                             f"continuation {setup.direction} aligned with HTF {htf_bias_str}",
                         )
+                        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                        "htf_bias", "ok", passed=True)
 
                 elif setup.setup_type == "reversal":
                     setup_bias = direction_map.get(setup.direction)
@@ -1018,11 +1034,15 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                             f"reversal aligned with HTF {htf_bias_str}",
                         )
                         trace.passed("htf_bias")
+                        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                        "htf_bias", "ok", passed=True)
             else:
                 _current_funnel.log_gate(
                     symbol, timeframe, "htf_bias", "PASS", "HTF neutral — no bias applied",
                 )
                 trace.passed("htf_bias")
+                await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                "htf_bias", "ok", passed=True)
 
         else:
             # ── Fallback: HTF Bias V1 ──
@@ -1087,6 +1107,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                             symbol, timeframe, "htf_bias", "PASS",
                             f"continuation {setup.direction} aligned with HTF {_bias_enum.value}",
                         )
+                        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                        "htf_bias", "ok", passed=True)
 
                 elif setup.setup_type == "reversal":
                     setup_bias = direction_map.get(setup.direction)
@@ -1097,17 +1119,23 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PASS",
                                                  f"penalty=0.85 {reason}")
                         trace.passed("htf_bias", note=reason)
+                        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                        "htf_bias", "ok", passed=True)
                     else:
                         _current_funnel.log_gate(
                             symbol, timeframe, "htf_bias", "PASS",
                             f"reversal aligned with HTF {_bias_enum.value}",
                         )
                         trace.passed("htf_bias")
+                        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                        "htf_bias", "ok", passed=True)
             else:
                 _current_funnel.log_gate(
                     symbol, timeframe, "htf_bias", "PASS", "HTF neutral — no bias applied",
                 )
                 trace.passed("htf_bias")
+                await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                "htf_bias", "ok", passed=True)
 
         # ═══ Premium/Discount Zone Detection ═══
         if config.premium_discount and df is not None and len(df) > 0:
@@ -1201,6 +1229,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         _current_funnel.log_gate(symbol, timeframe, "entry_trigger", "PASS",
                                  f"target={_target_entry:.4f} price={ind.close:.4f}")
         trace.passed("entry_trigger")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "entry_trigger", "ok", passed=True)
 
         # ═══ Phase 1.7: LTF Confirmation (multi_tf mode) ═══
         # Only runs when scan_mode == "multi_tf" and confirm_tf_enabled
@@ -1796,6 +1826,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             return None
         trace.passed("min_p_tp")
         _current_funnel.log_gate(symbol, timeframe, "min_p_tp", "PASS")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "min_p_tp", "ok", passed=True)
 
         logger.info(
             f"Probability: P(TP)={probability.p_tp:.1%} | "
@@ -1861,6 +1893,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         _current_funnel.log_gate(symbol, timeframe, "risk_engine", "PASS",
                                  f"risk={risk_decision.risk_pct:.2f}%")
         trace.passed("risk_engine")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "risk_engine", "ok", passed=True)
 
         # ═══ Phase 4.5: Entry Trigger Check (independent of Decision Engine) ═══
         # Uses Hypothesis when available, falls back to SimpleEntryTarget
@@ -2049,6 +2083,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         return None
         trace.passed("dedup")
         _current_funnel.log_gate(symbol, timeframe, "dedup", "PASS")
+        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                        "dedup", "ok", passed=True)
 
         # ═══ Phase 7: Save to DB ═══
 

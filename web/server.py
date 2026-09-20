@@ -309,14 +309,17 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
         breakout_quality = None
         try:
             from liquidity.breakout_quality import classify_breakout
-            bq = classify_breakout(df, lookback=40)
+            _last = df.iloc[-1]
+            _bq_dir = "buy" if float(_last['close']) >= float(_last['open']) else "sell"
+            _atr_val = float(df['high'].tail(14).sub(df['low'].tail(14)).mean()) if len(df) >= 14 else 0.0
+            bq = classify_breakout(df, direction=_bq_dir, atr=_atr_val, lookback=40)
             if bq:
                 breakout_quality = {
                     "verdict": bq.verdict,
                     "direction": bq.direction,
                     "score": bq.score,
                     "body_pct": round(bq.body_pct, 2),
-                    "retention_pct": round(bq.retention_pct, 2),
+                    "retention": bq.retention,
                     "volume_ratio": round(bq.volume_ratio, 2),
                 }
         except Exception as e:

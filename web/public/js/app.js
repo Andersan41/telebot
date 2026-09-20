@@ -287,6 +287,7 @@ function renderSMC(structure, liquidity) {
 
 // ── Chart ───────────────────────────────────────────
 let mainCandleSeries = null;
+let currentPriceLine = null;
 
 function updatePriceChart(history, candleHistory) {
   const el = document.getElementById('priceChart');
@@ -321,6 +322,23 @@ function updatePriceChart(history, candleHistory) {
   }
 
   mainCandleSeries.setData(candles);
+
+  // Update current price line (remove old one first)
+  const lastCandle = candles[candles.length - 1];
+  if (lastCandle) {
+    if (currentPriceLine) {
+      try { mainCandleSeries.removePriceLine(currentPriceLine); } catch {}
+    }
+    currentPriceLine = mainCandleSeries.createPriceLine({
+      price: lastCandle.close,
+      color: '#60a5fa',
+      lineWidth: 1,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: '',
+    });
+  }
+
   priceChart.timeScale().fitContent();
 }
 
@@ -386,7 +404,7 @@ function renderBreakoutQuality(bq) {
   setText('bq-direction', bq.direction || '—');
   setText('bq-score', bq.score != null ? bq.score.toFixed(1) : '—');
   setText('bq-body', bq.body_pct != null ? bq.body_pct.toFixed(1) + '%' : '—');
-  setText('bq-retention', bq.retention_pct != null ? bq.retention_pct.toFixed(1) + '%' : '—');
+  setText('bq-retention', bq.retention != null ? bq.retention + ' bars' : '—');
   setText('bq-volume', bq.volume_ratio != null ? bq.volume_ratio.toFixed(1) + 'x' : '—');
 }
 
