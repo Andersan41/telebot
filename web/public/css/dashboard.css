@@ -325,9 +325,9 @@ body {
   margin-bottom: 5px;
 }
 
-.chart-col canvas {
-  width: 100% !important;
-  height: 110px !important;
+.chart-col #priceChart {
+  width: 100%;
+  height: 110px;
 }
 
 /* ===== SMART MONEY LIST ===== */

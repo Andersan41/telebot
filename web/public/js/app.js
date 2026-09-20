@@ -58,7 +58,7 @@ function renderDashboard(data) {
   if (signal) renderSignal(signal);
   if (levels) renderLevelsData(levels);
   if (structure) renderSMC(structure, liquidity);
-  if (priceHistory) updatePriceChart(priceHistory);
+  if (priceHistory || candleHistory) updatePriceChart(priceHistory, candleHistory);
   if (openInterest) renderOpenInterest(openInterest);
   if (fundingRate != null) renderFundingRate(fundingRate);
   if (volumeProfile) renderVolumeProfile(volumeProfile, price);
@@ -286,60 +286,42 @@ function renderSMC(structure, liquidity) {
 }
 
 // ── Chart ───────────────────────────────────────────
-function updatePriceChart(history) {
-  const canvas = document.getElementById('priceChart');
-  if (!canvas || !history || history.length === 0) return;
+let mainCandleSeries = null;
 
-  const labels = history.map((_, i) => `H${i + 1}`);
-  const prices = history.map(h => h.close);
+function updatePriceChart(history, candleHistory) {
+  const el = document.getElementById('priceChart');
+  if (!el) return;
+  const wrap = el.parentElement;
+  if (!wrap) return;
+
+  const candles = candleHistory && candleHistory.length > 0 ? candleHistory : null;
+  if (!candles) return;
 
   if (!priceChart) {
-    const ctx = canvas.getContext('2d');
-    priceChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          data: prices,
-          borderColor: '#a3e635',
-          borderWidth: 1.5,
-          pointRadius: 0,
-          tension: 0.4,
-          fill: true,
-          backgroundColor: (ctx) => {
-            const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 110);
-            g.addColorStop(0, 'rgba(163,230,53,0.15)');
-            g.addColorStop(1, 'rgba(163,230,53,0)');
-            return g;
-          }
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 200 },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: { label: c => '$' + c.raw.toLocaleString() },
-            backgroundColor: '#1a1a1a', titleColor: '#888',
-            bodyColor: '#e0e0e0', borderColor: '#2a2a2a', borderWidth: 1
-          }
-        },
-        scales: {
-          x: { ticks: { color: '#555', font: { size: 9 } }, grid: { color: '#1a1a1a' } },
-          y: {
-            ticks: { color: '#555', font: { size: 9 }, callback: v => '$' + (v/1000).toFixed(1) + 'k' },
-            grid: { color: '#1e1e1e' }
-          }
-        }
-      }
+    priceChart = LightweightCharts.createChart(el, {
+      width: wrap.clientWidth,
+      height: 110,
+      layout: { background: { color: '#111' }, textColor: '#555' },
+      grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
+      rightPriceScale: { borderColor: '#222', scaleMargins: { top: 0.1, bottom: 0.1 } },
+      timeScale: { timeVisible: false, borderColor: '#222' },
+      crosshair: { mode: 0 },
     });
-  } else {
-    priceChart.data.labels = labels;
-    priceChart.data.datasets[0].data = prices;
-    priceChart.update('none');
+    mainCandleSeries = priceChart.addCandlestickSeries({
+      upColor: '#a3e635',
+      downColor: '#f87171',
+      borderUpColor: '#a3e635',
+      borderDownColor: '#f87171',
+      wickUpColor: '#a3e635',
+      wickDownColor: '#f87171',
+    });
+    new ResizeObserver(() => {
+      if (priceChart) priceChart.applyOptions({ width: wrap.clientWidth });
+    }).observe(wrap);
   }
+
+  mainCandleSeries.setData(candles);
+  priceChart.timeScale().fitContent();
 }
 
 // ── Open Interest (compact) ────────────────────────
