@@ -689,11 +689,15 @@ async def api_sandbox_trace(request):
         if not trace:
             return web.json_response({"error": "Signal not found"}, status=404)
 
-        # Fetch OHLCV candles for the chart
+        # Fetch OHLCV candles for the chart (with timeout)
         sig = trace["signal"]
         symbol = sig["symbol"]
         timeframe = sig["timeframe"]
-        df = await _fetch_candles(symbol, timeframe, limit=200)
+        try:
+            df = await asyncio.wait_for(_fetch_candles(symbol, timeframe, limit=200), timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching candles for {symbol} {timeframe} in trace {signal_id}")
+            df = None
         candles = []
         if df is not None and not df.empty:
             for _, row in df.iterrows():

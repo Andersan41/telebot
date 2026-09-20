@@ -124,7 +124,7 @@ class ExchangeClient:
         logger.info(f"Exchange client created: {config.exchange.name}")
 
         # Семафор для сериализации запросов — ccxt rate limiter не thread-safe
-        self._semaphore = asyncio.Semaphore(1)
+        self._semaphore = asyncio.Semaphore(3)
 
     async def close(self):
         if self._exchange:
