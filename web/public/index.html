@@ -20,9 +20,9 @@
 
     <!-- Tab bar -->
     <div class="tab-bar">
-      <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
-      <button class="tab-btn" data-tab="scan">Scan Engine</button>
-      <button class="tab-btn" data-tab="sandbox">Signal Logic</button>
+      <button class="tab-btn active" data-tab="dashboard">Дашборд</button>
+      <button class="tab-btn" data-tab="scan">Scan Engine (движок сканирования)</button>
+      <button class="tab-btn" data-tab="sandbox">Логика сигналов</button>
     </div>
 
     <!-- Dashboard tab -->
@@ -59,7 +59,7 @@
     <!-- Derivatives row: OI + Funding -->
     <div class="deriv-row">
       <div class="deriv-card" id="oiCard">
-        <div class="deriv-label">Open Interest</div>
+        <div class="deriv-label">Открытый интерес (OI)</div>
         <div class="deriv-value" id="oiValue">—</div>
         <div class="deriv-delta" id="oiDelta"></div>
       </div>
@@ -155,11 +155,11 @@
         <!-- Chart + SMC -->
         <div class="bottom-row">
           <div class="chart-col">
-            <div class="chart-label">Цена · <span id="chartTfLabel">1H</span></div>
+            <div class="chart-label">Price Action · <span id="chartTfLabel">1H</span></div>
             <div id="priceChart"></div>
           </div>
           <div class="smc-col">
-            <div class="chart-label">Smart Money</div>
+            <div class="chart-label">Smart Money (умные деньги)</div>
             <div id="smc-list"></div>
           </div>
         </div>
@@ -168,7 +168,7 @@
 
     <!-- CVD (Cumulative Volume Delta) -->
     <div class="card">
-      <div class="card-label">CVD <span class="badge" id="cvd-trend">—</span></div>
+      <div class="card-label">CVD (Кумулятивный объём дельта) <span class="badge" id="cvd-trend">—</span></div>
       <div class="cvd-stats">
         <div class="cvd-stat">
           <div class="cvd-stat-label">Текущий</div>
@@ -186,22 +186,22 @@
 
     <!-- Volume Profile -->
     <div class="card">
-      <div class="card-label">Volume Profile</div>
+      <div class="card-label">Volume Profile (профиль объёма)</div>
       <div class="vp-stats">
         <div class="vp-stat">
-          <div class="vp-stat-label">POC</div>
+          <div class="vp-stat-label">POC (точка контроля)</div>
           <div class="vp-stat-value" id="vp-poc">—</div>
         </div>
         <div class="vp-stat">
-          <div class="vp-stat-label">VAH</div>
+          <div class="vp-stat-label">VAH (верх зоны)</div>
           <div class="vp-stat-value" id="vp-vah">—</div>
         </div>
         <div class="vp-stat">
-          <div class="vp-stat-label">VAL</div>
+          <div class="vp-stat-label">VAL (низ зоны)</div>
           <div class="vp-stat-value" id="vp-val">—</div>
         </div>
         <div class="vp-stat">
-          <div class="vp-stat-label">В зоне VA</div>
+          <div class="vp-stat-label">В зоне VA (область стоимости)</div>
           <div class="vp-stat-value" id="vp-in-va">—</div>
         </div>
       </div>
@@ -210,7 +210,7 @@
 
     <!-- Breakout Quality -->
     <div class="card">
-      <div class="card-label">Breakout Quality</div>
+      <div class="card-label">Breakout Quality (качество пробоя)</div>
       <div class="bq-stats">
         <div class="bq-stat">
           <div class="bq-stat-label">Вердикт</div>
@@ -221,19 +221,19 @@
           <div class="bq-stat-value" id="bq-direction">—</div>
         </div>
         <div class="bq-stat">
-          <div class="bq-stat-label">Score</div>
+          <div class="bq-stat-label">Оценка</div>
           <div class="bq-stat-value" id="bq-score">—</div>
         </div>
         <div class="bq-stat">
-          <div class="bq-stat-label">Body %</div>
+          <div class="bq-stat-label">Тело свечи %</div>
           <div class="bq-stat-value" id="bq-body">—</div>
         </div>
         <div class="bq-stat">
-          <div class="bq-stat-label">Retention</div>
+          <div class="bq-stat-label">Удержание (бары)</div>
           <div class="bq-stat-value" id="bq-retention">—</div>
         </div>
         <div class="bq-stat">
-          <div class="bq-stat-label">Volume Ratio</div>
+          <div class="bq-stat-label">Отношение объёма</div>
           <div class="bq-stat-value" id="bq-volume">—</div>
         </div>
       </div>
@@ -277,7 +277,7 @@
     <!-- Scan Engine tab -->
     <div class="tab-content hidden" id="tab-scan">
       <div class="scan-header">
-        <div class="scan-title">Scan Engine — Funnel Statistics</div>
+        <div class="scan-title">Scan Engine — Статистика воронки</div>
         <div class="scan-controls">
           <select id="scanHours" class="scan-select">
             <option value="1">1 hour</option>
@@ -293,26 +293,26 @@
       <!-- Summary cards -->
       <div class="scan-summary">
         <div class="scan-card">
-          <div class="scan-card-label">Total Entries</div>
+          <div class="scan-card-label">Всего сканов</div>
           <div class="scan-card-value mono" id="scanTotal">—</div>
         </div>
         <div class="scan-card">
-          <div class="scan-card-label">Signals Sent</div>
+          <div class="scan-card-label">Сигналов отправлено</div>
           <div class="scan-card-value mono accent" id="scanSent">—</div>
         </div>
         <div class="scan-card">
-          <div class="scan-card-label">Last Scan</div>
+          <div class="scan-card-label">Последний скан</div>
           <div class="scan-card-value mono" id="scanLastTs" style="font-size:12px">—</div>
         </div>
         <div class="scan-card">
-          <div class="scan-card-label">Config Version</div>
+          <div class="scan-card-label">Версия конфига</div>
           <div class="scan-card-value mono" id="scanConfigVer">—</div>
         </div>
       </div>
 
       <!-- Funnel chart -->
       <div class="scan-section">
-        <div class="scan-section-title">Pipeline Funnel</div>
+        <div class="scan-section-title">Воронка пайплайна</div>
         <div class="scan-funnel" id="scanFunnel">
           <div class="scan-funnel-empty">Loading...</div>
         </div>
@@ -320,7 +320,7 @@
 
       <!-- Top rejection reasons -->
       <div class="scan-section">
-        <div class="scan-section-title">Top Rejection Reasons</div>
+        <div class="scan-section-title">Топ причин отказов</div>
         <div class="scan-reasons" id="scanReasons">
           <div class="scan-funnel-empty">Loading...</div>
         </div>

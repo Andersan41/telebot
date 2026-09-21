@@ -88,7 +88,7 @@ function renderIndicators(ind) {
 
   // ADX
   const adxSig = ind.trend_is_strong ? (ind.dmi_plus > ind.dmi_minus ? 'bullish' : 'bearish') : 'neutral';
-  const adxLabel = ind.trend_is_strong ? `Trend (${ind.dmi_plus?.toFixed(1)} / ${ind.dmi_minus?.toFixed(1)})` : `Flat (${ind.adx?.toFixed(1)})`;
+  const adxLabel = ind.trend_is_strong ? `Тренд (${ind.dmi_plus?.toFixed(1)} / ${ind.dmi_minus?.toFixed(1)})` : `Боковой (${ind.adx?.toFixed(1)})`;
   renderCard('adx', ind.adx?.toFixed(1) || '—', adxLabel, adxSig, Math.min(100, (ind.adx || 0) * 2.5));
 
   // Supertrend
@@ -201,11 +201,12 @@ function renderVerdictFromSignal(signal, indicators) {
 
   verdictMain.textContent = verdict;
   verdictMain.style.color = isBull ? '#a3e635' : isBear ? '#f87171' : '#facc15';
-  verdictConf.textContent = `Confidence: ${conf.toFixed(1)}%`;
+  verdictConf.textContent = `Уверенность: ${conf.toFixed(1)}%`;
   confBar.style.width = clamp(conf, 0, 100) + '%';
 
-  setText('verdict-regime', signal.regime || '—');
-  setText('verdict-trend', indicators?.trend_is_strong ? 'Strong' : 'Weak');
+  const regimeLabels = { trending: 'Трендовый', ranging: 'Боковой', volatile: 'Волатильный' };
+  setText('verdict-regime', regimeLabels[signal.regime] || signal.regime || '—');
+  setText('verdict-trend', indicators?.trend_is_strong ? 'Сильный' : 'Слабый');
 }
 
 // ── SMC ─────────────────────────────────────────────
@@ -220,8 +221,8 @@ function renderSMC(structure, liquidity) {
     items.push({
       iconCls: structure.bos.type === 'bullish' ? 'smc-icon-green' : 'smc-icon-red',
       icon: structure.bos.type === 'bullish' ? '↗' : '↘',
-      name: 'Break of Structure',
-      desc: `${structure.bos.type} @ $${(structure.bos.level || 0).toLocaleString()}`,
+      name: 'Break of Structure (смена структуры)',
+      desc: `${structure.bos.type === 'bullish' ? 'Бычий' : 'Медвежий'} @ $${(structure.bos.level || 0).toLocaleString()}`,
       badgeCls: structure.bos.type === 'bullish' ? 'smc-bull' : 'smc-target',
       badge: structure.bos.type === 'bullish' ? '+Bull' : '-Bear'
     });
@@ -232,8 +233,8 @@ function renderSMC(structure, liquidity) {
     liquidity.order_blocks.slice(0, 2).forEach(ob => {
       items.push({
         iconCls: 'smc-icon-blue', icon: '▣',
-        name: 'Order Block',
-        desc: `${ob.type} @ $${(ob.price || 0).toLocaleString()}`,
+        name: 'Order Block (ордер блок)',
+        desc: `${ob.type === 'bullish' ? 'Бычий' : 'Медвежий'} @ $${(ob.price || 0).toLocaleString()}`,
         badgeCls: 'smc-support', badge: 'Поддержка'
       });
     });
@@ -244,7 +245,7 @@ function renderSMC(structure, liquidity) {
     liquidity.fvg.slice(0, 1).forEach(f => {
       items.push({
         iconCls: 'smc-icon-yellow', icon: '═',
-        name: 'Fair Value Gap',
+        name: 'Fair Value Gap (честный разрыв)',
         desc: `$${(f.bottom || 0).toLocaleString()} — $${(f.top || 0).toLocaleString()}`,
         badgeCls: 'smc-magnet', badge: 'Магнит'
       });
@@ -255,8 +256,8 @@ function renderSMC(structure, liquidity) {
   if (liquidity?.sweep?.detected) {
     items.push({
       iconCls: 'smc-icon-red', icon: '⚠',
-      name: 'Liquidity Sweep',
-      desc: `${liquidity.sweep.type} sweep detected`,
+      name: 'Liquidity Sweep (смыв ликвидности)',
+      desc: `${liquidity.sweep.type === 'bullish' ? 'Бычий' : 'Медвежий'} sweep detected`,
       badgeCls: 'smc-target', badge: 'Цель'
     });
   }
@@ -266,10 +267,10 @@ function renderSMC(structure, liquidity) {
     items.push({
       iconCls: structure.trend === 'bullish' ? 'smc-icon-green' : structure.trend === 'bearish' ? 'smc-icon-red' : 'smc-icon-yellow',
       icon: '◈',
-      name: 'Market Trend',
-      desc: structure.trend,
+      name: 'Market Trend (тренд рынка)',
+      desc: structure.trend === 'bullish' ? 'Бычий' : structure.trend === 'bearish' ? 'Медвежий' : 'Боковой',
       badgeCls: structure.trend === 'bullish' ? 'smc-bull' : structure.trend === 'bearish' ? 'smc-target' : 'smc-magnet',
-      badge: structure.trend
+      badge: structure.trend === 'bullish' ? 'Бычий' : structure.trend === 'bearish' ? 'Медвежий' : 'Боковой'
     });
   }
 
@@ -396,15 +397,16 @@ function renderVolumeProfile(vp, currentPrice) {
 // ── Breakout Quality ───────────────────────────────
 function renderBreakoutQuality(bq) {
   const verdictColors = { real: '#4caf50', fake: '#f44336', ambiguous: '#ff9800' };
-  setText('bq-verdict', bq.verdict || '—');
+  const verdictLabels = { real: 'Реальный', fake: 'Ложный', ambiguous: 'Неопределённый' };
+  setText('bq-verdict', verdictLabels[bq.verdict] || '—');
   const verdictEl = document.getElementById('bq-verdict');
   if (verdictEl && bq.verdict) {
     verdictEl.style.color = verdictColors[bq.verdict] || '#fff';
   }
-  setText('bq-direction', bq.direction || '—');
+  setText('bq-direction', bq.direction === 'buy' ? 'Покупка' : bq.direction === 'sell' ? 'Продажа' : '—');
   setText('bq-score', bq.score != null ? bq.score.toFixed(1) : '—');
   setText('bq-body', bq.body_pct != null ? bq.body_pct.toFixed(1) + '%' : '—');
-  setText('bq-retention', bq.retention != null ? bq.retention + ' bars' : '—');
+  setText('bq-retention', bq.retention != null ? bq.retention + ' баров' : '—');
   setText('bq-volume', bq.volume_ratio != null ? bq.volume_ratio.toFixed(1) + 'x' : '—');
 }
 
@@ -1028,20 +1030,20 @@ const sandboxModule = (() => {
         'risk_engine', 'dedup', 'spread', 'depth', 'correlated_entry',
       ];
       const stageLabels = {
-        cooldown: 'Cooldown', portfolio_risk: 'Portfolio Risk', daily_limits: 'Daily Limits',
-        position_limits: 'Position Limits', indicators: 'Indicators', volatility_filter: 'Volatility',
-        pattern_engine: 'Pattern Engine', score_gate: 'Score Gate',
-        displacement_gate: 'Displacement', mss_gate: 'MSS', bos_gate: 'BOS',
-        confirmation_score: 'Confirmation', htf_bias: 'HTF Bias', trade_plan: 'Trade Plan',
-        entry_trigger: 'Entry Trigger', probability_engine: 'Probability',
-        risk_engine: 'Risk Engine', dedup: 'Dedup', spread: 'Spread',
-        depth: 'Depth', correlated_entry: 'Correlated',
+        cooldown: 'Кулдаун', portfolio_risk: 'Риск портфеля', daily_limits: 'Дневные лимиты',
+        position_limits: 'Лимиты позиций', indicators: 'Индикаторы', volatility_filter: 'Волатильность',
+        pattern_engine: 'Движок паттернов', score_gate: 'Порог оценки',
+        displacement_gate: 'Дисплейсмент', mss_gate: 'MSS', bos_gate: 'BOS',
+        confirmation_score: 'Подтверждение', htf_bias: 'HTF Bias', trade_plan: 'Торговый план',
+        entry_trigger: 'Триггер входа', probability_engine: 'Вероятностный движок',
+        risk_engine: 'Движок риска', dedup: 'Дедупликация', spread: 'Спред',
+        depth: 'Глубина', correlated_entry: 'Корреляция',
       };
 
       // Only show stages that have data
       const activeStages = stageOrder.filter(s => stages[s]);
       if (activeStages.length === 0) {
-        funnelEl.innerHTML = '<div class="scan-funnel-empty">No audit data for this period</div>';
+        funnelEl.innerHTML = '<div class="scan-funnel-empty">Нет данных аудита за этот период</div>';
       } else {
         const maxTotal = Math.max(...activeStages.map(s => {
           const st = stages[s];
@@ -1072,7 +1074,7 @@ const sandboxModule = (() => {
     if (reasonsEl) {
       const reasons = data.top_rejection_reasons || [];
       if (reasons.length === 0) {
-        reasonsEl.innerHTML = '<div class="scan-funnel-empty">No rejections</div>';
+        reasonsEl.innerHTML = '<div class="scan-funnel-empty">Нет отказов</div>';
       } else {
         const maxCount = Math.max(...reasons.map(r => r.count), 1);
         reasonsEl.innerHTML = `<div class="scan-reasons-list">${reasons.map(r => {
