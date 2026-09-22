@@ -58,9 +58,12 @@ def detect_fvg(
     if min_size_pct is None:
         min_size_pct = getattr(config, "liquidity_fvg_min_size_pct", 0.05)
 
-    data = df.tail(lookback).reset_index(drop=True)
+    data = df.tail(lookback)
     if len(data) < 3:
         return []
+
+    # Compute offset so index is absolute in the original df
+    offset = len(df) - len(data)
 
     fvgs: list[FairValueGap] = []
 
@@ -82,31 +85,31 @@ def detect_fvg(
         if close1 > open1 and close3 > open3 and low3 > high1:
             gap_size_pct = (low3 - high1) / high1 * 100
             if gap_size_pct >= min_size_pct:
-                ts = _to_datetime(data.index[i])
+                ts = _to_datetime(df.index[offset + i])
                 fvgs.append(FairValueGap(
                     type="bullish",
                     top=low3,
                     bottom=high1,
                     timestamp=ts,
-                    index=i + 1,
+                    index=offset + i + 1,
                 ))
 
         # TZ §6.1.3: Bearish FVG — candle1 bearish, candle3 bearish, gap down
         if close1 < open1 and close3 < open3 and high3 < low1:
             gap_size_pct = (low1 - high3) / high3 * 100
             if gap_size_pct >= min_size_pct:
-                ts = _to_datetime(data.index[i])
+                ts = _to_datetime(df.index[offset + i])
                 fvgs.append(FairValueGap(
                     type="bearish",
                     top=low1,
                     bottom=high3,
                     timestamp=ts,
-                    index=i + 1,
+                    index=offset + i + 1,
                 ))
 
     # TZ §6.1.4: fill_threshold = 0.7 (70% filled = inactive)
     for fvg in fvgs:
-        candles_after = data.iloc[fvg.index + 1:]
+        candles_after = df.iloc[fvg.index + 1:]
         fvg.filled = _is_fvg_filled(fvg, candles_after)
 
     return fvgs

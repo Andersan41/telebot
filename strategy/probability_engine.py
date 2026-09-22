@@ -336,8 +336,27 @@ class ProbabilityEngine:
         elif f.wave_conflict:
             winrate *= config.wave.conflict_penalty
 
+        # ═══ Live-data penalties (calibrated from 44 live trades, WR=27%) ═══
+        # Score 1: 37 trades, avg PnL=-1.79% — dominant losing pattern
+        penalty = 0.0
+        if f.components_count <= 1:
+            penalty -= 15.0
+        elif f.components_count <= 2:
+            penalty -= 10.0
+        # No OB: 0/32 SL trades had OB — OB is a strong filter
+        if not f.has_ob:
+            penalty -= 5.0
+        # Wide SL (>2 ATR): 91% of SL trades had SL/ATR > 2
+        if f.sl_distance_pct > f.atr_pct * 2 and f.atr_pct > 0:
+            penalty -= 10.0
+        # Low volume (below average): weak conviction
+        if f.volume_ratio < 1.0:
+            penalty -= 3.0
+        winrate += penalty
+
         winrate = winrate * winrate_mult
-        winrate = max(20.0, min(85.0, winrate))  # clamp
+        # Live WR=27%, ceiling 85% was 3x overconfident. Raised floor.
+        winrate = max(15.0, min(65.0, winrate))
 
         # Expected net R (A08 fix): E[R] = p*b - (1-p)
         p = winrate / 100.0
@@ -393,15 +412,15 @@ class ProbabilityEngine:
                     # Fallback: sigmoid normalization
                     p_tp = 1.0 / (1.0 + np.exp(-raw_return))
 
-                # Clamp
-                p_tp = max(0.05, min(0.85, p_tp))
+                # Clamp — ML ceiling aligned with rules ceiling
+                p_tp = max(0.05, min(0.65, p_tp))
 
                 # Expected RR from features (structural TP/SL already baked in)
                 expected_rr = f.rr_ratio if f.rr_ratio > 0 else 1.0
 
                 # Apply HTF bias penalty and OB mitigation
                 multiplier = f.htf_bias_penalty * f.ob_state_multiplier
-                p_tp = min(0.85, p_tp * multiplier)
+                p_tp = min(0.65, p_tp * multiplier)
 
                 model_type = f"expected_return({self.model.__class__.__name__})"
             else:
@@ -410,7 +429,7 @@ class ProbabilityEngine:
 
                 # Apply HTF bias penalty and OB mitigation
                 multiplier = f.htf_bias_penalty * f.ob_state_multiplier
-                p_tp = min(0.85, p_tp * multiplier)
+                p_tp = min(0.65, p_tp * multiplier)
 
                 # Regressor: expected RR
                 expected_rr = f.rr_ratio

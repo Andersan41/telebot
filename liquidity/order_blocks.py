@@ -97,9 +97,12 @@ def detect_order_blocks(
     if check_retest_lookback is None:
         check_retest_lookback = getattr(config, "ob_retest_history", 30)
 
-    data = df.tail(lookback).reset_index(drop=True)
+    data = df.tail(lookback)
     if len(data) < 5:
         return []
+
+    # Compute offset so candle_index is absolute in the original df
+    offset = len(df) - len(data)
 
     atr = _calc_atr(data)
     avg_vol = data["volume"].mean()
@@ -135,7 +138,7 @@ def detect_order_blocks(
                 if require_bos and not has_bos:
                     continue
 
-                ts = _to_datetime(data.index[i])
+                ts = _to_datetime(df.index[offset + i])
                 retested, reaction = _check_retest_bullish(
                     data, i, float(candle["high"]), float(candle["low"]),
                     lookback=check_retest_lookback,
@@ -146,7 +149,7 @@ def detect_order_blocks(
                     high=float(candle["high"]),
                     low=float(candle["low"]),
                     timestamp=ts,
-                    candle_index=i,
+                    candle_index=offset + i,
                     displacement_atr=round(disp_atr, 3),
                     volume_ratio=round(vol_ratio, 3),
                     has_bos=has_bos,
@@ -165,7 +168,7 @@ def detect_order_blocks(
                 if require_bos and not has_bos:
                     continue
 
-                ts = _to_datetime(data.index[i])
+                ts = _to_datetime(df.index[offset + i])
                 retested, reaction = _check_retest_bearish(
                     data, i, float(candle["high"]), float(candle["low"]),
                     lookback=check_retest_lookback,
@@ -176,7 +179,7 @@ def detect_order_blocks(
                     high=float(candle["high"]),
                     low=float(candle["low"]),
                     timestamp=ts,
-                    candle_index=i,
+                    candle_index=offset + i,
                     displacement_atr=round(disp_atr, 3),
                     volume_ratio=round(vol_ratio, 3),
                     has_bos=has_bos,
@@ -184,7 +187,7 @@ def detect_order_blocks(
                     retest_reaction=reaction,
                 ))
 
-    blocks = _filter_by_age(blocks, len(data), max_age_candles)
+    blocks = _filter_by_age(blocks, len(df), max_age_candles)
     return blocks
 
 
@@ -212,13 +215,17 @@ def find_ob_for_sweep(
     elif sweep_timestamp.tzinfo is None:
         sweep_timestamp = sweep_timestamp.replace(tzinfo=datetime.timezone.utc)
 
-    data = df.tail(max(sweep_index + 10, 100)).reset_index(drop=True)
+    tail_size = max(sweep_index + 10, 100)
+    data = df.tail(tail_size)
     if sweep_index >= len(data):
         return None
 
+    # Compute offset so candle_index is absolute in the original df
+    offset = len(df) - len(data)
+
     for i in range(sweep_index - 1, max(0, sweep_index - lookback), -1):
         candle = data.iloc[i]
-        ts = _to_datetime(data.index[i])
+        ts = _to_datetime(df.index[offset + i])
 
         # Temporal binding: OB cannot be before sweep
         if ts < sweep_timestamp:
@@ -235,7 +242,7 @@ def find_ob_for_sweep(
                             high=float(candle["open"]),  # TZ: top = open
                             low=float(candle["close"]),  # bottom = close
                             timestamp=ts,
-                            candle_index=i,
+                            candle_index=offset + i,
                             displacement_atr=0.0,  # not required for sweep OB
                             volume_ratio=1.0,
                             has_bos=False,  # BOS checked separately
@@ -251,7 +258,7 @@ def find_ob_for_sweep(
                             high=float(candle["close"]),  # TZ: top = close
                             low=float(candle["open"]),    # bottom = open
                             timestamp=ts,
-                            candle_index=i,
+                            candle_index=offset + i,
                             displacement_atr=0.0,
                             volume_ratio=1.0,
                             has_bos=False,
@@ -298,7 +305,7 @@ def _check_bos_bearish(df: pd.DataFrame, start_idx: int, swing_lows: list[dict],
     relevant_lows = [s for s in swing_lows if s["index"] < start_idx]
     if not relevant_lows:
         return False
-    prev_swing_low = min(relevant_lows, key=lambda s: s["index"])["price"]
+    prev_swing_low = max(relevant_lows, key=lambda s: s["index"])["price"]
     end = min(start_idx + lookback, len(df))
     for j in range(start_idx, end):
         if float(df["low"].iloc[j]) < prev_swing_low:

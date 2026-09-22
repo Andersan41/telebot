@@ -81,6 +81,11 @@ class SetupFeatures:
     volume_ratio: float = 1.0   # volume / volume_sma
     volume_delta_pct: float = 0.0  # taker buy delta
 
+    # === Volume Profile (POC/VAH/VAL) ===
+    vp_poc_distance_pct: float = 0.0  # distance from price to POC (%)
+    vp_in_value_area: bool = False     # price within VAL-VAH range
+    vp_price_range_pct: float = 0.0   # VAH-VAL width as % of POC
+
     # === Volatility ===
     atr: float = 0.0        # raw ATR value
     atr_pct: float = 0.0     # ATR / close * 100
@@ -184,6 +189,10 @@ class SetupFeatures:
             "volume_ratio": self.volume_ratio,
             "volume_delta_pct": self.volume_delta_pct,
             "volume_above_avg": int(self.volume_above_avg),
+            # Volume Profile
+            "vp_poc_distance_pct": self.vp_poc_distance_pct,
+            "vp_in_value_area": int(self.vp_in_value_area),
+            "vp_price_range_pct": self.vp_price_range_pct,
             # Volatility
             "atr_pct": self.atr_pct,
             "regime": {"trend": 1, "expansion": 0.5, "range": -0.5, "compression": -1}.get(self.regime, 0),
@@ -354,6 +363,7 @@ class FeatureBuilder:
         ob_state_multiplier: float = 1.0,
         smt_divergence_score: float = 0.0,
         wave_analysis: Any = None,  # WaveAnalysis from elliott_wave.analyzer (optional)
+        volume_profile: Any = None,  # VolumeProfileResult from liquidity.volume_profile (optional)
     ) -> SetupFeatures:
         """Build feature vector from all available data.
 
@@ -550,6 +560,10 @@ class FeatureBuilder:
             wave_conflict=wave_analysis.conflict if wave_analysis else False,
             wave_alternatives_count=len(wave_analysis.alternatives) if wave_analysis else 0,
             wave_primary_label=wave_analysis.primary.label if wave_analysis and wave_analysis.primary else "",
+            # Volume Profile
+            vp_poc_distance_pct=volume_profile.distance_from_price(entry_price) if volume_profile else 0.0,
+            vp_in_value_area=volume_profile.price_in_value_area(entry_price) if volume_profile else False,
+            vp_price_range_pct=volume_profile.price_range_pct if volume_profile else 0.0,
             # Visual data (for chart overlay)
             sweep_price=setup.sweep_price,
             sweep_candle_timestamp=setup.sweep_candle_timestamp.isoformat() if setup.sweep_candle_timestamp else None,

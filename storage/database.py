@@ -1195,6 +1195,16 @@ class Database:
             )
             return list(result.scalars().all())
 
+    async def get_open_outcomes_with_direction(self) -> list[tuple["SignalOutcome", str]]:
+        """Return open outcomes paired with signal direction (BUY/SELL)."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(SignalOutcome, Signal.signal_type)
+                .join(Signal, SignalOutcome.signal_id == Signal.id)
+                .where(SignalOutcome.status == "OPEN")
+            )
+            return list(result.all())
+
     async def get_active_signals_count(self) -> int:
         """Количество активных (незакрытых) сигналов."""
         async with self._session_factory() as session:
@@ -1453,6 +1463,82 @@ class Database:
                 )
             )
             return list(result.scalars().all())
+
+    async def get_scan_stats(self, hours: int = 24) -> dict:
+        """Return scan funnel statistics for the last N hours.
+
+        Lightweight aggregation — no raw rows, just counts.
+        """
+        from sqlalchemy import func, text
+        async with self._session_factory() as session:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+            # Total entries (distinct symbol+timeframe scans)
+            total_q = await session.execute(
+                select(func.count(SignalAuditLog.id)).where(
+                    SignalAuditLog.ts_event >= cutoff
+                )
+            )
+            total = total_q.scalar() or 0
+
+            # Per-stage pass/block counts
+            stage_q = await session.execute(
+                select(
+                    SignalAuditLog.stage,
+                    SignalAuditLog.passed,
+                    func.count(SignalAuditLog.id),
+                ).where(
+                    SignalAuditLog.ts_event >= cutoff
+                ).group_by(SignalAuditLog.stage, SignalAuditLog.passed)
+            )
+            stage_rows = stage_q.all()
+            stages = {}
+            for stage_name, passed, cnt in stage_rows:
+                if stage_name not in stages:
+                    stages[stage_name] = {"passed": 0, "blocked": 0}
+                if passed:
+                    stages[stage_name]["passed"] = cnt
+                else:
+                    stages[stage_name]["blocked"] = cnt
+
+            # Top rejection reasons (blocked only)
+            reasons_q = await session.execute(
+                select(
+                    SignalAuditLog.reason_code,
+                    func.count(SignalAuditLog.id),
+                ).where(
+                    SignalAuditLog.ts_event >= cutoff,
+                    SignalAuditLog.passed == False,
+                ).group_by(SignalAuditLog.reason_code).order_by(
+                    func.count(SignalAuditLog.id).desc()
+                ).limit(10)
+            )
+            top_reasons = [{"reason": r, "count": c} for r, c in reasons_q.all()]
+
+            # Last scan timestamp
+            last_q = await session.execute(
+                select(func.max(SignalAuditLog.ts_event)).where(
+                    SignalAuditLog.ts_event >= cutoff
+                )
+            )
+            last_scan = last_q.scalar()
+
+            # Config version
+            ver_q = await session.execute(
+                select(func.max(SignalAuditLog.config_version)).where(
+                    SignalAuditLog.ts_event >= cutoff
+                )
+            )
+            config_ver = ver_q.scalar()
+
+            return {
+                "total_entries": total,
+                "stages": stages,
+                "top_rejection_reasons": top_reasons,
+                "last_scan_ts": last_scan.isoformat() if last_scan else None,
+                "config_version": config_ver,
+                "hours": hours,
+            }
 
     # ── Sandbox API ──────────────────────────────────────────────
 

@@ -483,7 +483,7 @@ async def check_open_outcomes() -> None:
                 f"(entry={signal.close_price}, SL={pos.stop_loss:.6f}, TP={signal.tp})"
             )
             wave_label, wave_dir = await _get_wave_info(signal.id)
-            await _send_close_notification(signal, db_status, current_price, net_pnl,
+            await _send_close_notification(signal, raw_reason, current_price, net_pnl,
                                            actual_sl=pos.stop_loss,
                                            wave_label=wave_label, wave_direction=wave_dir)
             from risk.daily_limits import daily_limits

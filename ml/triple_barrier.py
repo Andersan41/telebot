@@ -364,7 +364,7 @@ def main():
     if args.mode == "structural":
         print(f"Labeling {len(symbols)} symbols (mode=structural, max={args.max_bars} bars)")
     else:
-        print(f"Labeling {len(symbols)} symbols (TP={args.tp_mult}×ATR, SL={args.sl_mult}×ATR, max={args.max_bars} bars)")
+        print(f"Labeling {len(symbols)} symbols (TP={args.tp_mult}xATR, SL={args.sl_mult}xATR, max={args.max_bars} bars)")
     print(f"Cache dir: {OHLCV_DIR}")
     print(f"Output dir: {LABELED_DIR}\n")
 

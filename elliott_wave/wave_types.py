@@ -142,8 +142,14 @@ def _count_to_dict(count: WaveCount) -> dict:
         "is_primary": count.is_primary,
         "label": count.label,
         "target": round(count.end_price, 8),
+        "price_direction": count.price_direction,
         "points": [
-            {"index": p.index, "price": round(p.price, 8), "label": p.wave_label}
+            {
+                "index": p.index,
+                "price": round(p.price, 8),
+                "label": p.wave_label,
+                "time": int(p.timestamp.timestamp()) if p.timestamp and hasattr(p.timestamp, 'timestamp') else None,
+            }
             for p in count.points
         ],
         "segments": [
@@ -151,6 +157,8 @@ def _count_to_dict(count: WaveCount) -> dict:
                 "label": s.label,
                 "start_price": round(s.start.price, 8),
                 "end_price": round(s.end.price, 8),
+                "start_index": s.start.index,
+                "end_index": s.end.index,
                 "direction": s.direction.value,
             }
             for s in count.segments

@@ -156,6 +156,16 @@ class DailyLimitsTracker:
             f"consecutive_losses={self._state.consecutive_losses})"
         )
 
+    def release_trade(self, risk_pct: float) -> None:
+        """Release a pre-reserved risk slot (rollback on failure)."""
+        self._maybe_reset()
+        self._state.daily_risk_used_pct = max(
+            0.0, self._state.daily_risk_used_pct - risk_pct
+        )
+        self._state.daily_trades_count = max(
+            0, self._state.daily_trades_count - 1
+        )
+
     def get_state(self) -> DailyLimitsState:
         """Get current daily limits state (for logging/display)."""
         self._maybe_reset()

@@ -103,7 +103,7 @@ async def cache_all(symbols: list[str], candles: int, update: bool = False) -> N
     OHLCV_DIR.mkdir(parents=True, exist_ok=True)
     await exchange_client.connect()
 
-    print(f"Caching {len(symbols)} symbols × {candles} candles ({TIMEFRAME})")
+    print(f"Caching {len(symbols)} symbols x {candles} candles ({TIMEFRAME})")
     print(f"Cache dir: {OHLCV_DIR}")
 
     total_rows = 0

@@ -147,20 +147,27 @@ def _detect_wave_pivots(df: pd.DataFrame) -> List[WavePoint]:
     """
     Detect wave pivots using ATR-filtered swing points.
 
-    Uses the unified swing_detector with rolling window mode (left=2, right=2)
-    then filters by ATR multiple.
+    Uses the unified swing_detector with rolling window mode (left=3, right=3)
+    then filters by ATR multiple + minimum bar distance.
     """
-    swings = detect_swings(df, left_bars=2, right_bars=2, strict=False)
+    swings = detect_swings(df, left_bars=3, right_bars=3, strict=False)
     if not swings:
         return []
 
-    # Filter by ATR
+    # Filter by ATR and minimum distance
     has_atr = "atr" in df.columns
+    min_bars = 3  # minimum bars between consecutive pivots
     pivots: List[WavePoint] = []
 
     for sw in swings:
         if sw.index >= len(df):
             continue
+
+        # Minimum distance from previous pivot
+        if pivots:
+            dist = sw.index - pivots[-1].index
+            if dist < min_bars:
+                continue
 
         # Skip tiny moves
         if has_atr:
@@ -197,65 +204,65 @@ def _try_impulse(
     - Wave 3 can't be the shortest (rules 2 & 3)
     - Wave 4 can't overlap wave 1 territory (rule 4)
     - Alternation: waves 2 and 4 should differ in structure
+
+    Iterates from the most recent pivots first so the pattern always
+    anchors to the latest price action.
     """
     if len(pivots) < 6:
         return None
 
-    best_count: Optional[WaveCount] = None
-    best_score = 0.0
+    min_score = 0.35  # require reasonable quality
 
-    # Try different starting points and window sizes
-    for start_idx in range(0, min(3, len(pivots) - 5)):
-        for end_idx in range(start_idx + 5, min(start_idx + 11, len(pivots) + 1)):
+    # Iterate from the most recent pivots: end_idx desc, start_idx desc
+    max_end = len(pivots)
+    for end_idx in range(max_end, 5, -1):
+        start_min = max(0, end_idx - 10)
+        for start_idx in range(min(end_idx - 5, start_min - 1), start_min - 1, -1):
             window = pivots[start_idx:end_idx]
             if len(window) < 6:
                 continue
 
-            # Take every other pivot as wave point (alternating H/L)
-            # For impulse: 0(H)→1(L)→2(H)→3(L)→4(H)→5(L) for bullish
-            # or 0(L)→1(H)→2(L)→3(H)→4(L)→5(H) for bearish
             wave_points = window[:6]
             score = _score_impulse(wave_points)
+            if score < min_score:
+                continue
 
-            if score > best_score:
-                best_score = score
-                # Label the points
-                labels = ["0", "1", "2", "3", "4", "5"]
-                labeled_points = [
-                    WavePoint(
-                        index=wp.index,
-                        price=wp.price,
-                        wave_label=labels[i],
-                        timestamp=wp.timestamp,
-                    )
-                    for i, wp in enumerate(wave_points)
-                ]
-
-                # Determine direction
-                is_bullish = wave_points[-1].price > wave_points[0].price
-                direction = WaveDirection.IMPULSE
-                segments = [
-                    WaveSegment(
-                        start=labeled_points[i],
-                        end=labeled_points[i + 1],
-                        label=str(i + 1),
-                        degree=degree,
-                        direction=direction,
-                    )
-                    for i in range(5)
-                ]
-
-                best_count = WaveCount(
-                    points=labeled_points,
-                    segments=segments,
-                    direction=direction,
-                    degree=degree,
-                    confidence=score,
-                    is_primary=True,
-                    label="impulse (1-2-3-4-5)",
+            # Found a valid recent pattern — use it immediately
+            labels = ["0", "1", "2", "3", "4", "5"]
+            labeled_points = [
+                WavePoint(
+                    index=wp.index,
+                    price=wp.price,
+                    wave_label=labels[i],
+                    timestamp=wp.timestamp,
                 )
+                for i, wp in enumerate(wave_points)
+            ]
 
-    return best_count
+            is_bullish = wave_points[-1].price > wave_points[0].price
+            direction = WaveDirection.IMPULSE
+            segments = [
+                WaveSegment(
+                    start=labeled_points[i],
+                    end=labeled_points[i + 1],
+                    label=str(i + 1),
+                    degree=degree,
+                    direction=direction,
+                )
+                for i in range(5)
+            ]
+
+            return WaveCount(
+                points=labeled_points,
+                segments=segments,
+                direction=direction,
+                degree=degree,
+                confidence=score,
+                is_primary=True,
+                label="impulse (1-2-3-4-5)",
+            )
+
+    return None
 
 
 def _score_impulse(points: List[WavePoint]) -> float:
@@ -318,60 +325,62 @@ def _try_correction(
     - Wave B can't retrace more than 100% of wave A
     - Wave C must go beyond wave A end
     - Typical B retracement: 50-78.6% of A
+
+    Iterates from the most recent pivots first.
     """
     if len(pivots) < 4:
         return None
 
-    best_count: Optional[WaveCount] = None
-    best_score = 0.0
+    min_score = 0.30
 
-    for start_idx in range(0, min(3, len(pivots) - 3)):
-        for end_idx in range(start_idx + 3, min(start_idx + 7, len(pivots) + 1)):
+    max_end = len(pivots)
+    for end_idx in range(max_end, 3, -1):
+        start_min = max(0, end_idx - 6)
+        for start_idx in range(min(end_idx - 3, start_min - 1), start_min - 1, -1):
             window = pivots[start_idx:end_idx]
             if len(window) < 4:
                 continue
 
-            # For A-B-C: take first 4 pivots as 0→A→B→C
             wave_points = window[:4]
             score = _score_correction(wave_points)
+            if score < min_score:
+                continue
 
-            if score > best_score:
-                best_score = score
-                labels = ["0", "A", "B", "C"]
-                labeled_points = [
-                    WavePoint(
-                        index=wp.index,
-                        price=wp.price,
-                        wave_label=labels[i],
-                        timestamp=wp.timestamp,
-                    )
-                    for i, wp in enumerate(wave_points)
-                ]
-
-                is_bullish = wave_points[-1].price > wave_points[0].price
-                direction = WaveDirection.CORRECTION
-                segments = [
-                    WaveSegment(
-                        start=labeled_points[i],
-                        end=labeled_points[i + 1],
-                        label=labels[i + 1],
-                        degree=degree,
-                        direction=direction,
-                    )
-                    for i in range(3)
-                ]
-
-                best_count = WaveCount(
-                    points=labeled_points,
-                    segments=segments,
-                    direction=direction,
-                    degree=degree,
-                    confidence=score,
-                    is_primary=True,
-                    label="correction (A-B-C)",
+            labels = ["0", "A", "B", "C"]
+            labeled_points = [
+                WavePoint(
+                    index=wp.index,
+                    price=wp.price,
+                    wave_label=labels[i],
+                    timestamp=wp.timestamp,
                 )
+                for i, wp in enumerate(wave_points)
+            ]
 
-    return best_count
+            is_bullish = wave_points[-1].price > wave_points[0].price
+            direction = WaveDirection.CORRECTION
+            segments = [
+                WaveSegment(
+                    start=labeled_points[i],
+                    end=labeled_points[i + 1],
+                    label=labels[i + 1],
+                    degree=degree,
+                    direction=direction,
+                )
+                for i in range(3)
+            ]
+
+            return WaveCount(
+                points=labeled_points,
+                segments=segments,
+                direction=direction,
+                degree=degree,
+                confidence=score,
+                is_primary=True,
+                label="correction (A-B-C)",
+            )
+
+    return None
 
 
 def _score_correction(points: List[WavePoint]) -> float:

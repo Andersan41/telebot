@@ -130,7 +130,14 @@ class TradeEngine:
             )
 
         # SL = invalidation level + buffer (ATR-based)
-        sl_buffer = atr * 0.35  # 35% of ATR as buffer
+        # Live data: avg SL/ATR=2.64, 91% > 2 ATR — buffer was too wide.
+        # Reduced: structural 0.5 ATR (was 1.0), ATR fallback 0.25 ATR (was 0.35).
+        # Structural levels (sweep/ob/swing/bos) need some buffer for noise.
+        # ATR fallback already provides its own distance — keep tight.
+        if invalidation.type in ("sweep_extreme", "ob_boundary", "swing_point", "structure_break"):
+            sl_buffer = atr * 0.5  # half ATR buffer for structural levels
+        else:
+            sl_buffer = atr * 0.25  # 25% of ATR for ATR fallback
         if signal == SignalType.BUY:
             sl = round(invalidation.level - sl_buffer, 8)
         else:
@@ -230,6 +237,54 @@ class TradeEngine:
         best = max(targets, key=lambda t: t.score)
         tp = best.level
         tp_source = best.type
+
+        # ═══ U10: Geometric validation ═══
+        # For BUY: SL must be below entry, TP must be above entry
+        # For SELL: SL must be above entry, TP must be below entry
+        if signal == SignalType.BUY:
+            if sl >= entry:
+                return TradePlan(
+                    direction=direction, symbol=ind.symbol, timeframe=timeframe,
+                    entry_price=entry, is_valid=False,
+                    rejection_reason=f"GEOMETRY_INVALID: BUY SL={sl:.4f} >= entry={entry:.4f}",
+                )
+            if tp <= entry:
+                return TradePlan(
+                    direction=direction, symbol=ind.symbol, timeframe=timeframe,
+                    entry_price=entry, is_valid=False,
+                    rejection_reason=f"GEOMETRY_INVALID: BUY TP={tp:.4f} <= entry={entry:.4f}",
+                )
+        else:  # SELL
+            if sl <= entry:
+                return TradePlan(
+                    direction=direction, symbol=ind.symbol, timeframe=timeframe,
+                    entry_price=entry, is_valid=False,
+                    rejection_reason=f"GEOMETRY_INVALID: SELL SL={sl:.4f} <= entry={entry:.4f}",
+                )
+            if tp >= entry:
+                return TradePlan(
+                    direction=direction, symbol=ind.symbol, timeframe=timeframe,
+                    entry_price=entry, is_valid=False,
+                    rejection_reason=f"GEOMETRY_INVALID: SELL TP={tp:.4f} >= entry={entry:.4f}",
+                )
+        # Also check for NaN/Inf
+        if not (entry > 0 and sl > 0 and tp > 0):
+            return TradePlan(
+                direction=direction, symbol=ind.symbol, timeframe=timeframe,
+                entry_price=entry, is_valid=False,
+                rejection_reason=f"GEOMETRY_INVALID: non-positive price (entry={entry}, sl={sl}, tp={tp})",
+            )
+
+        # ═══ Step 4.5: RR Symmetry — reward must be >= risk ═══
+        # Live data: avg SL=-3.69%, avg TP=+2.89% — RR < 1 kills expectancy.
+        risk_dist = abs(entry - sl)
+        reward_dist = abs(tp - entry)
+        if risk_dist > 0 and reward_dist < risk_dist * 1.0:
+            return TradePlan(
+                direction=direction, symbol=ind.symbol, timeframe=timeframe,
+                entry_price=entry, is_valid=False,
+                rejection_reason=f"RR_TOO_LOW: reward={reward_dist:.4f} < risk={risk_dist:.4f} (ratio={reward_dist/risk_dist:.2f})",
+            )
 
         # ═══ Step 5: Calculate Final RR ═══
 
