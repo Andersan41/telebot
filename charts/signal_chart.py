@@ -147,23 +147,40 @@ def generate_signal_chart(
     vol_colors = [GREEN if closes[i] >= opens[i] else RED for i in range(n)]
     ax_vol.bar(x, volumes, width=0.7, color=vol_colors, alpha=0.5, zorder=3)
 
-    # ── Entry / SL / TP lines ──
+    # ── Entry / SL / TP1/TP2/TP3 lines ──
+    risk = abs(entry_price - sl)
+    if risk > 0:
+        if direction == "buy":
+            tp1 = entry_price + risk * 2
+            tp2 = entry_price + risk * 3
+            tp3 = entry_price + risk * 4
+        else:
+            tp1 = entry_price - risk * 2
+            tp2 = entry_price - risk * 3
+            tp3 = entry_price - risk * 4
+    else:
+        tp1 = tp2 = tp3 = tp
+
     price_min = min(lows)
     price_max = max(highs)
-    all_levels = [entry_price, sl, tp]
+    all_levels = [entry_price, sl, tp1, tp2, tp3]
     level_min = min(min(all_levels), price_min)
     level_max = max(max(all_levels), price_max)
     margin = (level_max - level_min) * 0.12
 
     ax_main.axhline(entry_price, color=entry_color, linewidth=1.2, linestyle="--", zorder=5, alpha=0.9)
     ax_main.axhline(sl, color=RED, linewidth=1.0, linestyle=":", zorder=5, alpha=0.7)
-    ax_main.axhline(tp, color=GREEN, linewidth=1.0, linestyle=":", zorder=5, alpha=0.7)
+    ax_main.axhline(tp1, color="#4caf50", linewidth=0.8, linestyle=":", zorder=5, alpha=0.6)
+    ax_main.axhline(tp2, color="#66bb6a", linewidth=0.8, linestyle=":", zorder=5, alpha=0.6)
+    ax_main.axhline(tp3, color=GREEN, linewidth=1.0, linestyle=":", zorder=5, alpha=0.7)
 
     # Labels for levels
     label_x = n - 1
     ax_main.text(label_x + 0.5, entry_price, f"  Entry {_fmt_price(entry_price, dec)}", color=entry_color, fontsize=7, va="center", fontweight="bold", zorder=6)
     ax_main.text(label_x + 0.5, sl, f"  SL {_fmt_price(sl, dec)}", color=RED, fontsize=7, va="center", zorder=6)
-    ax_main.text(label_x + 0.5, tp, f"  TP {_fmt_price(tp, dec)}", color=GREEN, fontsize=7, va="center", zorder=6)
+    ax_main.text(label_x + 0.5, tp1, f"  TP1 {_fmt_price(tp1, dec)}", color="#4caf50", fontsize=6, va="center", zorder=6)
+    ax_main.text(label_x + 0.5, tp2, f"  TP2 {_fmt_price(tp2, dec)}", color="#66bb6a", fontsize=6, va="center", zorder=6)
+    ax_main.text(label_x + 0.5, tp3, f"  TP3 {_fmt_price(tp3, dec)}", color=GREEN, fontsize=7, va="center", zorder=6)
 
     ax_main.set_ylim(level_min - margin, level_max + margin * 1.5)
 

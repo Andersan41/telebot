@@ -185,12 +185,33 @@ class SignalResult:
             if self._sl_source and "htf_poi" in self._sl_source:
                 sl_source_tag = " 🎯"
             lines.append(f"SL: <code>{_fmt_price(self.sl)}</code> ({sl_pct:+.2f}%){sl_source_tag}")
-        if self.tp is not None:
+
+        # TP1/TP2/TP3 partial close targets
+        if self.sl is not None and entry:
+            risk = abs(entry - self.sl)
+            if risk > 0:
+                if self.signal == SignalType.BUY:
+                    tp1 = entry + risk * 2
+                    tp2 = entry + risk * 3
+                    tp3 = entry + risk * 4
+                else:
+                    tp1 = entry - risk * 2
+                    tp2 = entry - risk * 3
+                    tp3 = entry - risk * 4
+                tp1_pct = (tp1 - entry) / entry * 100
+                tp2_pct = (tp2 - entry) / entry * 100
+                tp3_pct = (tp3 - entry) / entry * 100
+                lines.append(f"TP1: <code>{_fmt_price(tp1)}</code> ({tp1_pct:+.2f}%) — 25%")
+                lines.append(f"TP2: <code>{_fmt_price(tp2)}</code> ({tp2_pct:+.2f}%) — 35%")
+                lines.append(f"TP3: <code>{_fmt_price(tp3)}</code> ({tp3_pct:+.2f}%) — 40%")
+                rr = risk
+                lines.append(f"RR: 1:{abs(self.tp - entry) / risk:.1f}" if self.tp else f"RR: 1:4.0")
+            elif self.tp is not None:
+                tp_pct = (self.tp - entry) / entry * 100 if entry else 0
+                lines.append(f"TP: <code>{_fmt_price(self.tp)}</code> ({tp_pct:+.2f}%)")
+        elif self.tp is not None:
             tp_pct = (self.tp - entry) / entry * 100 if entry else 0
             lines.append(f"TP: <code>{_fmt_price(self.tp)}</code> ({tp_pct:+.2f}%)")
-        if self.sl is not None and self.tp is not None and entry:
-            rr = abs(self.tp - entry) / abs(entry - self.sl) if entry != self.sl else 0
-            lines.append(f"RR: 1:{rr:.1f}")
 
         # Zone quality multiplier
         if self._zone_quality_multiplier != 1.0:

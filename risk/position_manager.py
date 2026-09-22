@@ -193,12 +193,15 @@ def calculate_breakeven_sl(position: ManagedPosition) -> float:
 
     fee_buffer covers round-trip commissions (maker+taker ≈ 0.04-0.06%).
     NOTE: This is a move-to-entry, not true net-BE. See ExitPlan docstring.
+
+    For BUY: SL is clamped to entry (not above) to prevent negative risk
+    which would invert all R-based partial close targets.
     """
     fee_buffer = position.entry_price * FEE_BUFFER_PERCENT
     if position.direction == "BUY":
-        return position.entry_price + fee_buffer
+        return position.entry_price  # Clamp to entry, not above
     else:
-        return position.entry_price - fee_buffer
+        return position.entry_price  # Clamp to entry, not below
 
 
 def check_breakeven(position: ManagedPosition, current_price: float) -> Optional[float]:
