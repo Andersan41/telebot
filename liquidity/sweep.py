@@ -217,7 +217,7 @@ def _calc_volume_ratio(df: pd.DataFrame, index: int) -> float:
     """Calculate volume ratio vs recent average."""
     vol_window = config.trading.volume_sma_period
     start = max(0, index - vol_window + 1)
-    recent_vol = df["volume"].iloc[start:index + 1]
+    recent_vol = df["volume"].iloc[start:index]
     avg_vol = recent_vol.mean()
     if avg_vol == 0:
         return 1.0

@@ -136,7 +136,7 @@ def classify_breakout(
             break
 
     vol = float(last["volume"]) if "volume" in last else 0.0
-    avg_vol = float(tail["volume"].iloc[-lookback:].mean()) if lookback > 0 else 0.0
+    avg_vol = float(tail["volume"].iloc[-lookback-1:-1].mean()) if lookback > 0 else 0.0
     volume_ratio = vol / avg_vol if avg_vol > 0 else 0.0
 
     disp_atr = pierce / atr if atr and pierce > 0 else 0.0

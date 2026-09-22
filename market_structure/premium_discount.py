@@ -2,8 +2,8 @@
 market_structure/premium_discount.py — Discount/Premium Zone Detection (ICT).
 
 ICT Optimal Trade Entry (OTE) zones:
-- Discount zone: fib 0.5–0.79 (price retraced 50-79% from swing low → good for BUY)
-- Premium zone: fib 0.21–0.5 (price retraced 21-50% from top → good for SELL)
+- Discount zone: fib 0.21–0.5 (price near swing low → cheap → good for BUY)
+- Premium zone: fib 0.5–0.79 (price near swing high → expensive → good for SELL)
 - Equilibrium: outside OTE zones
 
 fib_level = (price - swing_low) / (swing_high - swing_low)
@@ -46,12 +46,12 @@ def classify_zone(
     Classify current price zone using ICT OTE (Optimal Trade Entry).
 
     ICT OTE:
-    - Discount zone: fib 0.5–0.79 (price in discount → good for BUY)
-    - Premium zone: fib 0.21–0.5 (price in premium → good for SELL)
+    - Discount zone: fib 0.21–0.5 (price near swing low → cheap → good for BUY)
+    - Premium zone: fib 0.5–0.79 (price near swing high → expensive → good for SELL)
     - Equilibrium: outside OTE zones
 
-    For BUY: price should be in Discount (fib 0.5–0.79)
-    For SELL: price should be in Premium (fib 0.21–0.5)
+    For BUY: price should be in Discount (fib 0.21–0.5)
+    For SELL: price should be in Premium (fib 0.5–0.79)
     """
     price = df['close'].iloc[-1]
 
@@ -64,12 +64,12 @@ def classify_zone(
     fib_level = (price - swing_low) / range_size
 
     # ICT OTE zones:
-    # Discount (buy zone): fib 0.5–0.79 (price retraced 50-79% from low)
-    # Premium (sell zone): fib 0.21–0.5 (price near top, good for shorts)
+    # Discount (buy zone): fib 0.21–0.5 (price near swing low, cheap)
+    # Premium (sell zone): fib 0.5–0.79 (price near swing high, expensive)
     if ote_fib_min <= fib_level <= ote_fib_max:
-        zone_type = ZoneType.DISCOUNT
-    elif (1.0 - ote_fib_max) <= fib_level <= (1.0 - ote_fib_min):
         zone_type = ZoneType.PREMIUM
+    elif (1.0 - ote_fib_max) <= fib_level <= (1.0 - ote_fib_min):
+        zone_type = ZoneType.DISCOUNT
     else:
         zone_type = ZoneType.EQUILIBRIUM
 

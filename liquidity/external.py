@@ -61,9 +61,11 @@ def detect_external_liquidity(
     if len(df) < lookback:
         lookback = len(df)
 
-    data = df.tail(lookback).reset_index(drop=True)
+    data = df.tail(lookback)
     if len(data) < swing_window * 3:
         return []
+
+    offset = len(df) - len(data)
 
     # Find all swing points
     swing_highs = []
@@ -76,20 +78,22 @@ def detect_external_liquidity(
 
         # Swing high: highest high in window
         if high == window["high"].max():
-            ts = data.index[i] if hasattr(data.index[i], 'hour') else datetime.now()
+            ts_raw = df.index[offset + i]
+            ts = ts_raw if isinstance(ts_raw, datetime) else datetime.now()
             swing_highs.append({
                 "price": high,
-                "index": i,
+                "index": offset + i,
                 "timestamp": ts,
                 "volume": float(data.iloc[i]["volume"]),
             })
 
         # Swing low: lowest low in window
         if low == window["low"].min():
-            ts = data.index[i] if hasattr(data.index[i], 'hour') else datetime.now()
+            ts_raw = df.index[offset + i]
+            ts = ts_raw if isinstance(ts_raw, datetime) else datetime.now()
             swing_lows.append({
                 "price": low,
-                "index": i,
+                "index": offset + i,
                 "timestamp": ts,
                 "volume": float(data.iloc[i]["volume"]),
             })
