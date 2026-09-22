@@ -44,7 +44,7 @@ function connect() {
 
 // ── Render ──────────────────────────────────────────
 function renderDashboard(data) {
-  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, cvd, fundingRate, candleHistory, waveOverlay, breakoutQuality } = data;
+  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, cvd, fundingRate, candleHistory, waveOverlay, breakoutQuality, fibZone } = data;
 
   if (error) {
     updateStatus(`Ошибка: ${error}`);
@@ -65,6 +65,7 @@ function renderDashboard(data) {
   if (bookAnomalies) renderBookAnomalies(bookAnomalies);
   if (cvd) renderCVD(cvd);
   if (breakoutQuality) renderBreakoutQuality(breakoutQuality);
+  if (fibZone) renderFibZone(fibZone);
 
   renderVerdictFromSignal(signal, indicators);
 }
@@ -408,6 +409,66 @@ function renderBreakoutQuality(bq) {
   setText('bq-body', bq.body_pct != null ? bq.body_pct.toFixed(1) + '%' : '—');
   setText('bq-retention', bq.retention != null ? bq.retention + ' баров' : '—');
   setText('bq-volume', bq.volume_ratio != null ? bq.volume_ratio.toFixed(1) + 'x' : '—');
+}
+
+// ── Fibonacci / Premium-Discount Zone ───────────────
+function renderFibZone(fz) {
+  const container = document.getElementById('smc-list');
+  if (!container) return;
+
+  const zoneLabels = { premium: 'Премиум', discount: 'Дисконт', equilibrium: 'Равновесие' };
+  const zoneColors = { premium: 'smc-target', discount: 'smc-bull', equilibrium: 'smc-magnet' };
+  const zoneIcons = { premium: '△', discount: '▽', equilibrium: '◇' };
+
+  const zoneType = fz.zone_type || 'equilibrium';
+  const fibPct = fz.fib_level != null ? (fz.fib_level * 100).toFixed(1) : '—';
+  const zoneRange = fz.zone_low != null && fz.zone_high != null
+    ? `$${Number(fz.zone_low).toLocaleString()} — $${Number(fz.zone_high).toLocaleString()}`
+    : '—';
+
+  const items = [
+    {
+      iconCls: `smc-icon ${zoneColors[zoneType] || 'smc-icon-yellow'}`,
+      icon: zoneIcons[zoneType] || '◇',
+      name: `Fibonacci Zone (${zoneLabels[zoneType] || zoneType})`,
+      desc: `Fib ${fibPct}% · ${zoneRange}`,
+      badgeCls: zoneColors[zoneType] || 'smc-magnet',
+      badge: zoneLabels[zoneType] || zoneType,
+    },
+  ];
+
+  // Swing range
+  if (fz.swing_high != null && fz.swing_low != null) {
+    items.push({
+      iconCls: 'smc-icon-blue', icon: '⇅',
+      name: 'Dealing Range (диапазон)',
+      desc: `High: $${Number(fz.swing_high).toLocaleString()} · Low: $${Number(fz.swing_low).toLocaleString()}`,
+      badgeCls: 'smc-support', badge: `${((fz.swing_high - fz.swing_low) / fz.swing_high * 100).toFixed(1)}%`,
+    });
+  }
+
+  // Distance to zones
+  if (fz.distance_to_premium_pct != null && fz.distance_to_discount_pct != null) {
+    items.push({
+      iconCls: 'smc-icon-yellow', icon: '↔',
+      name: 'Расстояние до зон',
+      desc: `До премиума: ${fz.distance_to_premium_pct.toFixed(1)}% · До дисконта: ${fz.distance_to_discount_pct.toFixed(1)}%`,
+      badgeCls: 'smc-magnet', badge: 'Дистанция',
+    });
+  }
+
+  const html = items.map(it => `
+    <div class="smc-item">
+      <div class="smc-icon ${it.iconCls}">${it.icon}</div>
+      <div>
+        <div class="smc-name">${it.name}</div>
+        <div class="smc-desc">${it.desc}</div>
+      </div>
+      <span class="smc-badge ${it.badgeCls}">${it.badge}</span>
+    </div>
+  `).join('');
+
+  container.insertAdjacentHTML('beforeend', html);
 }
 
 // ── Book Anomalies ─────────────────────────────────

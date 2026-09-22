@@ -393,6 +393,31 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
                 except Exception:
                     pass
 
+        # Fibonacci / Premium-Discount zones
+        fib_zone = None
+        try:
+            from market_structure.premium_discount import classify_zone
+            _swing_highs = structure.get("swing_highs", []) if structure else []
+            _swing_lows = structure.get("swing_lows", []) if structure else []
+            if _swing_highs and _swing_lows:
+                _sh = max(_swing_highs)
+                _sl = min(_swing_lows)
+                _price = float(df["close"].iloc[-1]) if len(df) > 0 else 0
+                if _sh > _sl and _price > 0:
+                    zone = classify_zone(df, "bullish", _sh, _sl)
+                    fib_zone = {
+                        "zone_type": zone.zone_type.value,
+                        "fib_level": round(zone.fib_level, 3),
+                        "zone_low": round(zone.zone_price_low, 2),
+                        "zone_high": round(zone.zone_price_high, 2),
+                        "swing_high": round(_sh, 2),
+                        "swing_low": round(_sl, 2),
+                        "distance_to_premium_pct": round(zone.distance_to_premium_pct, 2),
+                        "distance_to_discount_pct": round(zone.distance_to_discount_pct, 2),
+                    }
+        except Exception as e:
+            logger.debug(f"Fib zone failed for {symbol}/{tf}: {e}")
+
         return {
             "type": "update",
             "symbol": symbol,
@@ -411,6 +436,7 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             "fundingRate": funding_rate,
             "volumeProfile": volume_profile,
             "breakoutQuality": breakout_quality,
+            "fibZone": fib_zone,
         }
     except Exception as e:
         import traceback
