@@ -58,7 +58,7 @@ function renderDashboard(data) {
   if (signal) renderSignal(signal);
   if (levels) renderLevelsData(levels);
   if (structure) renderSMC(structure, liquidity);
-  if (priceHistory || candleHistory) updatePriceChart(priceHistory, candleHistory);
+  if (priceHistory || candleHistory) updatePriceChart(priceHistory, candleHistory, levels, fibZone);
   if (openInterest) renderOpenInterest(openInterest);
   if (fundingRate != null) renderFundingRate(fundingRate);
   if (volumeProfile) renderVolumeProfile(volumeProfile, price);
@@ -290,8 +290,9 @@ function renderSMC(structure, liquidity) {
 // ── Chart ───────────────────────────────────────────
 let mainCandleSeries = null;
 let currentPriceLine = null;
+let overlayPriceLines = [];
 
-function updatePriceChart(history, candleHistory) {
+function updatePriceChart(history, candleHistory, levels, fibZone) {
   const el = document.getElementById('priceChart');
   if (!el) return;
   const wrap = el.parentElement;
@@ -325,6 +326,12 @@ function updatePriceChart(history, candleHistory) {
 
   mainCandleSeries.setData(candles);
 
+  // Remove old overlay lines
+  for (const pl of overlayPriceLines) {
+    try { mainCandleSeries.removePriceLine(pl); } catch {}
+  }
+  overlayPriceLines = [];
+
   // Update current price line (remove old one first)
   const lastCandle = candles[candles.length - 1];
   if (lastCandle) {
@@ -339,6 +346,48 @@ function updatePriceChart(history, candleHistory) {
       axisLabelVisible: true,
       title: '',
     });
+  }
+
+  // Add support/resistance levels
+  if (levels) {
+    const addLevel = (price, color, title, style) => {
+      if (price == null || price <= 0) return;
+      const pl = mainCandleSeries.createPriceLine({
+        price,
+        color,
+        lineWidth: 1,
+        lineStyle: style || 2,
+        axisLabelVisible: true,
+        title,
+      });
+      overlayPriceLines.push(pl);
+    };
+    (levels.resistance || []).forEach((r, i) => {
+      addLevel(r.price, '#ef5350', `R${i + 1}`, 2);
+    });
+    (levels.support || []).forEach((s, i) => {
+      addLevel(s.price, '#26a69a', `S${i + 1}`, 2);
+    });
+  }
+
+  // Add fib zone levels
+  if (fibZone) {
+    const addFib = (price, color, title) => {
+      if (price == null || price <= 0) return;
+      const pl = mainCandleSeries.createPriceLine({
+        price,
+        color,
+        lineWidth: 1,
+        lineStyle: 1,
+        axisLabelVisible: true,
+        title,
+      });
+      overlayPriceLines.push(pl);
+    };
+    if (fibZone.zone_high != null) addFib(fibZone.zone_high, '#ff9800', 'Fib High');
+    if (fibZone.zone_low != null) addFib(fibZone.zone_low, '#ff9800', 'Fib Low');
+    if (fibZone.swing_high != null) addFib(fibZone.swing_high, '#9c27b0', 'Range High');
+    if (fibZone.swing_low != null) addFib(fibZone.swing_low, '#9c27b0', 'Range Low');
   }
 
   priceChart.timeScale().fitContent();
