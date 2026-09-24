@@ -161,6 +161,37 @@ class TestFormatMessage:
         assert "Entry:" in msg or "entry" in msg
         assert "49950" in msg
 
+    def test_sell_signs_pnl_style(self):
+        """SL always displayed with '-', TP with '+' regardless of direction.
+
+        Regression: SELL used to show SL (+7.16%) and TP (−14.32%) —
+        raw price-delta signs instead of P&L signs (APE/USDT report).
+        """
+        sig = SignalResult(
+            signal=SignalType.SELL, symbol="APE/USDT", timeframe="4h",
+            close=0.1519, entry_price=0.1519, sl=0.16277493, tp=0.13,
+            score=5, reasons=[],
+        )
+        msg = sig.format_message()
+        # SL above entry (SELL) → must be displayed as minus
+        assert "(-7.16%)" in msg
+        assert "(+7.16%)" not in msg
+        # TP1 below entry (SELL) → must be displayed as plus
+        assert "TP1:" in msg
+        assert "(+14.32%)" in msg
+        assert "(-14.32%)" not in msg
+
+    def test_buy_signs_pnl_style(self):
+        """BUY keeps the same convention: SL '-', TP '+'."""
+        sig = SignalResult(
+            signal=SignalType.BUY, symbol="BTC/USDT", timeframe="1h",
+            close=50000.0, entry_price=50000.0, sl=48500.0, tp=53000.0,
+            score=5, reasons=[],
+        )
+        msg = sig.format_message()
+        assert "(-3.00%)" in msg          # SL 48500 = -3%
+        assert "TP1:" in msg and "(+" in msg
+
 
 class TestScoreVerdict:
     def test_strong(self):

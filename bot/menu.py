@@ -813,10 +813,10 @@ async def _do_full_analysis(symbol: str) -> str:
             lines.append(f"  Entry: <code>{entry}</code>")
             if result.sl:
                 sl_pct = (result.sl - entry) / entry * 100 if entry else 0
-                lines.append(f"  🔴 SL: <code>{result.sl}</code> ({sl_pct:+.2f}%)")
+                lines.append(f"  🔴 SL: <code>{result.sl}</code> (-{abs(sl_pct):.2f}%)")
             if result.tp:
                 tp_pct = (result.tp - entry) / entry * 100 if entry else 0
-                lines.append(f"  🟢 TP: <code>{result.tp}</code> ({tp_pct:+.2f}%)")
+                lines.append(f"  🟢 TP: <code>{result.tp}</code> (+{abs(tp_pct):.2f}%)")
             if result.sl and result.tp and entry:
                 rr = abs(result.tp - entry) / abs(entry - result.sl) if entry != result.sl else 0
                 lines.append(f"  R/R: 1:{rr:.1f}")

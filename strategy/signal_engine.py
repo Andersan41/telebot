@@ -184,7 +184,7 @@ class SignalResult:
             sl_source_tag = ""
             if self._sl_source and "htf_poi" in self._sl_source:
                 sl_source_tag = " 🎯"
-            lines.append(f"SL: <code>{_fmt_price(self.sl)}</code> ({sl_pct:+.2f}%){sl_source_tag}")
+            lines.append(f"SL: <code>{_fmt_price(self.sl)}</code> (-{abs(sl_pct):.2f}%){sl_source_tag}")
 
         # TP1/TP2/TP3 partial close targets
         if self.sl is not None and entry:
@@ -201,17 +201,17 @@ class SignalResult:
                 tp1_pct = (tp1 - entry) / entry * 100
                 tp2_pct = (tp2 - entry) / entry * 100
                 tp3_pct = (tp3 - entry) / entry * 100
-                lines.append(f"TP1: <code>{_fmt_price(tp1)}</code> ({tp1_pct:+.2f}%) — 25%")
-                lines.append(f"TP2: <code>{_fmt_price(tp2)}</code> ({tp2_pct:+.2f}%) — 35%")
-                lines.append(f"TP3: <code>{_fmt_price(tp3)}</code> ({tp3_pct:+.2f}%) — 40%")
+                lines.append(f"TP1: <code>{_fmt_price(tp1)}</code> (+{abs(tp1_pct):.2f}%) — 25%")
+                lines.append(f"TP2: <code>{_fmt_price(tp2)}</code> (+{abs(tp2_pct):.2f}%) — 35%")
+                lines.append(f"TP3: <code>{_fmt_price(tp3)}</code> (+{abs(tp3_pct):.2f}%) — 40%")
                 rr = risk
                 lines.append(f"RR: 1:{abs(self.tp - entry) / risk:.1f}" if self.tp else f"RR: 1:4.0")
             elif self.tp is not None:
                 tp_pct = (self.tp - entry) / entry * 100 if entry else 0
-                lines.append(f"TP: <code>{_fmt_price(self.tp)}</code> ({tp_pct:+.2f}%)")
+                lines.append(f"TP: <code>{_fmt_price(self.tp)}</code> (+{abs(tp_pct):.2f}%)")
         elif self.tp is not None:
             tp_pct = (self.tp - entry) / entry * 100 if entry else 0
-            lines.append(f"TP: <code>{_fmt_price(self.tp)}</code> ({tp_pct:+.2f}%)")
+            lines.append(f"TP: <code>{_fmt_price(self.tp)}</code> (+{abs(tp_pct):.2f}%)")
 
         # Zone quality multiplier
         if self._zone_quality_multiplier != 1.0:
