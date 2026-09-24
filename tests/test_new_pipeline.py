@@ -318,6 +318,91 @@ class TestPatternEngine:
         assert setup.detected is False
         assert "MSS" in setup.rejection_reason
 
+    # ── H-016 (v2.3): sweep-only dead-end rescue ──
+
+    def test_h016_rescue_with_zone_detected(self):
+        """Sweep-only dead-end + OB zone → rescued weak reversal detected."""
+        sweeps = [MockSweep(type="bullish", candle_index=2)]
+        structure = MockStructure(trend="ranging", last_mss=None, last_choch=None)
+        obs = [MockOB(type="bullish", midpoint=50000.0)]
+        candle_q = MockCandleQuality(is_displacement=True, body_atr_ratio=1.5)
+
+        setup = pattern_engine.detect(
+            sweeps=sweeps, order_blocks=obs, structure=structure,
+            fvgs=[], candle_quality=candle_q, current_price=50000.0, atr=500.0,
+        )
+        assert setup.detected is True
+        assert setup.setup_type == "reversal"
+        assert setup.direction == "buy"
+        assert setup.rescued_sweep_only is True
+        assert setup.has_sweep is True
+        assert setup.has_mss is False
+        assert setup.has_ob is True
+        assert setup.rejection_reason is None
+
+    def test_h016_rescue_guard_rejects_without_zone(self):
+        """Sweep-only dead-end WITHOUT OB/FVG → guard rejects (M2)."""
+        sweeps = [MockSweep(type="bullish", candle_index=2)]
+        structure = MockStructure(trend="ranging", last_mss=None, last_choch=None)
+        candle_q = MockCandleQuality(is_displacement=True, body_atr_ratio=1.5)
+
+        setup = pattern_engine.detect(
+            sweeps=sweeps, order_blocks=[], structure=structure,
+            fvgs=[], candle_quality=candle_q, current_price=50000.0, atr=500.0,
+        )
+        assert setup.detected is False
+        assert setup.setup_type is None
+        assert "without zone" in setup.rejection_reason
+        assert "MSS" in setup.rejection_reason
+        assert setup.has_sweep is True
+
+    def test_h016_rescue_sell_direction(self):
+        """Bearish sweep dead-end + bearish OB → rescued as SELL."""
+        sweeps = [MockSweep(type="bearish", candle_index=2)]
+        structure = MockStructure(trend="ranging", last_mss=None, last_choch=None)
+        obs = [MockOB(type="bearish", midpoint=50000.0)]
+
+        setup = pattern_engine.detect(
+            sweeps=sweeps, order_blocks=obs, structure=structure,
+            fvgs=[], candle_quality=None, current_price=50000.0, atr=500.0,
+        )
+        assert setup.detected is True
+        assert setup.setup_type == "reversal"
+        assert setup.direction == "sell"
+        assert setup.rescued_sweep_only is True
+
+    def test_h016_continuation_beats_rescue(self):
+        """Both sweep and BOS valid → continuation preferred over rescue."""
+        sweeps = [MockSweep(type="bullish", candle_index=2)]
+        structure = MockStructure(
+            trend="bullish",
+            last_bos=MockBOS(type="bullish", level=51000.0),
+            last_mss=None, last_choch=None,
+        )
+
+        setup = pattern_engine.detect(
+            sweeps=sweeps, order_blocks=[], structure=structure,
+            fvgs=[], candle_quality=None, current_price=50000.0, atr=500.0,
+        )
+        assert setup.detected is True
+        assert setup.setup_type == "continuation"
+        assert setup.rescued_sweep_only is False
+        assert setup.has_sweep is True
+        assert setup.sweep_failed_reversal is True
+
+    def test_h016_reason_merge_combined(self):
+        """Both paths fail with different reasons → combined, no masking."""
+        structure = MockStructure(trend="ranging", last_mss=None, last_bos=None)
+
+        setup = pattern_engine.detect(
+            sweeps=[], order_blocks=[], structure=structure,
+            fvgs=[], candle_quality=None, current_price=50000.0,
+        )
+        assert setup.detected is False
+        assert setup.rejection_reason == (
+            "reversal: no sweep + continuation: ranging market"
+        )
+
     # ── Continuation tests ──
 
     def test_continuation_full_setup(self):
@@ -682,6 +767,19 @@ class TestProbabilityEngine:
         prob_no = probability_engine.predict(features_no_mss)
         prob_with = probability_engine.predict(features_with_mss)
         assert prob_with.p_tp >= prob_no.p_tp
+
+    def test_h016_bare_sweep_edge_below_mss(self):
+        """H-016: bare sweep (no MSS) must score lower than MSS sweep."""
+        bare = SetupFeatures(
+            setup_type="reversal", has_sweep=True, has_displacement=True, has_mss=False,
+        )
+        with_mss = SetupFeatures(
+            setup_type="reversal", has_sweep=True, has_displacement=True, has_mss=True,
+            mss_score=75.0,
+        )
+        prob_bare = probability_engine.predict(bare)
+        prob_mss = probability_engine.predict(with_mss)
+        assert prob_bare.p_tp < prob_mss.p_tp
 
     def test_continuation_bos_edge(self):
         """BOS gives edge only for continuation, not reversal."""

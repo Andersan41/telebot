@@ -156,7 +156,7 @@ class ProbabilityEngine:
         200-300 trades with observed expectancy.
 
         Reversal scoring:
-          sweep: +3.0, displacement: +3.0, MSS: +4.0 (highest)
+          sweep: +3.0 with MSS, +1.5 bare (H-016), displacement: +3.0, MSS: +4.0 (highest)
           OB/FVG: +1.5/+1.0 (confirmation, not trigger)
           MSS quality >70: +2.0, 50-70: +1.0
 
@@ -219,7 +219,9 @@ class ProbabilityEngine:
         if f.setup_type == "reversal":
             # Reversal: sweep + displacement + MSS are the core
             if f.has_sweep:
-                component_edge += 3.0
+                # H-016: bare sweep without MSS is a weak trigger (rescued
+                # dead-end) — reduced edge so it rarely survives min_p_tp
+                component_edge += 3.0 if f.has_mss else 1.5
             if f.has_displacement:
                 component_edge += 3.0
             if f.has_mss:

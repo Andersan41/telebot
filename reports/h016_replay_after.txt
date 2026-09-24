@@ -1,0 +1,199 @@
+2026-09-24 23:50:57.973 | INFO     | data.exchange_client:connect:103 - Markets loaded: 3532 symbols
+2026-09-24 23:50:57.976 | INFO     | data.exchange_client:_build_symbol_map:76 - Symbol map: 1032 swap pairs mapped
+2026-09-24 23:50:57.976 | INFO     | data.exchange_client:connect:124 - Exchange client created: bingx
+2026-09-24 23:50:58.372 | DEBUG    | data.exchange_client:fetch_ohlcv_paginated:416 - Paginated fetch BTC/USDT: got 501 candles, oldest=2026-09-04 00:00:00+00:00, remaining=-1
+2026-09-24 23:50:58.676 | DEBUG    | data.exchange_client:fetch_ohlcv_paginated:442 - Paginated fetch BTC/USDT: total 499 candles, 2026-09-04 01:00:00+00:00 to 2026-09-24 19:00:00+00:00
+2026-09-24 23:50:58.691 | INFO     | data.exchange_client:close:133 - Exchange connection closed
+2026-09-24 23:50:58.792 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.988 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=307.45 df_len=81
+2026-09-24 23:50:58.881 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.069 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=295.51 df_len=82
+2026-09-24 23:50:58.985 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.113 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=289.31 df_len=83
+2026-09-24 23:51:00.963 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.609 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=313.70 df_len=103
+2026-09-24 23:51:01.056 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.616 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=312.42 df_len=104
+2026-09-24 23:51:01.151 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.562 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=323.20 df_len=105
+2026-09-24 23:51:01.246 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.523 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=331.44 df_len=106
+2026-09-24 23:51:01.346 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.538 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=328.28 df_len=107
+2026-09-24 23:51:01.444 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.559 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=323.84 df_len=108
+2026-09-24 23:51:01.546 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.383 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=365.17 df_len=109
+2026-09-24 23:51:01.645 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.283 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=393.46 df_len=110
+2026-09-24 23:51:01.743 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.268 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=398.08 df_len=111
+2026-09-24 23:51:01.845 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.271 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=397.17 df_len=112
+2026-09-24 23:51:01.942 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.272 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=396.78 df_len=113
+2026-09-24 23:51:02.042 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.241 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=407.01 df_len=114
+2026-09-24 23:51:02.145 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.284 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=393.10 df_len=115
+2026-09-24 23:51:02.312 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.327 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=380.58 df_len=116
+2026-09-24 23:51:02.422 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.368 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=369.03 df_len=117
+2026-09-24 23:51:02.523 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.414 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=356.98 df_len=118
+2026-09-24 23:51:02.626 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.465 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=344.68 df_len=119
+2026-09-24 23:51:02.721 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.466 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=344.32 df_len=120
+2026-09-24 23:51:02.817 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.495 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=337.75 df_len=121
+2026-09-24 23:51:02.909 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.526 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=330.84 df_len=122
+2026-09-24 23:51:03.008 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.580 sweep_idx=96 choch_idx=97 reclaim_bars=0 atr=319.59 df_len=123
+2026-09-24 23:51:03.975 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.297 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=416.34 df_len=133
+2026-09-24 23:51:04.073 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.268 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=425.93 df_len=134
+2026-09-24 23:51:04.168 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.100 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=490.91 df_len=135
+2026-09-24 23:51:04.266 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.103 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=489.47 df_len=136
+2026-09-24 23:51:04.364 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.141 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=473.26 df_len=137
+2026-09-24 23:51:04.466 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.158 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=466.36 df_len=138
+2026-09-24 23:51:04.563 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.162 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=464.71 df_len=139
+2026-09-24 23:51:04.671 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.176 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=459.28 df_len=140
+2026-09-24 23:51:04.789 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.195 sweep_idx=123 choch_idx=127 reclaim_bars=0 atr=451.66 df_len=141
+2026-09-24 23:51:09.577 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.506 sweep_idx=176 choch_idx=179 reclaim_bars=0 atr=656.14 df_len=187
+2026-09-24 23:51:09.675 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.570 sweep_idx=176 choch_idx=179 reclaim_bars=0 atr=629.40 df_len=188
+2026-09-24 23:51:09.775 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.622 sweep_idx=176 choch_idx=179 reclaim_bars=0 atr=609.31 df_len=189
+2026-09-24 23:51:09.872 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.690 sweep_idx=176 choch_idx=179 reclaim_bars=0 atr=584.58 df_len=190
+2026-09-24 23:51:09.968 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.794 sweep_idx=176 choch_idx=179 reclaim_bars=0 atr=550.71 df_len=191
+2026-09-24 23:51:10.063 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.901 sweep_idx=176 choch_idx=179 reclaim_bars=0 atr=519.70 df_len=192
+2026-09-24 23:51:10.164 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.011 sweep_idx=176 choch_idx=179 reclaim_bars=0 atr=491.30 df_len=193
+2026-09-24 23:51:22.591 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.938 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=515.17 df_len=311
+2026-09-24 23:51:22.700 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.018 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=501.52 df_len=312
+2026-09-24 23:51:22.816 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.993 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=505.65 df_len=313
+2026-09-24 23:51:22.923 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.032 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=499.18 df_len=314
+2026-09-24 23:51:23.039 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.187 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=474.88 df_len=315
+2026-09-24 23:51:23.162 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.217 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=470.42 df_len=316
+2026-09-24 23:51:23.268 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.288 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=460.29 df_len=317
+2026-09-24 23:51:23.382 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.371 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=448.94 df_len=318
+2026-09-24 23:51:23.497 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.477 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=435.27 df_len=319
+2026-09-24 23:51:23.618 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.615 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=418.66 df_len=320
+2026-09-24 23:51:23.731 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.682 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=411.03 df_len=321
+2026-09-24 23:51:23.846 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.815 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=396.76 df_len=322
+2026-09-24 23:51:23.974 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.868 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=391.28 df_len=323
+2026-09-24 23:51:24.098 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.624 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=417.61 df_len=324
+2026-09-24 23:51:24.230 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.362 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=450.13 df_len=325
+2026-09-24 23:51:24.341 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.267 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=463.34 df_len=326
+2026-09-24 23:51:24.561 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.200 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=472.99 df_len=327
+2026-09-24 23:51:24.694 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.296 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=459.24 df_len=328
+2026-09-24 23:51:24.813 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.346 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=452.38 df_len=329
+2026-09-24 23:51:24.940 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.415 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=443.20 df_len=330
+2026-09-24 23:51:25.069 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.565 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=424.56 df_len=331
+2026-09-24 23:51:25.183 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.683 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=410.99 df_len=332
+2026-09-24 23:51:25.307 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.813 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=396.95 df_len=333
+2026-09-24 23:51:25.416 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.941 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=384.01 df_len=334
+2026-09-24 23:51:25.525 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=4.141 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=365.50 df_len=335
+2026-09-24 23:51:25.647 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=4.189 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=361.33 df_len=336
+2026-09-24 23:51:25.754 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=4.281 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=353.52 df_len=337
+2026-09-24 23:51:25.860 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=4.245 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=356.57 df_len=338
+2026-09-24 23:51:25.966 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=4.028 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=375.74 df_len=339
+2026-09-24 23:51:26.078 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=4.068 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=372.05 df_len=340
+2026-09-24 23:51:40.552 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.456 sweep_idx=462 choch_idx=471 reclaim_bars=0 atr=515.79 df_len=483
+2026-09-24 23:51:40.649 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.540 sweep_idx=462 choch_idx=471 reclaim_bars=0 atr=498.57 df_len=484
+2026-09-24 23:51:40.745 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.557 sweep_idx=462 choch_idx=471 reclaim_bars=0 atr=495.42 df_len=485
+2026-09-24 23:51:40.840 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.623 sweep_idx=462 choch_idx=471 reclaim_bars=0 atr=482.83 df_len=486
+2026-09-24 23:51:40.940 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.557 sweep_idx=462 choch_idx=471 reclaim_bars=0 atr=495.36 df_len=487
+2026-09-24 23:51:43.973 | INFO     | data.exchange_client:connect:103 - Markets loaded: 3532 symbols
+2026-09-24 23:51:43.977 | INFO     | data.exchange_client:_build_symbol_map:76 - Symbol map: 1032 swap pairs mapped
+2026-09-24 23:51:43.977 | INFO     | data.exchange_client:connect:124 - Exchange client created: bingx
+2026-09-24 23:51:44.593 | DEBUG    | data.exchange_client:fetch_ohlcv_paginated:416 - Paginated fetch ETH/USDT: got 501 candles, oldest=2026-09-04 00:00:00+00:00, remaining=-1
+2026-09-24 23:51:44.907 | DEBUG    | data.exchange_client:fetch_ohlcv_paginated:442 - Paginated fetch ETH/USDT: total 499 candles, 2026-09-04 01:00:00+00:00 to 2026-09-24 19:00:00+00:00
+2026-09-24 23:51:44.920 | INFO     | data.exchange_client:close:133 - Exchange connection closed
+2026-09-24 23:51:45.016 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.125 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=15.13 df_len=81
+2026-09-24 23:51:45.111 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.201 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=14.61 df_len=82
+2026-09-24 23:51:45.206 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.284 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=14.08 df_len=83
+2026-09-24 23:51:45.306 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.225 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=14.45 df_len=84
+2026-09-24 23:51:45.407 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.206 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=14.57 df_len=85
+2026-09-24 23:51:45.525 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.113 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=15.22 df_len=86
+2026-09-24 23:51:45.638 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.025 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=15.87 df_len=87
+2026-09-24 23:51:45.742 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.036 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=15.79 df_len=88
+2026-09-24 23:51:45.840 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.024 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=15.89 df_len=89
+2026-09-24 23:51:45.938 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.060 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=15.61 df_len=90
+2026-09-24 23:51:46.037 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.127 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=15.12 df_len=91
+2026-09-24 23:51:46.142 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.178 sweep_idx=61 choch_idx=61 reclaim_bars=0 atr=14.76 df_len=92
+2026-09-24 23:51:56.212 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.579 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=33.24 df_len=187
+2026-09-24 23:51:56.328 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.609 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=32.61 df_len=188
+2026-09-24 23:51:56.440 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.621 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=32.37 df_len=189
+2026-09-24 23:51:56.542 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.677 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=31.30 df_len=190
+2026-09-24 23:51:56.642 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.773 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=29.60 df_len=191
+2026-09-24 23:51:56.744 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.870 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=28.06 df_len=192
+2026-09-24 23:51:56.836 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.971 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=26.62 df_len=193
+2026-09-24 23:51:56.934 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.102 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=24.96 df_len=194
+2026-09-24 23:51:57.033 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.217 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=23.68 df_len=195
+2026-09-24 23:51:57.148 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.346 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=22.37 df_len=196
+2026-09-24 23:51:57.239 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.491 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=21.07 df_len=197
+2026-09-24 23:51:57.328 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.568 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=20.44 df_len=198
+2026-09-24 23:51:57.415 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.712 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=19.35 df_len=199
+2026-09-24 23:51:57.504 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.776 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=18.91 df_len=200
+2026-09-24 23:51:57.595 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.889 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=18.16 df_len=201
+2026-09-24 23:51:57.683 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.010 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=17.43 df_len=202
+2026-09-24 23:51:57.772 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.153 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=16.64 df_len=203
+2026-09-24 23:51:57.870 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.326 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=15.78 df_len=204
+2026-09-24 23:51:57.955 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.379 sweep_idx=178 choch_idx=179 reclaim_bars=0 atr=15.53 df_len=205
+2026-09-24 23:52:08.313 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.699 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=22.74 df_len=311
+2026-09-24 23:52:08.436 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.795 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=21.96 df_len=312
+2026-09-24 23:52:08.548 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.711 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=22.64 df_len=313
+2026-09-24 23:52:08.657 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.760 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=22.24 df_len=314
+2026-09-24 23:52:08.770 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.872 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=21.37 df_len=315
+2026-09-24 23:52:08.880 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.881 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=21.30 df_len=316
+2026-09-24 23:52:08.997 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.987 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=20.55 df_len=317
+2026-09-24 23:52:09.114 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.090 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=19.86 df_len=318
+2026-09-24 23:52:09.238 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.161 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=19.42 df_len=319
+2026-09-24 23:52:09.346 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.279 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=18.72 df_len=320
+2026-09-24 23:52:09.458 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.370 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=18.21 df_len=321
+2026-09-24 23:52:09.566 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.496 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=17.56 df_len=322
+2026-09-24 23:52:09.685 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.530 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=17.39 df_len=323
+2026-09-24 23:52:09.796 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.219 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=19.07 df_len=324
+2026-09-24 23:52:09.918 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.066 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=20.02 df_len=325
+2026-09-24 23:52:10.021 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.931 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=20.94 df_len=326
+2026-09-24 23:52:10.125 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.842 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=21.60 df_len=327
+2026-09-24 23:52:10.245 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.868 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=21.40 df_len=328
+2026-09-24 23:52:10.354 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.908 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=21.11 df_len=329
+2026-09-24 23:52:10.471 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.982 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=20.58 df_len=330
+2026-09-24 23:52:10.584 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.094 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=19.84 df_len=331
+2026-09-24 23:52:10.698 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.186 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=19.27 df_len=332
+2026-09-24 23:52:10.803 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.314 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=18.52 df_len=333
+2026-09-24 23:52:10.916 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.395 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=18.08 df_len=334
+2026-09-24 23:52:11.026 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.556 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=17.26 df_len=335
+2026-09-24 23:52:11.125 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.635 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=16.89 df_len=336
+2026-09-24 23:52:11.236 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.678 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=16.69 df_len=337
+2026-09-24 23:52:11.336 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.714 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=16.52 df_len=338
+2026-09-24 23:52:11.435 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.599 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=17.05 df_len=339
+2026-09-24 23:52:11.529 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=3.658 sweep_idx=305 choch_idx=305 reclaim_bars=0 atr=16.78 df_len=340
+2026-09-24 23:52:25.964 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.970 sweep_idx=461 choch_idx=471 reclaim_bars=0 atr=20.29 df_len=483
+2026-09-24 23:52:26.070 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.014 sweep_idx=461 choch_idx=471 reclaim_bars=0 atr=19.85 df_len=484
+2026-09-24 23:52:26.172 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=1.991 sweep_idx=461 choch_idx=471 reclaim_bars=0 atr=20.08 df_len=485
+2026-09-24 23:52:26.370 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.052 sweep_idx=461 choch_idx=471 reclaim_bars=0 atr=19.49 df_len=486
+2026-09-24 23:52:26.474 | DEBUG    | market_structure.structure:classify_choch:194 - classify_choch: disp_param=2.045 sweep_idx=461 choch_idx=471 reclaim_bars=0 atr=19.55 df_len=487
+
+============================================================
+BTC/USDT 1h | 419 bars | lookback=80
+============================================================
+  DETECTED: 167 (39.9%)
+  REJECTED: 252 (60.1%)
+
+  Rejection breakdown:
+     245 ( 58.5%)  reversal: sweep-only dead-end without zone (no MSS)
+       7 (  1.7%)  reversal: no sweep + continuation: no BOS
+
+  Detected signal characteristics:
+    rescued_sweep_only (H-016): 0/167 (0.0%)
+    has_displacement: 6/167 (3.6%)
+    has_ob:          3/167 (1.8%)
+    has_fvg:         15/167 (9.0%)
+    has_bos:         99/167 (59.3%)
+    has_sweep:       167/167 (100.0%)
+    has_mss:         68/167 (40.7%)
+    reversal:        68/167 (40.7%)
+    continuation:    99/167 (59.3%)
+    conf_score < 2:  0/167 (0.0%)
+
+
+============================================================
+ETH/USDT 1h | 419 bars | lookback=80
+============================================================
+  DETECTED: 213 (50.8%)
+  REJECTED: 206 (49.2%)
+
+  Rejection breakdown:
+     202 ( 48.2%)  reversal: sweep-only dead-end without zone (no MSS)
+       4 (  1.0%)  reversal: no sweep + continuation: ranging market
+
+  Detected signal characteristics:
+    rescued_sweep_only (H-016): 9/213 (4.2%)
+    has_displacement: 8/213 (3.8%)
+    has_ob:          0/213 (0.0%)
+    has_fvg:         31/213 (14.6%)
+    has_bos:         138/213 (64.8%)
+    has_sweep:       213/213 (100.0%)
+    has_mss:         66/213 (31.0%)
+    reversal:        75/213 (35.2%)
+    continuation:    138/213 (64.8%)
+    conf_score < 2:  0/213 (0.0%)
+

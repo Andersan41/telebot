@@ -49,6 +49,27 @@ class TriggerResult:
     spread_pct: float = 0.0
 
 
+# ── ATR-relative proximity (H-016, v2.3) ──────────────────────────
+
+def resolve_proximity_pct(
+    base_pct: float,
+    atr_pct: float,
+    atr_mult: float = 0.5,
+) -> float:
+    """Effective entry proximity = max(base floor, ATR-relative width).
+
+    Args:
+        base_pct: legacy fixed proximity in % of price (floor)
+        atr_pct: current ATR as % of price (atr / close * 100)
+        atr_mult: ATR multiplier for the dynamic part
+
+    Returns: proximity in % of price, never below base_pct.
+    """
+    if atr_pct <= 0 or atr_mult <= 0:
+        return base_pct
+    return max(base_pct, atr_pct * atr_mult)
+
+
 # ── Entry Trigger ──────────────────────────────────────────────────
 
 class EntryTrigger:

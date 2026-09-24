@@ -235,6 +235,74 @@ class TestScanSymbolV2:
         await scan_symbol_v2("BTC/USDT", "1h", AsyncMock())
         mock_db.set_cooldown.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_h016_rescued_reversal_passes_mss_gate_soft(self, mock_cooldown, monkeypatch):
+        """H-016: sweep-only (no MSS) reversal reaches mss_gate SOFT, not BLOCKED."""
+        from scheduler.scanner import _FunnelCounter
+        from strategy.pattern_engine import ICTSetup
+        from strategy.probability_engine import TradeProbability
+        from market_structure.structure import StructureState
+        from storage.database import db as _db
+
+        setup_mock = ICTSetup(
+            detected=True, direction="buy", setup_type="reversal",
+            has_sweep=True, sweep_type="bullish", sweep_strength=0.8,
+            has_displacement=True, has_mss=False,
+            has_ob=True, ob_type="bullish", ob_distance_pct=0.5,
+            entry_armed=True, rescued_sweep_only=True,
+            components_found=["Sweep", "Displacement", "OB"],
+        )
+        pred_mock = TradeProbability(
+            p_tp=0.52, expected_rr=2.5, profit_factor=1.6,
+            confidence=0.6, model_type="rules",
+        )
+        risk_mock = MagicMock(should_trade=True, risk_pct=1.0, rr_ratio=3.0, rejection_reason=None)
+
+        df_mock = pd.DataFrame({
+            "open": [50000.0] * 20,
+            "high": [50500.0] * 20,
+            "low": [49500.0] * 20,
+            "close": [50200.0] * 20,
+            "volume": [1000.0] * 20,
+        })
+        ind_mock = MagicMock(atr=600.0, close=50000.0)
+
+        funnel = _FunnelCounter()
+        monkeypatch.setattr("scheduler.scanner._current_funnel", funnel)
+        monkeypatch.setattr("scheduler.scanner._detect_regime", MagicMock(return_value=None))
+        monkeypatch.setattr("scheduler.scanner._is_cooldown_active", AsyncMock(return_value=(False, 0)))
+        monkeypatch.setattr("scheduler.scanner._get_indicators",
+                            AsyncMock(return_value=(ind_mock, df_mock)))
+        monkeypatch.setattr(_db, "get_open_outcomes", AsyncMock(return_value=[]))
+        monkeypatch.setattr(_db, "get_open_outcomes_with_direction", AsyncMock(return_value=[]))
+        monkeypatch.setattr("liquidity.sweep.detect_sweeps", MagicMock(return_value=[]))
+        monkeypatch.setattr("liquidity.order_blocks.detect_order_blocks", MagicMock(return_value=[]))
+        monkeypatch.setattr("market_structure.structure.analyze_structure",
+                            MagicMock(return_value=StructureState(trend="ranging")))
+        monkeypatch.setattr("liquidity.fvg.detect_fvg", MagicMock(return_value=[]))
+        monkeypatch.setattr("liquidity.candle_quality.analyze_last_candle",
+                            MagicMock(return_value=MagicMock(is_displacement=True, body_atr_ratio=1.5)))
+        monkeypatch.setattr("strategy.pattern_engine.pattern_engine",
+                            MagicMock(detect=MagicMock(return_value=setup_mock)))
+        monkeypatch.setattr("strategy.feature_builder.feature_builder",
+                            MagicMock(build=MagicMock(return_value=MagicMock(to_reasoning=MagicMock(return_value=[])))))
+        monkeypatch.setattr("strategy.probability_engine.probability_engine",
+                            MagicMock(predict=MagicMock(return_value=pred_mock)))
+        monkeypatch.setattr("risk.engine.risk_engine",
+                            MagicMock(evaluate=MagicMock(return_value=risk_mock)))
+        monkeypatch.setattr("scheduler.scanner.exchange_client",
+                            MagicMock(get_tick_size=MagicMock(return_value=0.01),
+                                      fetch_ticker_full=AsyncMock(return_value={"bid": 50000.0, "ask": 50001.0})))
+
+        await scan_symbol_v2("BTC/USDT", "1h", AsyncMock())
+
+        # Reached pattern + sweep + displacement gates without being blocked
+        for gate in ("pattern_engine", "score_gate", "sweep_required", "displacement_gate"):
+            assert gate not in funnel.blocked_by, f"{gate} blocked: {funnel.blocked_by}"
+        # mss_gate: SOFT (logged + penalized), never BLOCKED
+        assert "mss_gate" not in funnel.blocked_by, f"mss_gate blocked: {funnel.blocked_by}"
+        assert funnel.penalties["mss_gate"] == 1
+
 
 class TestPortfolioRiskGate:
     @pytest.mark.asyncio

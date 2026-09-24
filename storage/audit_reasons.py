@@ -27,6 +27,7 @@ TIME_OF_DAY_BLOCKED = "time_of_day_blocked"
 PATTERN_NO_SETUP = "pattern_no_setup"
 SWEEP_NONE = "sweep_none"
 SWEEP_FALSE_FILTERED = "sweep_false_filtered"
+SWEEP_DEAD_END_NO_ZONE = "sweep_dead_end_no_zone"  # H-016: rescued sweep-only rejected (no OB/FVG)
 DISPLACEMENT_MISSING = "displacement_missing"
 MSS_NONE = "mss_none"
 MSS_DIRECTION_UNCLEAR = "mss_direction_unclear"

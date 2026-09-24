@@ -69,6 +69,14 @@ when behavior changes, not this one.
   Detects OB/FVG on D1, H4, W1 and checks proximity to current price.
   If price near HTF POI → SL anchored to HTF structure level for better RR.
   Integrated in `scan_symbol_v2` Phase 1.5; SL override in `TradeEngine.build_trade_plan()`.
+- **Sweep-only rescue (H-016)** (`strategy/pattern_engine.py`): sweep без MSS, когда
+  continuation тоже отклонён → слабый reversal (направление от `sweep_type`),
+  ТОЛЬКО при наличии OB/FVG зоны (guard), иначе `sweep_dead_end_no_zone`.
+  Sweep edge в probability: +3.0 с MSS, +1.5 без. `_CONFIG_VERSION=12`.
+  Обоюдный фейл логирует комбинированную причину `"{reversal} + {continuation}"`.
+- **ATR entry proximity (H-016)**: `resolve_proximity_pct = max(ENTRY_PROXIMITY_PCT,
+  atr_pct * ENTRY_PROXIMITY_ATR_MULT)` — применяется в обеих точках EntryTrigger
+  (Phase 1.6 и 4.5). Env: `ENTRY_PROXIMITY_PCT=0.3`, `ENTRY_PROXIMITY_ATR_MULT=0.5`.
 
 ## Hypotheses tracking
 

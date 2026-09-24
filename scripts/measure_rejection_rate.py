@@ -6,6 +6,9 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from loguru import logger
+logger.disable("strategy.pattern_engine")  # keep output readable; H-016 counter below
+
 from data.exchange_client import exchange_client
 from strategy.pattern_engine import pattern_engine
 from liquidity.sweep import detect_sweeps
@@ -29,6 +32,7 @@ async def measure(symbol: str, timeframe: str, candles: int = 500):
 
     rejections = Counter()
     total = 0
+    rescued_count = 0  # H-016: sweep-only dead-end admitted with zone
     lookback = min(80, len(df) - 1)
 
     # Tracking detected signal characteristics
@@ -70,6 +74,8 @@ async def measure(symbol: str, timeframe: str, candles: int = 500):
                 rejections[setup.rejection_reason or "unknown"] += 1
             else:
                 detected_count += 1
+                if getattr(setup, "rescued_sweep_only", False):
+                    rescued_count += 1
                 has_displacement_count += 1 if setup.has_displacement else 0
                 has_ob_count += 1 if setup.has_ob else 0
                 has_fvg_count += 1 if setup.has_fvg else 0
@@ -99,6 +105,7 @@ async def measure(symbol: str, timeframe: str, candles: int = 500):
 
     if detected_count > 0:
         print(f"\n  Detected signal characteristics:")
+        print(f"    rescued_sweep_only (H-016): {rescued_count}/{detected_count} ({rescued_count/detected_count*100:.1f}%)")
         print(f"    has_displacement: {has_displacement_count}/{detected_count} ({has_displacement_count/detected_count*100:.1f}%)")
         print(f"    has_ob:          {has_ob_count}/{detected_count} ({has_ob_count/detected_count*100:.1f}%)")
         print(f"    has_fvg:         {has_fvg_count}/{detected_count} ({has_fvg_count/detected_count*100:.1f}%)")
@@ -112,9 +119,15 @@ async def measure(symbol: str, timeframe: str, candles: int = 500):
 
 
 async def main():
-    symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"]
-    timeframe = "1h"
-    candles = 500
+    # CLI: python scripts/measure_rejection_rate.py [symbols_csv] [timeframe] [candles]
+    if len(sys.argv) > 1:
+        symbols = sys.argv[1].split(",")
+        timeframe = sys.argv[2] if len(sys.argv) > 2 else "1h"
+        candles = int(sys.argv[3]) if len(sys.argv) > 3 else 500
+    else:
+        symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"]
+        timeframe = "1h"
+        candles = 500
 
     for sym in symbols:
         await measure(sym, timeframe, candles)

@@ -728,6 +728,12 @@ class AppConfig:
     htf_penalty_direction: float = float(os.getenv("HTF_PENALTY_DIRECTION", "0.7"))
     htf_penalty_reversal: float = float(os.getenv("HTF_PENALTY_REVERSAL", "0.85"))
 
+    # ─── H-016 (v2.3): ATR-relative entry proximity ─────────────────────
+    # Effective proximity = max(entry_proximity_pct, atr_pct * entry_proximity_atr_mult)
+    # Base floor keeps low-vol instruments at the legacy 0.3% behaviour.
+    entry_proximity_pct: float = float(os.getenv("ENTRY_PROXIMITY_PCT", "0.3"))
+    entry_proximity_atr_mult: float = float(os.getenv("ENTRY_PROXIMITY_ATR_MULT", "0.5"))
+
     # ─── Breakout Quality (AMD sweep vs real breakout) ─────────────────
     # Enable the breakout-quality classifier (shadow log by default)
     breakout_quality_enabled: bool = os.getenv("BREAKOUT_QUALITY_ENABLED", "true").lower() == "true"
@@ -1087,5 +1093,8 @@ def build_config_snapshot() -> str:
         "ob_lookback": config.liquidity.ob_lookback,
         "structure_lookback": m.structure_lookback,
         "max_sl_atr": t.max_sl_atr,
+        # H-016 (v2.3): ATR-relative entry proximity
+        "entry_proximity_pct": config.entry_proximity_pct,
+        "entry_proximity_atr_mult": config.entry_proximity_atr_mult,
     }
     return _json.dumps(snapshot, sort_keys=True)

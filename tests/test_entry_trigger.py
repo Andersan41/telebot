@@ -15,7 +15,7 @@ root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root))
 
 from strategy.hypothesis import Hypothesis
-from strategy.entry_trigger import EntryTrigger, TriggerResult
+from strategy.entry_trigger import EntryTrigger, TriggerResult, resolve_proximity_pct
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -113,3 +113,29 @@ class TestEntryTrigger:
         h = _make_h(direction="buy", entry_price=100.0)
         result = trigger.check(h, current_price=100.0)
         assert result.entry_price == 100.0
+
+
+# ── H-016 (v2.3): ATR-relative proximity ───────────────────────────
+
+class TestResolveProximityPct:
+    def test_base_floor_when_atr_small(self):
+        # ATR 0.5% * 0.5 = 0.25% < floor 0.3% → floor wins
+        assert resolve_proximity_pct(0.3, 0.5, 0.5) == 0.3
+
+    def test_atr_dominates_when_wide(self):
+        # ATR 4% * 0.5 = 2% > floor → dynamic width wins
+        assert resolve_proximity_pct(0.3, 4.0, 0.5) == pytest.approx(2.0)
+
+    def test_zero_atr_returns_base(self):
+        assert resolve_proximity_pct(0.3, 0.0, 0.5) == 0.3
+
+    def test_zero_mult_returns_base(self):
+        assert resolve_proximity_pct(0.3, 4.0, 0.0) == 0.3
+
+    def test_dynamic_proximity_widens_trigger(self):
+        # 1% above entry: blocked at legacy 0.3%, allowed at ATR-derived 2%
+        h = _make_h(direction="buy", entry_price=100.0)
+        legacy = EntryTrigger(entry_proximity_pct=resolve_proximity_pct(0.3, 0.5, 0.5))
+        dynamic = EntryTrigger(entry_proximity_pct=resolve_proximity_pct(0.3, 4.0, 0.5))
+        assert legacy.check(h, current_price=101.0).triggered is False
+        assert dynamic.check(h, current_price=101.0).triggered is True

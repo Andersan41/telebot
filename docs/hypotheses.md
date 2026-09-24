@@ -146,3 +146,18 @@
 - **Причина:** На 4h таймфрейме волны отображались в пределах 11 часов (2-3 свечи), что слишком мелко для осмысленного Elliott Wave анализа. `min_swing_atr=0.5` был слишком низким, `left_bars=2/right_bars=2` находил слишком много шумовых swing points.
 - **Impact:** Pivot points теперь дальше друг от друга (минимум 3 свечи = 12ч на 4h). ATR-фильтр 1.5x отсеивает мелкие свипы. Результат — более крупные, значимые волны на графике.
 - **Risk:** Слишком строгие фильтры могут пропускать валидные волны. Если confidence падает — понизить min_bars до 2 или min_swing_atr до 1.0.
+
+
+## H-016: Sweep-only dead-end rescue (Option B) + ATR entry proximity
+
+- **Дата:** 2026-09-24
+- **Что:**
+  1. `strategy/pattern_engine.py` — rescue: оба пути (reversal/continuation) отклонены + есть валидный sweep без MSS → слабый reversal, направление от `sweep_type` (bullish→buy, bearish→sell). Guard M2: спасать только при наличии зоны (`has_ob or has_fvg`), иначе reject `reversal: sweep-only dead-end without zone (no MSS)` (reason code `sweep_dead_end_no_zone`, ветка маппинга в scanner идёт ПЕРВОЙ, т.к. причина содержит и "no MSS").
+  2. Причина отказа при обоюдном фейле теперь комбинированная: `"{reversal_rejection} + {continuation_rejection}"` — мотивы обеих ветвей больше не маскируются.
+  3. `strategy/probability_engine.py` — sweep edge в reversal: `+3.0` только при `has_mss`, иначе `+1.5` (слабый триггер).
+  4. `scheduler/scanner.py` — mss_gate: убран двойной `trace.passed` (SOFT-ветка логировалась и как PASS); SOFT учитывается в `penalties`; telemetry `rescued_sweep_only=1` на pattern PASS (funnel detail + audit `meta`); `_CONFIG_VERSION` 11→12.
+  5. Phase 2 — ATR-проксимити: `resolve_proximity_pct = max(ENTRY_PROXIMITY_PCT, atr_pct * ENTRY_PROXIMITY_ATR_MULT)` (`strategy/entry_trigger.py`), применено в обеих точках EntryTrigger (Phase 1.6 и Phase 4.5). Дефолты 0.3 / 0.5. Новые env-ключи `ENTRY_PROXIMITY_PCT`, `ENTRY_PROXIMITY_ATR_MULT` в `.env` и `.env.example`; ключи добавлены в `build_config_snapshot()`.
+- **Причина:** Живая воронка 2026-09-24 18:19: `entered=150, sent=0`; `pattern_engine=95` (63%), исторически 5982x `"reversal: sweep only (no MSS)"` — sweep-триггер есть, MSS отсутствует, оба пути мертвы (H-009 задокументирован, но не реализован). `entry_trigger=19` — фиксированный 0.3% при ATR 1-4%.
+- **Impact:** Ожидание: часть класса sweep-only со зоной OB/FVG проходит pattern_engine (rescued); калибровка по офлайн-реплею 7д — сдвиг воронки. `sent>0` может остаться 0 из-за `MIN_P_TP_REVERSAL=0.50` при сниженном edge +1.5 — это ОК, важен сдвиг воронки и телеметрия rescued. ATR-проксимити: BTC 1h (ATR~1%) → 0.5% вместо 0.3%; альты (ATR~4%) → 2%.
+- **Risk:** Приток слабых reversal-сигналов. Защита: guard (только со зоной), reduced sweep edge, `MIN_P_TP_REVERSAL=0.50`, risk engine downstream. Мониторинг: доля `rescued_sweep_only=1` в audit meta, доля rescued среди отправленных, winrate rescued-когорты. Откат: revert rescue-блока в `pattern_engine.detect()` + `ENTRY_PROXIMITY_ATR_MULT=0` (проксимити вырождается в legacy floor).
+- **Тесты:** `tests/test_new_pipeline.py` (rescue/guard/merge/continuation-priority + bare-sweep edge), `tests/test_entry_trigger.py` (TestResolveProximityPct), `tests/test_scanner.py` (mss_gate SOFT reachable).

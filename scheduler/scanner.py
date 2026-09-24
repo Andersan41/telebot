@@ -33,6 +33,7 @@ from storage.audit_reasons import (
     REGIME_BLOCKED, SCORE_TOO_LOW, SWEEP_CONTINUATION_MISMATCH,
     BOS_NO_RETEST, SL_STRUCTURAL_TIGHT, TIME_OF_DAY_BLOCKED,
     PATTERN_NO_SETUP, SWEEP_NONE, SWEEP_FALSE_FILTERED,
+    SWEEP_DEAD_END_NO_ZONE,
     DISPLACEMENT_MISSING, MSS_NONE, MSS_DIRECTION_UNCLEAR,
     CONTINUATION_RANGING, CONTINUATION_NO_BOS,
     CONTINUATION_BOS_NOT_BREAKING, CONTINUATION_BOS_VS_TREND,
@@ -91,7 +92,7 @@ _ema_spread_history: dict[str, list[float]] = {}
 # sl_absolute_min/max, max_active_signals, etc.).
 # Required for audit log versioning: signals under different configs
 # are tagged with different config_version for A/B analysis.
-_CONFIG_VERSION = 11  # v11: HTF soft-penalty honest audit + env multipliers (B-017/B-027)
+_CONFIG_VERSION = 12  # v12: H-016 sweep-only rescue + ATR entry proximity (v2.3)
 
 
 async def _audit_log(
@@ -167,9 +168,9 @@ class _FunnelCounter:
             reason = f" ({detail})" if detail else ""
             logger.bind(tags="signal_block").info(f"{tag} → {gate}: BLOCKED{reason}")
             self.blocked_by[gate] += 1
-        elif status == "PENALTY":
+        elif status in ("PENALTY", "SOFT"):
             reason = f" ({detail})" if detail else ""
-            logger.debug(f"{tag} → {gate}: PENALTY{reason}")
+            logger.debug(f"{tag} → {gate}: {status}{reason}")
             self.penalties[gate] += 1
         elif status == "ENTER":
             self.entered += 1
@@ -574,7 +575,10 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             await trace.save(db)
             _rej = setup.rejection_reason or "no setup"
             _rcode = PATTERN_NO_SETUP
-            if "no sweep" in _rej:
+            # H-016: first branch — guard reason also contains "no MSS"
+            if "without zone" in _rej:
+                _rcode = SWEEP_DEAD_END_NO_ZONE
+            elif "no sweep" in _rej:
                 _rcode = SWEEP_NONE
             elif "no MSS" in _rej:
                 _rcode = MSS_NONE
@@ -593,11 +597,20 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             logger.debug(f"No ICT setup: {symbol} {timeframe} — {setup.rejection_reason}")
             return None
 
+        _rescued = getattr(setup, "rescued_sweep_only", False)
         _current_funnel.log_gate(symbol, timeframe, "pattern_engine", "PASS",
-                                 f"direction={setup.direction} components={setup.components_found}")
+                                 f"direction={setup.direction} components={setup.components_found}"
+                                 + (" rescued_sweep_only=1" if _rescued else ""))
         trace.passed("pattern_engine")
         await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
-                        "pattern_engine", "ok", passed=True)
+                        "pattern_engine", "ok", passed=True,
+                        setup_type=setup.setup_type, direction=setup.direction,
+                        meta="rescued_sweep_only=1" if _rescued else None)
+        if _rescued:
+            logger.info(
+                f"[RESCUED] {symbol} {timeframe} sweep-only weak reversal "
+                f"passed pattern_engine (dir={setup.direction})"
+            )
 
         # 1.0b Score Quality Gate — controlled by MIN_SCORE_FOR_SIGNAL (default 2)
         # components_count = number of detected ICT components
@@ -657,12 +670,14 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             if not setup.has_mss:
                 # Soft gate: sweep-only reversal (no MSS) — log but allow through
                 # MSS is a quality signal, not a hard gate for data collection
+                # H-016 v2.3: fixed double trace.passed (was logged twice)
                 _current_funnel.log_gate(symbol, timeframe, "mss_gate", "SOFT",
                                          f"sweep-only (no MSS) — weaker setup")
                 trace.passed("mss_gate")
-            trace.passed("mss_gate")
-            _current_funnel.log_gate(symbol, timeframe, "mss_gate", "PASS",
-                                     f"mss_score={setup.mss_score:.0f}")
+            else:
+                trace.passed("mss_gate")
+                _current_funnel.log_gate(symbol, timeframe, "mss_gate", "PASS",
+                                         f"mss_score={setup.mss_score:.0f}")
 
         elif setup.setup_type == "continuation":
             # ── Continuation Gates ──
@@ -1252,9 +1267,13 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         # ═══ Phase 1.6: Entry Trigger Check ═══
         # Validate price is in the optimal entry zone before signalling.
         # Uses trade_plan.entry_zone as target — not just current close.
-        from strategy.entry_trigger import EntryTrigger, SimpleEntryTarget
+        from strategy.entry_trigger import EntryTrigger, SimpleEntryTarget, resolve_proximity_pct
+        # H-016 (v2.3): ATR-relative proximity = max(base, atr_pct * mult)
+        _atr_pct = (ind.atr / ind.close * 100) if ind and ind.close and ind.atr else 0.0
         _entry_trigger = EntryTrigger(
-            entry_proximity_pct=getattr(config, 'entry_proximity_pct', 0.3),
+            entry_proximity_pct=resolve_proximity_pct(
+                config.entry_proximity_pct, _atr_pct, config.entry_proximity_atr_mult,
+            ),
             max_spread_pct=getattr(config, 'max_entry_spread_pct', 0.1),
         )
         # Build target: use entry_zone from trade plan if available
@@ -1954,8 +1973,14 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         # ═══ Phase 4.5: Entry Trigger Check (independent of Decision Engine) ═══
         # Uses Hypothesis when available, falls back to SimpleEntryTarget
         # when Decision Engine / Hypothesis Engine is skipped (_liq_graph=None).
-        from strategy.entry_trigger import EntryTrigger, SimpleEntryTarget
-        entry_trigger = EntryTrigger()
+        from strategy.entry_trigger import EntryTrigger, SimpleEntryTarget, resolve_proximity_pct
+        # H-016 (v2.3): same ATR-relative proximity as Phase 1.6
+        _atr_pct = (ind.atr / ind.close * 100) if ind and ind.close and ind.atr else 0.0
+        entry_trigger = EntryTrigger(
+            entry_proximity_pct=resolve_proximity_pct(
+                config.entry_proximity_pct, _atr_pct, config.entry_proximity_atr_mult,
+            ),
+        )
 
         # Build entry target: Hypothesis or SimpleEntryTarget fallback
         _entry_target = None

@@ -81,6 +81,11 @@ class ICTSetup:
     # ── Rejection info ──
     rejection_reason: Optional[str] = None
 
+    # ── H-016 (v2.3): sweep-only dead-end rescue ──
+    # True when both paths failed but setup was admitted as weak reversal
+    # (sweep without MSS) — requires an entry zone (OB/FVG) to survive.
+    rescued_sweep_only: bool = False
+
     # ── Visual data (for chart overlay in sandbox) ──
     sweep_price: float = 0.0
     sweep_candle_timestamp: Optional[datetime] = None
@@ -217,16 +222,21 @@ class PatternEngine:
             else:
                 continuation_rejection = continuation.rejection_reason
 
+        # ═══ H-016 (v2.3): sweep-only dead-end rescue ═══
+        # Both paths failed. If a valid sweep exists but MSS is missing
+        # (reversal failed ONLY due to no MSS) → admit as weak reversal.
+        # Continuation stays preferred (checked first above).
+        rescued = False
+        if direction is None and reversal.has_sweep and not reversal.has_mss:
+            direction = "buy" if reversal.sweep_type == "bullish" else "sell"
+            setup_type = "reversal"
+            rescued = True
+
         if direction is None:
             trend = structure.trend if structure else "ranging"
-            # Prefer continuation-specific reason if continuation was tried
-            # and reversal failed at early stage (no sweep)
+            # H-016 1.1: combined reason when both paths failed (no masking)
             if continuation_rejection and reversal_rejection:
-                # If reversal failed at first step, continuation reason is more relevant
-                if "no sweep" in (reversal_rejection or ""):
-                    reason = continuation_rejection
-                else:
-                    reason = reversal_rejection
+                reason = f"{reversal_rejection} + {continuation_rejection}"
             else:
                 reason = continuation_rejection or reversal_rejection or "no valid setup"
             return ICTSetup(
@@ -237,9 +247,17 @@ class PatternEngine:
 
         # ═══ DETECT ENTRY ZONES ═══
         setup = reversal
+        setup.detected = True
         setup.direction = direction
         setup.setup_type = setup_type
         setup.structure_trend = structure.trend if structure else None
+        if rescued:
+            setup.rescued_sweep_only = True
+            setup.rejection_reason = None
+            logger.info(
+                f"H-016 rescue: sweep-only dead-end admitted as weak "
+                f"reversal (sweep_type={setup.sweep_type})"
+            )
 
         # Extract sweep timestamp for temporal binding (TZ §6.0)
         # Prefer timestamp from the sweep actually selected by classifier (via setup)
@@ -251,6 +269,23 @@ class PatternEngine:
                     break
 
         self._detect_entry_zones(setup, order_blocks, fvgs, direction, current_price, _sweep_ts)
+
+        # ═══ H-016 GUARD: rescued weak reversal requires an entry zone ═══
+        if setup.rescued_sweep_only and not (setup.has_ob or setup.has_fvg):
+            logger.debug(
+                f"H-016 guard: rescued sweep-only rejected (no OB/FVG zone) "
+                f"— {direction} sweep={setup.sweep_type}"
+            )
+            return ICTSetup(
+                detected=False,
+                structure_trend=setup.structure_trend,
+                has_sweep=setup.has_sweep,
+                sweep_type=setup.sweep_type,
+                sweep_strength=setup.sweep_strength,
+                sweep_price=setup.sweep_price,
+                sweep_candle_timestamp=setup.sweep_candle_timestamp,
+                rejection_reason="reversal: sweep-only dead-end without zone (no MSS)",
+            )
 
         # ═══ CHECK ENTRY ARMED ═══
         setup.entry_armed = self._check_entry_armed(setup, current_price)
