@@ -97,7 +97,7 @@ def _compute_structure(df, symbol: str, timeframe: str) -> Dict[str, Any]:
 
 
 def _compute_liquidity(df, symbol: str, timeframe: str) -> Dict[str, Any]:
-    """Рассчитать ликвидность (sweeps, OB, FVG, breakout quality)."""
+    """Рассчитать ликвидность (sweeps, OB, FVG) с таймстампами для аннотаций на графике."""
     from liquidity.order_blocks import detect_order_blocks
     from liquidity.fvg import detect_fvg
     from liquidity.sweep import detect_sweeps
@@ -106,18 +106,44 @@ def _compute_liquidity(df, symbol: str, timeframe: str) -> Dict[str, Any]:
     fvgs = detect_fvg(df)
     sweeps = detect_sweeps(df)
 
+    def _ts(candle_idx):
+        """Convert candle index to UNIX timestamp seconds."""
+        if candle_idx is None or candle_idx < 0 or candle_idx >= len(df):
+            return None
+        ts = df.index[candle_idx]
+        if hasattr(ts, 'timestamp'):
+            return int(ts.timestamp())
+        try:
+            v = int(ts)
+            return v // 1000 if v > 1e12 else v
+        except Exception:
+            return None
+
     result = {
         "order_blocks": [
-            {"type": getattr(ob, "type", ""), "price": round(getattr(ob, "midpoint", 0), 2)}
+            {
+                "type": getattr(ob, "type", ""),
+                "price": round(getattr(ob, "midpoint", 0), 2),
+                "high": round(getattr(ob, "high", 0), 2),
+                "low": round(getattr(ob, "low", 0), 2),
+                "time": _ts(getattr(ob, "candle_index", None)),
+            }
             for ob in (obs[-3:] if obs else [])
         ],
         "fvg": [
-            {"type": getattr(f, "type", ""), "top": round(getattr(f, "top", 0), 2), "bottom": round(getattr(f, "bottom", 0), 2)}
+            {
+                "type": getattr(f, "type", ""),
+                "top": round(getattr(f, "top", 0), 2),
+                "bottom": round(getattr(f, "bottom", 0), 2),
+                "time": _ts(getattr(f, "index", None)),
+            }
             for f in (fvgs[-3:] if fvgs else [])
         ],
         "sweep": {
             "detected": len(sweeps) > 0 if sweeps else False,
             "type": getattr(sweeps[-1], "type", "") if sweeps else "",
+            "time": _ts(getattr(sweeps[-1], "candle_index", None)) if sweeps else None,
+            "swept_level": round(getattr(sweeps[-1], "swept_level", 0), 2) if sweeps else None,
         } if sweeps else {"detected": False, "type": ""},
     }
 
@@ -325,6 +351,21 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"Breakout quality failed for {symbol}/{tf}: {e}")
 
+        # HTF structure (4H bias for Market Context)
+        htf_structure = None
+        try:
+            from market_structure.structure import analyze_structure as analyze_htf
+            htf_df = await _fetch_candles(symbol, "4h", limit=100)
+            if htf_df is not None and not htf_df.empty:
+                htf_state = analyze_htf(htf_df)
+                htf_structure = {
+                    "trend": htf_state.trend if hasattr(htf_state, "trend") else "unknown",
+                    "bos_type": htf_state.last_bos.type if htf_state.last_bos and hasattr(htf_state.last_bos, "type") else None,
+                    "mss_type": htf_state.last_mss.type if htf_state.last_mss and hasattr(htf_state.last_mss, "type") else None,
+                }
+        except Exception as e:
+            logger.debug(f"HTF structure failed for {symbol}: {e}")
+
         # Dynamic decimals based on price magnitude
         def _price_decimals(price: float) -> int:
             if price >= 1000:
@@ -418,6 +459,16 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"Fib zone failed for {symbol}/{tf}: {e}")
 
+        # Enrich S/R levels with distance from current price
+        _current_price = float(df.iloc[-1]["close"]) if len(df) > 0 else 0
+        if sr_levels and _current_price > 0:
+            for r in sr_levels.get("resistance", []):
+                if r.get("price") and r["price"] > 0:
+                    r["distance_pct"] = round((r["price"] - _current_price) / _current_price * 100, 2)
+            for s in sr_levels.get("support", []):
+                if s.get("price") and s["price"] > 0:
+                    s["distance_pct"] = round((_current_price - s["price"]) / _current_price * 100, 2)
+
         return {
             "type": "update",
             "symbol": symbol,
@@ -437,6 +488,7 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
             "volumeProfile": volume_profile,
             "breakoutQuality": breakout_quality,
             "fibZone": fib_zone,
+            "htfStructure": htf_structure,
         }
     except Exception as e:
         import traceback
@@ -450,7 +502,7 @@ async def _build_payload(symbol: str, timeframe: str = None) -> Dict[str, Any]:
 
 
 def _compute_signal_light(df, symbol: str, timeframe: str) -> Dict[str, Any]:
-    """Упрощённый сигнал для дашборда (indicator-only heuristic)."""
+    """Упрощённый сигнал для дашборда (indicator-only heuristic) с обогащёнными данными."""
     from indicators.engine import indicator_engine
     iv = indicator_engine.calculate(df, symbol, timeframe)
     if iv is None:
@@ -458,31 +510,134 @@ def _compute_signal_light(df, symbol: str, timeframe: str) -> Dict[str, Any]:
 
     reasons = []
     score = 0
+    factors_for = []    # factors pushing score positive (BUY)
+    factors_against = [] # factors pushing score negative (SELL)
 
+    # ── EMA ──
     if iv.ema_fast > iv.ema_slow:
         score += 1
         reasons.append("EMA fast > slow")
+        factors_for.append({"factor": "EMA бычья", "weight": 1})
     elif iv.ema_fast < iv.ema_slow:
         score -= 1
+        reasons.append("EMA fast < slow")
+        factors_against.append({"factor": "EMA медвежья", "weight": -1})
 
+    # ── RSI ──
     if iv.rsi > 55:
         score += 1
         reasons.append(f"RSI {iv.rsi:.0f} > 55")
+        factors_for.append({"factor": f"RSI бычий ({iv.rsi:.0f})", "weight": 1})
     elif iv.rsi < 45:
         score -= 1
+        reasons.append(f"RSI {iv.rsi:.0f} < 45")
+        factors_against.append({"factor": f"RSI медвежий ({iv.rsi:.0f})", "weight": -1})
 
+    # ── MACD ──
     if iv.macd_hist > 0:
         score += 1
         reasons.append("MACD hist > 0")
+        factors_for.append({"factor": "MACD бычий", "weight": 1})
     elif iv.macd_hist < 0:
         score -= 1
+        reasons.append("MACD hist < 0")
+        factors_against.append({"factor": "MACD медвежий", "weight": -1})
 
+    # ── ADX / DMI ──
     if iv.adx > 20:
         if iv.dmi_plus > iv.dmi_minus:
             score += 1
             reasons.append("ADX+ > ADX-")
+            factors_for.append({"factor": f"DMI бычий ({iv.dmi_plus:.1f}/{iv.dmi_minus:.1f})", "weight": 1})
         else:
             score -= 1
+            reasons.append("ADX- > ADX+")
+            factors_against.append({"factor": f"DMI медвежий ({iv.dmi_plus:.1f}/{iv.dmi_minus:.1f})", "weight": -1})
+
+    # ── Supertrend ──
+    if iv.supertrend_bullish:
+        factors_for.append({"factor": "Supertrend бычий", "weight": 1})
+    elif iv.supertrend_bearish:
+        factors_against.append({"factor": "Supertrend медвежий", "weight": -1})
+
+    # ── Market Structure (BOS/MSS) ──
+    try:
+        from market_structure.structure import analyze_structure
+        structure = analyze_structure(df)
+        if structure.last_mss:
+            mss_dir = structure.last_mss.type
+            if mss_dir == "bearish":
+                factors_against.append({"factor": "MSS медвежий", "weight": -1})
+            elif mss_dir == "bullish":
+                factors_for.append({"factor": "MSS бычий", "weight": 1})
+        elif structure.last_bos:
+            bos_dir = structure.last_bos.type
+            if bos_dir == "bearish":
+                factors_against.append({"factor": "BOS медвежий", "weight": -1})
+            elif bos_dir == "bullish":
+                factors_for.append({"factor": "BOS бычий", "weight": 1})
+    except Exception:
+        pass
+
+    # ── Liquidity (Sweep) ──
+    try:
+        from liquidity.sweep import detect_sweeps
+        sweeps = detect_sweeps(df, lookback=30, swing_window=2)
+        if sweeps and sweeps[-1].is_valid:
+            sw = sweeps[-1]
+            if sw.type == "bullish":
+                factors_for.append({"factor": "Liquidity Sweep бычий", "weight": 1})
+            else:
+                factors_against.append({"factor": "Liquidity Sweep медвежий", "weight": -1})
+    except Exception:
+        pass
+
+    # ── Order Blocks ──
+    try:
+        from liquidity.order_blocks import detect_order_blocks
+        obs = detect_order_blocks(df, lookback=50)
+        valid_obs = [ob for ob in obs if ob.is_valid][-2:]
+        for ob in valid_obs:
+            if ob.type == "bullish":
+                factors_for.append({"factor": f"Order Block бычий @ ${ob.midpoint:.4f}", "weight": 1})
+            else:
+                factors_against.append({"factor": f"Order Block медвежий @ ${ob.midpoint:.4f}", "weight": -1})
+    except Exception:
+        pass
+
+    # ── FVG ──
+    try:
+        from liquidity.fvg import detect_fvg
+        fvgs = detect_fvg(df, lookback=50)
+        active_fvgs = [f for f in fvgs if f.is_active][-1:]
+        for f in active_fvgs:
+            if f.type == "bullish":
+                factors_for.append({"factor": f"FVG бычий ${f.bottom:.4f}–${f.top:.4f}", "weight": 1})
+            else:
+                factors_against.append({"factor": f"FVG медвежий ${f.bottom:.4f}–${f.top:.4f}", "weight": -1})
+    except Exception:
+        pass
+
+    # ── Premium/Discount zone ──
+    try:
+        from market_structure.premium_discount import classify_zone
+        swing_highs = []
+        swing_lows = []
+        for sp in (structure.swing_points[-10:] if structure and hasattr(structure, 'swing_points') else []):
+            if hasattr(sp, 'type') and sp.type == 'high':
+                swing_highs.append(sp.price)
+            elif hasattr(sp, 'type') and sp.type == 'low':
+                swing_lows.append(sp.price)
+        if swing_highs and swing_lows:
+            sh, sl = max(swing_highs), min(swing_lows)
+            if sh > sl:
+                zone = classify_zone(df, "bullish", sh, sl)
+                if zone.zone_type.value == "premium":
+                    factors_against.append({"factor": f"Fib Premium ({zone.fib_level*100:.0f}%)", "weight": -1})
+                elif zone.zone_type.value == "discount":
+                    factors_for.append({"factor": f"Fib Discount ({zone.fib_level*100:.0f}%)", "weight": 1})
+    except Exception:
+        pass
 
     if score >= 2:
         signal = "BUY"
@@ -491,16 +646,112 @@ def _compute_signal_light(df, symbol: str, timeframe: str) -> Dict[str, Any]:
     else:
         signal = "NO_SIGNAL"
 
+    # ── Regime detection ──
+    regime = None
+    if iv.adx >= 25:
+        regime = "trending"
+    elif iv.adx < 15:
+        atr_pct = (iv.atr / iv.close * 100) if iv.close > 0 else 0
+        if atr_pct > 3:
+            regime = "volatile"
+        else:
+            regime = "range"
+    else:
+        regime = "range"
+
+    # ── SL / TP calculation ──
+    sl = None
+    tp = None
+    rr_ratio = None
+    atr = iv.atr
+    entry = round(iv.close, 4)
+
+    try:
+        from strategy.levels import get_support_resistance
+        levels = get_support_resistance(df, entry)
+        sr_list = levels.get("resistance", []) + levels.get("support", [])
+    except Exception:
+        sr_list = []
+
+    if signal == "BUY" and atr > 0:
+        sl = round(entry - atr * 1.5, 4)
+        tp = round(entry + atr * 3.0, 4)
+        risk = entry - sl
+        reward = tp - entry
+        rr_ratio = round(reward / risk, 2) if risk > 0 else None
+    elif signal == "SELL" and atr > 0:
+        sl = round(entry + atr * 1.5, 4)
+        tp = round(entry - atr * 3.0, 4)
+        risk = sl - entry
+        reward = entry - tp
+        rr_ratio = round(reward / risk, 2) if risk > 0 else None
+
+    # ── HTF Bias (4H if available) ──
+    htf_bias = None
+    trend_strength = "Слабый" if iv.adx < 20 else "Умеренный" if iv.adx < 30 else "Сильный"
+    trend_strength_text = f"{trend_strength} (ADX {iv.adx:.1f}, {timeframe.upper()})"
+
+    try:
+        from market_structure.structure import get_htf_directional_bias
+        if len(df) >= 200:
+            htf_bias = get_htf_directional_bias(df, df)
+    except Exception:
+        pass
+
+    # ── Conflict explanation ──
+    conflict_explanation = None
+    st_bullish = iv.supertrend_bullish
+    structure_bearish = False
+    try:
+        if structure and structure.trend == "bearish":
+            structure_bearish = True
+        if structure and structure.last_mss and structure.last_mss.type == "bearish":
+            structure_bearish = True
+    except Exception:
+        pass
+
+    if signal == "SELL" and st_bullish and not structure_bearish:
+        conflict_explanation = (
+            f"Краткосрочный тренд ({timeframe.upper()} Supertrend) бычий, "
+            f"но индикаторы (RSI, MACD, DMI) медвежьи → сигнал идёт против локального тренда, риск повышен"
+        )
+    elif signal == "SELL" and st_bullish and structure_bearish:
+        conflict_explanation = (
+            f"Supertrend бычий, но структура рынка (MSS/BOS) медвежья → "
+            f"сигнал следует за структурой, но против индикатора тренда"
+        )
+    elif signal == "BUY" and iv.supertrend_bearish:
+        conflict_explanation = (
+            f"Supertrend медвежий, но индикаторы бычьи → "
+            f"сигнал идёт против тренда индикатора"
+        )
+
+    # ── Confidence ──
+    total_factors = len(factors_for) + len(factors_against)
+    if total_factors > 0:
+        dominant = max(len(factors_for), len(factors_against))
+        confidence = round(dominant / total_factors * 100, 1)
+    else:
+        confidence = 0
+
+    verdict = "СИЛЬНЫЙ" if abs(score) >= 3 else "УМЕРЕННЫЙ" if abs(score) == 2 else "СЛАБЫЙ"
+
     return {
         "signal": signal,
         "score": score,
-        "verdict": "СИЛЬНЫЙ" if abs(score) >= 3 else "УМЕРЕННЫЙ" if abs(score) == 2 else "СЛАБЫЙ",
-        "confidence": round(abs(score) / 4 * 100, 1),
+        "verdict": verdict,
+        "confidence": confidence,
         "reasons": reasons[:5],
-        "entry": round(iv.close, 2),
-        "sl": None,
-        "tp": None,
-        "regime": None,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "rr_ratio": rr_ratio,
+        "regime": regime,
+        "htf_bias": htf_bias,
+        "trend_strength": trend_strength_text,
+        "conflict_explanation": conflict_explanation,
+        "score_factors_for": factors_for,
+        "score_factors_against": factors_against,
     }
 
 
@@ -834,6 +1085,109 @@ async def api_scan_stats(request):
         return web.json_response({"total_entries": 0, "stages": {}, "top_rejection_reasons": [], "error": str(e)})
 
 
+# ─── Token Report API ──────────────────────────────────────────────
+
+async def api_token_report(request):
+    """GET /api/token-report/{symbol} — detailed token analysis report."""
+    from analytics.token_report import generate_token_report
+    from analytics.token_formatter import format_token_report
+    from data.exchange_client import exchange_client
+    from indicators.engine import indicator_engine
+    from context.fetcher import context_fetcher
+
+    symbol = request.match_info.get("symbol", "").upper()
+    if "/" not in symbol:
+        symbol = f"{symbol}/USDT"
+
+    try:
+        report = await generate_token_report(
+            symbol=symbol,
+            exchange_client=exchange_client,
+            indicator_engine=indicator_engine,
+            context_fetcher=context_fetcher,
+        )
+
+        if report is None:
+            return web.json_response(
+                {"error": f"Failed to generate report for {symbol}"},
+                status=404,
+            )
+
+        # Convert report to dict for JSON serialization
+        data = {
+            "symbol": report.symbol,
+            "price": report.price,
+            "market_cap_rank": report.market_cap_rank,
+            "volume_24h": report.volume_24h,
+            "change_24h": report.change_24h,
+            "change_7d": report.change_7d,
+            "change_30d": report.change_30d,
+            "indicators_1h": {
+                "rsi": report.indicators_1h.rsi if report.indicators_1h else None,
+                "rsi_signal": report.indicators_1h.rsi_signal if report.indicators_1h else None,
+                "macd": report.indicators_1h.macd if report.indicators_1h else None,
+                "macd_signal": report.indicators_1h.macd_signal if report.indicators_1h else None,
+                "ema_fast": report.indicators_1h.ema_fast if report.indicators_1h else None,
+                "ema_slow": report.indicators_1h.ema_slow if report.indicators_1h else None,
+                "ema_signal": report.indicators_1h.ema_signal if report.indicators_1h else None,
+                "adx": report.indicators_1h.adx if report.indicators_1h else None,
+                "adx_signal": report.indicators_1h.adx_signal if report.indicators_1h else None,
+                "supertrend": report.indicators_1h.supertrend if report.indicators_1h else None,
+                "supertrend_signal": report.indicators_1h.supertrend_signal if report.indicators_1h else None,
+                "volume_signal": report.indicators_1h.volume_signal if report.indicators_1h else None,
+            } if report.indicators_1h else None,
+            "indicators_4h": {
+                "rsi": report.indicators_4h.rsi if report.indicators_4h else None,
+                "rsi_signal": report.indicators_4h.rsi_signal if report.indicators_4h else None,
+                "macd": report.indicators_4h.macd if report.indicators_4h else None,
+                "macd_signal": report.indicators_4h.macd_signal if report.indicators_4h else None,
+                "ema_fast": report.indicators_4h.ema_fast if report.indicators_4h else None,
+                "ema_slow": report.indicators_4h.ema_slow if report.indicators_4h else None,
+                "ema_signal": report.indicators_4h.ema_signal if report.indicators_4h else None,
+                "adx": report.indicators_4h.adx if report.indicators_4h else None,
+                "adx_signal": report.indicators_4h.adx_signal if report.indicators_4h else None,
+                "supertrend": report.indicators_4h.supertrend if report.indicators_4h else None,
+                "supertrend_signal": report.indicators_4h.supertrend_signal if report.indicators_4h else None,
+                "volume_signal": report.indicators_4h.volume_signal if report.indicators_4h else None,
+            } if report.indicators_4h else None,
+            "fear_greed": report.fear_greed,
+            "fear_greed_label": report.fear_greed_label,
+            "funding_rate": report.funding_rate,
+            "long_short_ratio": report.long_short_ratio,
+            "open_interest": report.open_interest,
+            "oi_delta": report.oi_delta,
+            "resistance_1h": report.resistance_1h,
+            "support_1h": report.support_1h,
+            "resistance_4h": report.resistance_4h,
+            "support_4h": report.support_4h,
+            "strategies": [
+                {
+                    "type": s.type,
+                    "direction": s.direction,
+                    "entry": s.entry,
+                    "stop_loss": s.stop_loss,
+                    "tp1": s.tp1,
+                    "tp2": s.tp2,
+                    "tp3": s.tp3,
+                    "rr_ratio": s.rr_ratio,
+                    "reason": s.reason,
+                    "confidence": s.confidence,
+                }
+                for s in report.strategies
+            ],
+            "observations": report.observations,
+            "recommendation": report.recommendation,
+            "recommendation_reason": report.recommendation_reason,
+            "formatted": format_token_report(report),
+        }
+
+        return web.json_response(data)
+
+    except Exception as e:
+        logger.error(f"api_token_report error for {symbol}: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # ─── App factory ────────────────────────────────────────────────────────
 
 def create_app() -> web.Application:
@@ -857,6 +1211,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/sandbox/trace/{signal_id}", api_sandbox_trace)
     app.router.add_get("/api/sandbox/candles", api_sandbox_candles)
     app.router.add_get("/api/scan-stats", api_scan_stats)
+    app.router.add_get("/api/token-report/{symbol}", api_token_report)
 
     # WebSocket
     app.router.add_get("/ws", ws_handler)

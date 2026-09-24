@@ -181,6 +181,7 @@ class DecisionTrace(Base):
     # Gate results (True=PASS, False=BLOCKED, None=NOT_RUN)
     gate_cooldown = Column(Boolean, nullable=True)
     gate_portfolio_risk = Column(Boolean, nullable=True)
+    gate_portfolio_admission = Column(Boolean, nullable=True)  # v2.1 B-019
     gate_btc_global_trend = Column(Boolean, nullable=True)
     gate_indicators = Column(Boolean, nullable=True)
     gate_confirm_tf = Column(Boolean, nullable=True)
@@ -431,11 +432,15 @@ class Database:
                 "gate_structure_alignment": "BOOLEAN",
                 "gate_sweep_required": "BOOLEAN",
                 "gate_regime_block": "BOOLEAN",
+                # Atomic portfolio admission (v2.1 B-019)
+                "gate_portfolio_admission": "BOOLEAN",
                 # Elliott Wave (soft feature)
                 "wave_confidence": "FLOAT",
                 "wave_direction": "VARCHAR(10)",
                 "wave_conflict": "BOOLEAN",
                 "wave_label": "VARCHAR(50)",
+                # Hypothesis + ML replay snapshot (v2.1 B-015)
+                "hypothesis_snapshot": "TEXT",
             }
             for col_name, col_type in trace_migrations.items():
                 if col_name not in trace_columns:
@@ -546,6 +551,114 @@ class Database:
             await session.commit()
             await session.refresh(sig)
             return sig
+
+    async def save_signal_with_risk(
+        self, *, risk_pct: float, **signal_values
+    ) -> tuple[Optional[Signal], Optional[str]]:
+        """Atomic admission: portfolio check + Signal + OPEN outcome + cooldown.
+
+        One transaction (BEGIN IMMEDIATE on SQLite). Returns (signal, None) on
+        success or (None, reason) when a limit rejects the admission.
+        Existing save_signal/create_outcome remain for tests and tooling.
+        """
+        import math
+
+        if not math.isfinite(risk_pct) or risk_pct <= 0:
+            return None, "invalid_new_risk"
+        symbol = signal_values["symbol"]
+        timeframe = signal_values["timeframe"]
+        async with self._session_factory() as session:
+            if self._engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            elif self._engine.dialect.name == "postgresql":
+                await session.execute(text(
+                    "LOCK TABLE signal_outcomes IN SHARE ROW EXCLUSIVE MODE"
+                ))
+            else:
+                raise RuntimeError(
+                    "Atomic portfolio gate supports SQLite/PostgreSQL only"
+                )
+
+            rows = list((await session.execute(
+                select(SignalOutcome, Signal.symbol)
+                .outerjoin(Signal, SignalOutcome.signal_id == Signal.id)
+                .where(SignalOutcome.status == "OPEN")
+            )).all())
+            if any(active_symbol is None for _, active_symbol in rows):
+                return None, "orphan_open_outcome"
+            max_per_sym = getattr(config, "max_active_signals_per_symbol", None)
+            if max_per_sym is not None:
+                same_symbol = sum(
+                    1 for _, active_symbol in rows if active_symbol == symbol
+                )
+                if same_symbol >= max_per_sym:
+                    return None, f"symbol_limit:{same_symbol}/{max_per_sym}"
+            if len(rows) >= config.max_active_signals:
+                return None, f"active_limit:{len(rows)}/{config.max_active_signals}"
+            if any(
+                row.risk_pct is None
+                or not math.isfinite(row.risk_pct)
+                or row.risk_pct <= 0
+                for row, _ in rows
+            ):
+                return None, "unknown_open_risk"
+            current_risk = sum(row.risk_pct for row, _ in rows)
+            if round(current_risk + risk_pct, 10) > config.max_portfolio_risk_pct:
+                return None, (
+                    f"risk_budget:{current_risk:.4f}+{risk_pct:.4f}"
+                    f">{config.max_portfolio_risk_pct:.4f}"
+                )
+
+            # Cooldown (mirrors scanner.get_cooldown_minutes without circular import)
+            _tf_minutes = {
+                "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440,
+            }
+            now = datetime.now(timezone.utc)
+            key = f"cooldown:{symbol}:{timeframe}"
+            cooldown_row = await session.get(BotSetting, key)
+            if cooldown_row is not None:
+                try:
+                    last = datetime.fromisoformat(cooldown_row.value)
+                except (TypeError, ValueError):
+                    return None, "invalid_persisted_cooldown"
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                tf_minutes = _tf_minutes.get(timeframe, 60)
+                minutes = max(
+                    config.signal_cooldown_minutes,
+                    int(tf_minutes * config.signal_cooldown_tf_multiplier),
+                )
+                if (now - last).total_seconds() < minutes * 60:
+                    return None, f"cooldown:{minutes}m"
+
+            values = dict(signal_values)
+            reasons = values.pop("reasons", [])
+            values["reasons"] = "\n".join(reasons) if isinstance(reasons, (list, tuple)) else str(reasons or "")
+            factors = values.get("confidence_v2_factors")
+            values["confidence_v2_factors"] = (
+                json.dumps(factors) if factors else None
+            )
+            values["sent_at"] = now
+            # Strip kwargs that are not Signal columns if callers pass extras
+            _sig_cols = {c.name for c in Signal.__table__.columns}
+            values = {k: v for k, v in values.items() if k in _sig_cols}
+            signal = Signal(**values)
+            session.add(signal)
+            await session.flush()
+            session.add(
+                SignalOutcome(signal_id=signal.id, status="OPEN", risk_pct=risk_pct)
+            )
+            if cooldown_row is None:
+                session.add(
+                    BotSetting(key=key, value=now.isoformat(), updated_at=now)
+                )
+            else:
+                cooldown_row.value = now.isoformat()
+                cooldown_row.updated_at = now
+            await session.commit()
+            await session.refresh(signal)
+            return signal, None
 
     async def save_candidate(
         self,
@@ -832,6 +945,7 @@ class Database:
                 timeframe=timeframe,
                 gate_cooldown=gate_results.get("cooldown"),
                 gate_portfolio_risk=gate_results.get("portfolio_risk"),
+                gate_portfolio_admission=gate_results.get("portfolio_admission"),
                 gate_btc_global_trend=gate_results.get("btc_global_trend"),
                 gate_indicators=gate_results.get("indicators"),
                 gate_confirm_tf=gate_results.get("confirm_tf"),
@@ -982,7 +1096,7 @@ class Database:
             return []
 
         gate_order = [
-            "cooldown", "portfolio_risk", "btc_global_trend", "indicators",
+            "cooldown", "portfolio_risk", "portfolio_admission", "btc_global_trend", "indicators",
             "confirm_tf", "signal_engine", "distance_filter", "tp_path",
             "mtf_alignment", "btc_correlation", "eth_correlation", "volatility",
             "context_timeout", "context_block", "context_min_verdict",
@@ -992,6 +1106,7 @@ class Database:
         gate_col_map = {
             "cooldown": "gate_cooldown",
             "portfolio_risk": "gate_portfolio_risk",
+            "portfolio_admission": "gate_portfolio_admission",
             "btc_global_trend": "gate_btc_global_trend",
             "indicators": "gate_indicators",
             "confirm_tf": "gate_confirm_tf",
@@ -1072,6 +1187,7 @@ class Database:
         gate_col_map = {
             "cooldown": "gate_cooldown",
             "portfolio_risk": "gate_portfolio_risk",
+            "portfolio_admission": "gate_portfolio_admission",
             "btc_global_trend": "gate_btc_global_trend",
             "indicators": "gate_indicators",
             "confirm_tf": "gate_confirm_tf",
@@ -1236,16 +1352,19 @@ class Database:
             return list(result.scalars().all())
 
     async def close_outcome(
-        self, outcome_id: int, status: str, close_price: float, pnl_pct: float
+        self, outcome_id: int, status: str, close_price: Optional[float],
+        pnl_pct: Optional[float],
     ) -> None:
         async with self._session_factory() as session:
             result = await session.execute(
                 select(SignalOutcome).where(SignalOutcome.id == outcome_id)
             )
             row = result.scalar_one()
+            if row.status != "OPEN":
+                return  # already closed — do not overwrite
             row.status = status
             row.close_price = close_price
-            row.pnl_pct = pnl_pct
+            row.pnl_pct = pnl_pct  # None = unknown (≠ 0.0 scratch)
             row.closed_at = datetime.now(timezone.utc)
             row.checked_at = datetime.now(timezone.utc)
             await session.commit()
@@ -1302,10 +1421,18 @@ class Database:
             )
             opened_rows = list(opened.scalars().all())
         pnls = [r.pnl_pct for r in closed_rows if r.pnl_pct is not None]
+        # B-020: win = positive money PnL among decided outcomes (not status)
+        decided = [r for r in closed_rows if r.status in ("HIT_TP", "HIT_SL")]
+        wins = sum(1 for r in decided if (r.pnl_pct or 0) > 0)
+        expired = sum(1 for r in closed_rows if r.status == "EXPIRED")
         return {
             "closed": len(closed_rows),
             "open": len(opened_rows),
-            "wins": sum(1 for r in closed_rows if r.status == "HIT_TP"),
+            "decided": len(decided),
+            "wins": wins,
+            "losses": len(decided) - wins,
+            "winrate": round(wins / len(decided) * 100, 1) if decided else 0.0,
+            "expired": expired,
             "avg_pnl": sum(pnls) / len(pnls) if pnls else 0.0,
             "best_pnl": max(pnls) if pnls else 0.0,
             "worst_pnl": min(pnls) if pnls else 0.0,
@@ -1342,7 +1469,7 @@ class Database:
         """Return historical winrate (0-100) for a given factor fingerprint.
 
         Returns None if not enough samples (less than min_samples).
-        Winrate = HIT_TP / (HIT_TP + HIT_SL) * 100
+        Winrate = positive-pnl / (HIT_TP + HIT_SL) * 100  (B-020: money PnL)
         """
         async with self._session_factory() as session:
             # Find all signals with this fingerprint that have closed outcomes
@@ -1367,7 +1494,7 @@ class Database:
             if len(closed) < min_samples:
                 return None
 
-            wins = sum(1 for o in closed if o.status == "HIT_TP")
+            wins = sum(1 for o in closed if (o.pnl_pct or 0) > 0)
             return round(wins / len(closed) * 100, 1)
 
     # ── SignalAuditLog CRUD ────────────────────────────────────────

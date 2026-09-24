@@ -232,7 +232,6 @@ class SetupFeatures:
             "wave_confidence": self.wave_confidence,
             "wave_direction": self.wave_direction,
             "wave_conflict": int(self.wave_conflict),
-            "wave_label": self.wave_primary_label,
         }
 
     def to_reasoning(self) -> List[str]:

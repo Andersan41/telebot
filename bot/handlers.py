@@ -141,6 +141,83 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
+@_admin_only
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /report OP/USDT — детальный анализ токена
+    /report — список доступных токенов
+    """
+    from analytics.token_report import generate_token_report
+    from analytics.token_formatter import format_token_report
+    from data.exchange_client import exchange_client
+    from indicators.engine import indicator_engine
+    from context.fetcher import context_fetcher
+
+    args = context.args
+
+    if not args:
+        # Show available symbols
+        symbols = get_active_symbols()
+        lines = ["📊 <b>Доступные токены для /report:</b>\n"]
+        for s in symbols[:20]:
+            lines.append(f"• <code>{s}</code>")
+        if len(symbols) > 20:
+            lines.append(f"... и ещё {len(symbols) - 20}")
+        lines.append("\nИспользование: <code>/report BTC/USDT</code>")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        return
+
+    symbol = args[0].upper()
+    if "/" not in symbol:
+        symbol = f"{symbol}/USDT"
+
+    # Validate symbol exists in config
+    active_symbols = get_active_symbols()
+    if symbol not in active_symbols:
+        await update.message.reply_text(
+            f"❌ Символ <code>{symbol}</code> не найден в конфиге.\n"
+            f"Доступные: <code>{', '.join(active_symbols[:10])}</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    await update.message.reply_text(f"🔄 Генерирую отчёт для <b>{symbol}</b>...", parse_mode=ParseMode.HTML)
+
+    try:
+        report = await generate_token_report(
+            symbol=symbol,
+            exchange_client=exchange_client,
+            indicator_engine=indicator_engine,
+            context_fetcher=context_fetcher,
+        )
+
+        if report is None:
+            await update.message.reply_text(f"❌ Не удалось получить данные для {symbol}")
+            return
+
+        text = format_token_report(report)
+
+        # Telegram message limit is 4096 chars
+        if len(text) > 4000:
+            # Split into parts
+            parts = text.split("\n\n")
+            current = ""
+            for part in parts:
+                if len(current) + len(part) + 2 > 4000:
+                    await update.message.reply_text(current, parse_mode=ParseMode.HTML)
+                    current = part
+                else:
+                    current += ("\n\n" if current else "") + part
+            if current:
+                await update.message.reply_text(current, parse_mode=ParseMode.HTML)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        logger.error(f"Report error for {symbol}: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+
 def register_handlers(app: Application):
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -165,6 +242,8 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("closetrade", closetrade_command))
     # F3: /hypotheses (new pipeline debug)
     app.add_handler(CommandHandler("hypotheses", hypotheses_command))
+    # Token analysis report
+    app.add_handler(CommandHandler("report", cmd_report))
     # Menu navigation (callbacks + text input for custom token)
     app.add_handler(CallbackQueryHandler(handle_menu_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_message))

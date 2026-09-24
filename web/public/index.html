@@ -23,6 +23,7 @@
       <button class="tab-btn active" data-tab="dashboard">Дашборд</button>
       <button class="tab-btn" data-tab="scan">Scan Engine (движок сканирования)</button>
       <button class="tab-btn" data-tab="sandbox">Логика сигналов</button>
+      <button class="tab-btn" data-tab="token-analysis">Token Analysis</button>
     </div>
 
     <!-- Dashboard tab -->
@@ -41,203 +42,194 @@
       </div>
     </div>
 
-    <!-- Signal card (compact) -->
-    <div class="signal-card no" id="signalCard">
-      <div class="signal-row">
-        <span class="signal-type no" id="signalType">ОЖИДАНИЕ...</span>
-        <span class="signal-score" id="signalScore">Score: —</span>
-        <span class="signal-sep">|</span>
-        <span class="signal-field">Вход <b id="signalEntry">—</b></span>
-        <span class="signal-sep">|</span>
-        <span class="signal-field">SL <b id="signalSL">—</b></span>
-        <span class="signal-sep">|</span>
-        <span class="signal-field">TP <b id="signalTP">—</b></span>
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- УРОВЕНЬ 1 — РЕШЕНИЕ (Signal Header)                -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="signal-header" id="signalHeader">
+      <div class="signal-header-top">
+        <span class="signal-direction" id="signalDirection">ОЖИДАНИЕ...</span>
+        <div class="signal-score-block">
+          <span class="signal-score" id="signalScore">Score: —</span>
+          <div class="signal-confidence">
+            <div class="conf-bar-track"><div class="conf-bar-fill" id="confBar" style="width:0%"></div></div>
+            <span class="conf-pct" id="confPct">0%</span>
+          </div>
+        </div>
       </div>
-      <div class="signal-reasons" id="signalReasons"></div>
+      <div class="signal-levels">
+        <span class="sl-field">Вход <b id="signalEntry">—</b></span>
+        <span class="sl-sep">|</span>
+        <span class="sl-field">SL <b id="signalSL">—</b></span>
+        <span class="sl-sep">|</span>
+        <span class="sl-field">TP <b id="signalTP">—</b></span>
+        <span class="sl-sep">|</span>
+        <span class="sl-field">R:R <b id="signalRR">—</b></span>
+      </div>
+      <!-- Factor breakdown (expandable) -->
+      <details class="factor-details" id="factorDetails">
+        <summary class="factor-summary" id="factorSummary">Показать факторы</summary>
+        <div class="factor-lists">
+          <div class="factor-col factor-col-for" id="factorFor"></div>
+          <div class="factor-col factor-col-against" id="factorAgainst"></div>
+        </div>
+      </details>
     </div>
 
-    <!-- Derivatives row: OI + Funding -->
-    <div class="deriv-row">
-      <div class="deriv-card" id="oiCard">
-        <div class="deriv-label">Открытый интерес (OI)</div>
-        <div class="deriv-value" id="oiValue">—</div>
-        <div class="deriv-delta" id="oiDelta"></div>
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- УРОВЕНЬ 2 — КОНТЕКСТ РЫНКА (Market Context)        -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="market-context" id="marketContext">
+      <div class="ctx-row">
+        <div class="ctx-item" id="ctxRegimeWrap">
+          <div class="ctx-label">Режим</div>
+          <div class="ctx-value" id="ctxRegime">—</div>
+        </div>
+        <div class="ctx-item" id="ctxTrendWrap">
+          <div class="ctx-label">Сила тренда</div>
+          <div class="ctx-value" id="ctxTrend">—</div>
+        </div>
+        <div class="ctx-item" id="ctxHtfWrap">
+          <div class="ctx-label">HTF Bias</div>
+          <div class="ctx-value" id="ctxHtf">—</div>
+        </div>
       </div>
-      <div class="deriv-card" id="frCard">
-        <div class="deriv-label">Funding Rate</div>
-        <div class="deriv-value" id="frValue">—</div>
-        <div class="deriv-sub" id="frSub">8h swap</div>
-      </div>
-    </div>
-
-    <!-- Indicators: 6 cards -->
-    <div class="grid-3">
-      <div class="card" id="card-rsi">
-        <div class="card-label">RSI <span class="badge" id="badge-rsi">—</span></div>
-        <div class="card-value" id="val-rsi">—</div>
-        <div class="card-sub" id="sub-rsi">Загрузка...</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-rsi" style="width:0%"></div></div>
-      </div>
-      <div class="card" id="card-macd">
-        <div class="card-label">MACD <span class="badge" id="badge-macd">—</span></div>
-        <div class="card-value" id="val-macd">—</div>
-        <div class="card-sub" id="sub-macd">Загрузка...</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-macd" style="width:0%"></div></div>
-      </div>
-      <div class="card" id="card-ema">
-        <div class="card-label">EMA <span class="badge" id="badge-ema">—</span></div>
-        <div class="card-value" id="val-ema">—</div>
-        <div class="card-sub" id="sub-ema">Загрузка...</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-ema" style="width:0%"></div></div>
-      </div>
-      <div class="card" id="card-adx">
-        <div class="card-label">ADX <span class="badge" id="badge-adx">—</span></div>
-        <div class="card-value" id="val-adx">—</div>
-        <div class="card-sub" id="sub-adx">Загрузка...</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-adx" style="width:0%"></div></div>
-      </div>
-      <div class="card" id="card-st">
-        <div class="card-label">Supertrend <span class="badge" id="badge-st">—</span></div>
-        <div class="card-value" id="val-st">—</div>
-        <div class="card-sub" id="sub-st">Загрузка...</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-st" style="width:0%"></div></div>
-      </div>
-      <div class="card" id="card-vol">
-        <div class="card-label">Volume <span class="badge" id="badge-vol">—</span></div>
-        <div class="card-value" id="val-vol">—</div>
-        <div class="card-sub" id="sub-vol">Загрузка...</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-vol" style="width:0%"></div></div>
+      <div class="conflict-callout" id="conflictCallout" style="display:none;">
+        <span class="conflict-icon">!</span>
+        <span class="conflict-text" id="conflictText"></span>
       </div>
     </div>
 
-    <!-- Main row: Levels + Market Mind -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- УРОВЕНЬ 3 — ГРАФИК + SMART MONEY                 -->
+    <!-- ═══════════════════════════════════════════════════ -->
     <div class="main-row">
-      <div class="levels-col">
-        <div class="card levels-card" id="resistance-card">
-          <div class="levels-title resistance">Сопротивление</div>
-          <div id="resistance-list"></div>
+      <div class="chart-col">
+        <div class="chart-toolbar">
+          <div class="chart-label">Price Action · <span id="chartTfLabel">1H</span></div>
+          <div class="chart-tabs">
+            <button class="chart-tab-btn active" data-chart="price">Price</button>
+            <button class="chart-tab-btn" data-chart="cvd">CVD</button>
+          </div>
         </div>
-        <div class="card levels-card" id="support-card">
-          <div class="levels-title support">Поддержка</div>
-          <div id="support-list"></div>
+        <div id="priceChart"></div>
+        <div class="chart-cvd" id="chartCvdWrap" style="display:none;">
+          <div id="cvdChart"></div>
+          <div class="cvd-stats-row">
+            <span>Текущий: <b id="cvd-current">—</b></span>
+            <span>Тренд: <b id="cvd-trend-text">—</b></span>
+          </div>
         </div>
       </div>
-
-      <div class="card market-mind">
-        <div class="mm-header">
-          <div class="mm-icon">AI</div>
-          <div>
-            <div class="mm-title">Market Analysis</div>
-            <div class="mm-sub" id="mmSub">TA + Smart Money + Structure</div>
-          </div>
-        </div>
-
-        <!-- Verdict -->
-        <div class="verdict-row">
-          <div class="vcard">
-            <div class="vcard-label">Вердикт</div>
-            <div class="vcard-main" id="verdict-main">—</div>
-            <div class="vcard-sub" id="verdict-conf">Confidence: —</div>
-            <div class="bar-track"><div class="bar-fill" id="conf-bar" style="width:0%"></div></div>
-          </div>
-          <div class="vcard">
-            <div class="vcard-label">Режим</div>
-            <div class="vcard-main" id="verdict-regime" style="font-size:14px;">—</div>
-            <div class="vcard-sub">рыночный режим</div>
-          </div>
-          <div class="vcard">
-            <div class="vcard-label">Сила тренда</div>
-            <div class="vcard-main" id="verdict-trend" style="font-size:14px;">—</div>
-            <div class="vcard-sub">ADX / Supertrend</div>
-          </div>
-        </div>
-
-        <!-- Chart + SMC -->
-        <div class="bottom-row">
-          <div class="chart-col">
-            <div class="chart-label">Price Action · <span id="chartTfLabel">1H</span></div>
-            <div id="priceChart"></div>
-          </div>
-          <div class="smc-col">
-            <div class="chart-label">Smart Money (умные деньги)</div>
-            <div id="smc-list"></div>
-          </div>
-        </div>
+      <div class="smc-col">
+        <div class="chart-label">Smart Money (умные деньги)</div>
+        <div id="smc-list" class="smc-list"></div>
       </div>
     </div>
 
-    <!-- CVD (Cumulative Volume Delta) -->
-    <div class="card">
-      <div class="card-label">CVD (Кумулятивный объём дельта) <span class="badge" id="cvd-trend">—</span></div>
-      <div class="cvd-stats">
-        <div class="cvd-stat">
-          <div class="cvd-stat-label">Текущий</div>
-          <div class="cvd-stat-value" id="cvd-current">—</div>
-        </div>
-        <div class="cvd-stat">
-          <div class="cvd-stat-label">Тренд</div>
-          <div class="cvd-stat-value" id="cvd-trend-text">—</div>
-        </div>
+    <!-- S/R Levels (compact row with distances) -->
+    <div class="levels-compact">
+      <div class="levels-compact-col">
+        <div class="levels-compact-title resistance">Сопротивление</div>
+        <div id="resistance-list"></div>
       </div>
-      <div class="cvd-chart-wrap">
-        <div id="cvdChart"></div>
+      <div class="levels-compact-col">
+        <div class="levels-compact-title support">Поддержка</div>
+        <div id="support-list"></div>
       </div>
     </div>
 
-    <!-- Volume Profile -->
-    <div class="card">
-      <div class="card-label">Volume Profile (профиль объёма)</div>
-      <div class="vp-stats">
-        <div class="vp-stat">
-          <div class="vp-stat-label">POC (точка контроля)</div>
-          <div class="vp-stat-value" id="vp-poc">—</div>
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- УРОВЕНЬ 4 — ВТОРОСТЕПЕННЫЕ ИНДИКАТОРЫ (свёрнуто)   -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <details class="indicators-collapsed" id="indicatorsCollapsed">
+      <summary class="indicators-summary" id="indicatorsSummary">
+        <span class="indicators-preview" id="indicatorsPreview">Индикаторы</span>
+        <span class="indicators-chevron">&#9662;</span>
+      </summary>
+      <div class="indicators-body">
+        <div class="indicators-tf-label">Рассчитаны на <span id="indTfLabel">1H</span></div>
+        <div class="grid-3">
+          <div class="card-mini" id="card-rsi">
+            <div class="card-mini-label">RSI <span class="badge" id="badge-rsi">—</span></div>
+            <div class="card-mini-value" id="val-rsi">—</div>
+            <div class="card-mini-sub" id="sub-rsi"></div>
+          </div>
+          <div class="card-mini" id="card-macd">
+            <div class="card-mini-label">MACD <span class="badge" id="badge-macd">—</span></div>
+            <div class="card-mini-value" id="val-macd">—</div>
+            <div class="card-mini-sub" id="sub-macd"></div>
+          </div>
+          <div class="card-mini" id="card-ema">
+            <div class="card-mini-label">EMA <span class="badge" id="badge-ema">—</span></div>
+            <div class="card-mini-value" id="val-ema">—</div>
+            <div class="card-mini-sub" id="sub-ema"></div>
+          </div>
+          <div class="card-mini" id="card-adx">
+            <div class="card-mini-label">ADX <span class="badge" id="badge-adx">—</span></div>
+            <div class="card-mini-value" id="val-adx">—</div>
+            <div class="card-mini-sub" id="sub-adx"></div>
+          </div>
+          <div class="card-mini" id="card-st">
+            <div class="card-mini-label">Supertrend <span class="badge" id="badge-st">—</span></div>
+            <div class="card-mini-value" id="val-st">—</div>
+            <div class="card-mini-sub" id="sub-st"></div>
+          </div>
+          <div class="card-mini" id="card-vol">
+            <div class="card-mini-label">Volume <span class="badge" id="badge-vol">—</span></div>
+            <div class="card-mini-value" id="val-vol">—</div>
+            <div class="card-mini-sub" id="sub-vol"></div>
+          </div>
         </div>
-        <div class="vp-stat">
-          <div class="vp-stat-label">VAH (верх зоны)</div>
-          <div class="vp-stat-value" id="vp-vah">—</div>
+        <!-- OI + Funding (was separate row, now inside indicators) -->
+        <div class="deriv-row">
+          <div class="deriv-card" id="oiCard">
+            <div class="deriv-label">Открытый интерес (OI)</div>
+            <div class="deriv-value" id="oiValue">—</div>
+            <div class="deriv-delta" id="oiDelta"></div>
+          </div>
+          <div class="deriv-card" id="frCard">
+            <div class="deriv-label">Funding Rate</div>
+            <div class="deriv-value" id="frValue">—</div>
+            <div class="deriv-sub" id="frSub">8h swap</div>
+          </div>
         </div>
-        <div class="vp-stat">
-          <div class="vp-stat-label">VAL (низ зоны)</div>
-          <div class="vp-stat-value" id="vp-val">—</div>
+        <!-- Volume Profile -->
+        <div class="card-mini vp-section">
+          <div class="card-mini-label">Volume Profile</div>
+          <div class="vp-stats">
+            <div class="vp-stat">
+              <div class="vp-stat-label">POC</div>
+              <div class="vp-stat-value" id="vp-poc">—</div>
+            </div>
+            <div class="vp-stat">
+              <div class="vp-stat-label">VAH</div>
+              <div class="vp-stat-value" id="vp-vah">—</div>
+            </div>
+            <div class="vp-stat">
+              <div class="vp-stat-label">VAL</div>
+              <div class="vp-stat-value" id="vp-val">—</div>
+            </div>
+            <div class="vp-stat">
+              <div class="vp-stat-label">В зоне VA</div>
+              <div class="vp-stat-value" id="vp-in-va">—</div>
+            </div>
+          </div>
+          <div class="vp-histogram" id="vp-histogram"></div>
         </div>
-        <div class="vp-stat">
-          <div class="vp-stat-label">В зоне VA (область стоимости)</div>
-          <div class="vp-stat-value" id="vp-in-va">—</div>
+        <!-- Breakout Quality -->
+        <div class="card-mini bq-section">
+          <div class="card-mini-label">Breakout Quality</div>
+          <div class="bq-stats">
+            <div class="bq-stat"><div class="bq-stat-label">Вердикт</div><div class="bq-stat-value" id="bq-verdict">—</div></div>
+            <div class="bq-stat"><div class="bq-stat-label">Направление</div><div class="bq-stat-value" id="bq-direction">—</div></div>
+            <div class="bq-stat"><div class="bq-stat-label">Оценка</div><div class="bq-stat-value" id="bq-score">—</div></div>
+            <div class="bq-stat"><div class="bq-stat-label">Тело %</div><div class="bq-stat-value" id="bq-body">—</div></div>
+            <div class="bq-stat"><div class="bq-stat-label">Удержание</div><div class="bq-stat-value" id="bq-retention">—</div></div>
+            <div class="bq-stat"><div class="bq-stat-label">Объём</div><div class="bq-stat-value" id="bq-volume">—</div></div>
+          </div>
         </div>
       </div>
-      <div class="vp-histogram" id="vp-histogram"></div>
-    </div>
-
-    <!-- Breakout Quality -->
-    <div class="card">
-      <div class="card-label">Breakout Quality (качество пробоя)</div>
-      <div class="bq-stats">
-        <div class="bq-stat">
-          <div class="bq-stat-label">Вердикт</div>
-          <div class="bq-stat-value" id="bq-verdict">—</div>
-        </div>
-        <div class="bq-stat">
-          <div class="bq-stat-label">Направление</div>
-          <div class="bq-stat-value" id="bq-direction">—</div>
-        </div>
-        <div class="bq-stat">
-          <div class="bq-stat-label">Оценка</div>
-          <div class="bq-stat-value" id="bq-score">—</div>
-        </div>
-        <div class="bq-stat">
-          <div class="bq-stat-label">Тело свечи %</div>
-          <div class="bq-stat-value" id="bq-body">—</div>
-        </div>
-        <div class="bq-stat">
-          <div class="bq-stat-label">Удержание (бары)</div>
-          <div class="bq-stat-value" id="bq-retention">—</div>
-        </div>
-        <div class="bq-stat">
-          <div class="bq-stat-label">Отношение объёма</div>
-          <div class="bq-stat-value" id="bq-volume">—</div>
-        </div>
-      </div>
-    </div>
+    </details>
 
     <!-- Timeframe picker -->
     <div class="tf-picker" id="tfPicker">
@@ -404,9 +396,42 @@
       </div>
     </div>
 
+    <!-- Token Analysis tab -->
+    <div class="tab-content hidden" id="tab-token-analysis">
+      <div class="token-analysis-layout">
+        <!-- Search -->
+        <div class="token-analysis-search">
+          <input type="text" id="tokenAnalysisInput" placeholder="Введите символ (BTC, ETH, SOL...)" />
+          <button id="tokenAnalysisBtn" class="token-analysis-btn">Анализировать</button>
+          <div class="quick-tokens">
+            <button class="qtok-analysis" data-symbol="BTC">BTC</button>
+            <button class="qtok-analysis" data-symbol="ETH">ETH</button>
+            <button class="qtok-analysis" data-symbol="SOL">SOL</button>
+            <button class="qtok-analysis" data-symbol="OP">OP</button>
+            <button class="qtok-analysis" data-symbol="ARB">ARB</button>
+          </div>
+        </div>
+
+        <!-- Loading indicator -->
+        <div class="token-analysis-loading" id="tokenAnalysisLoading" style="display:none;">
+          <div class="spinner"></div>
+          <span>Генерирую отчёт...</span>
+        </div>
+
+        <!-- Error message -->
+        <div class="token-analysis-error" id="tokenAnalysisError" style="display:none;"></div>
+
+        <!-- Report content -->
+        <div class="token-analysis-report" id="tokenAnalysisReport" style="display:none;">
+          <!-- Will be populated by JavaScript -->
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
   <script src="/js/app.js?v=6"></script>
+  <script src="/js/token-analysis.js"></script>
 </body>
 </html>

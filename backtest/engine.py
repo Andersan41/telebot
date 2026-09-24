@@ -537,17 +537,20 @@ class BacktestEngine:
                 # Regime detection (Task 1: RegimeDetector)
                 regime_obj = _compute_regime(ind, atr_history, ema_spread_history, volume_history)
 
-                # Structure / liquidity analysis
+                # Structure / liquidity analysis — B-021 lookback parity 50/100/50
+                _lb_sweep = getattr(config.liquidity, "sweep_lookback", 50)
+                _lb_ob = getattr(config.liquidity, "ob_lookback", 100)
+                _lb_struct = getattr(config.market_structure, "structure_lookback", 50)
                 try:
-                    structure = analyze_structure(window.tail(100))
+                    structure = analyze_structure(window.tail(_lb_struct))
                 except Exception:
                     structure = None
                 try:
-                    all_sweeps = detect_sweeps(window.tail(100), swing_window=5)
+                    all_sweeps = detect_sweeps(window.tail(_lb_sweep), swing_window=5)
                 except Exception:
                     all_sweeps = []
                 try:
-                    all_obs = detect_order_blocks(window.tail(100)) or []
+                    all_obs = detect_order_blocks(window.tail(_lb_ob)) or []
                 except Exception:
                     all_obs = []
                 valid_sweeps = [s for s in all_sweeps if getattr(s, "is_valid", False)]
@@ -611,7 +614,7 @@ class BacktestEngine:
                 try:
                     _df_clean = window.dropna(subset=["open", "high", "low", "close", "volume"])
                     if len(_df_clean) >= 10:
-                        fvgs = detect_fvg(_df_clean, lookback=100)
+                        fvgs = detect_fvg(_df_clean, lookback=getattr(config.liquidity, "fvg_lookback", 100))
                 except Exception:
                     pass
 

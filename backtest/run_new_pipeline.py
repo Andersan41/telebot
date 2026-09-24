@@ -62,6 +62,23 @@ SLIPPAGE_PCT = 0.02   # 0.02% slippage per side
 MAX_TRADE_DURATION = 72  # max candles to hold a trade (72h for 1h TF)
 
 
+def _tf_duration(timeframe: str) -> pd.Timedelta:
+    """Bar duration from timeframe string (1m/1h/4h/1d/1w)."""
+    unit = timeframe[-1].lower()
+    seconds = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+    if unit not in seconds or int(timeframe[:-1]) <= 0:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
+    return pd.Timedelta(seconds=int(timeframe[:-1]) * seconds[unit])
+
+
+def closed_htf_history(frame, timeframe: str, decision_time, limit: int = 60):
+    """OHLCV index is OPEN time; a row is usable only after its close (B-021)."""
+    if frame is None or len(frame) == 0:
+        return None
+    available = frame.index + _tf_duration(timeframe) <= decision_time
+    return frame.loc[available].tail(limit)
+
+
 # ── Trade simulation ───────────────────────────────────────────────────
 @dataclass
 class Trade:
@@ -269,20 +286,31 @@ def compute_stats(result: SymbolResult) -> dict:
 
 
 # ── HTF scoring from cache ───────────────────────────────────────────────
-def _calc_htf_score_from_cache(htf_data: dict, direction: str) -> float:
-    """Compute HTF alignment score from pre-fetched data."""
+def _calc_htf_score_from_cache(htf_data: dict, direction: str, decision_time=None) -> float:
+    """Compute HTF alignment score from pre-fetched data.
+
+    When decision_time is given, only closed HTF bars are used (B-021 causal parity).
+    """
     if not htf_data:
         return 0.5
     bull = "bullish" if direction in ("buy", "bullish") else "bearish"
     same = 0
     opp = 0
+    scored = 0
     for tf, df in htf_data.items():
+        if decision_time is not None:
+            df = closed_htf_history(df, tf, decision_time)
+            if df is None or len(df) == 0:
+                continue
+        scored += 1
         trend = _detect_trend_from_df(df)
         if trend == bull:
             same += 1
         elif trend != "ranging":
             opp += 1
-    total = len(htf_data)
+    total = scored if scored else len(htf_data)
+    if total == 0:
+        return 0.5
     if same == total:
         return 1.0
     if same == total - 1 and opp == 1:
@@ -319,11 +347,14 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
     df = raw.copy()
     logger.info(f"{symbol}: {len(df)} candles, {df.index[0]} → {df.index[-1]}")
 
-    # Pre-fetch HTF data once per symbol (W1, D1, H4)
+    # Pre-fetch HTF history for causal bias (B-021 / v2.0 B-007).
+    # Rows are filtered by closed_htf_history at each decision_time — no lookahead.
     htf_data = {}
     for htf in ["1w", "1d", "4h"]:
         try:
-            htf_df = await exchange_client.fetch_ohlcv(symbol, htf, limit=50)
+            # Over-fetch: enough bars for full primary span + warmup
+            _needed = 61 + int((df.index[-1] - df.index[0]) / _tf_duration(htf))
+            htf_df = await exchange_client.fetch_ohlcv(symbol, htf, limit=max(50, min(_needed, 200)))
             if htf_df is not None and len(htf_df) >= 20:
                 htf_data[htf] = htf_df
         except Exception:
@@ -413,11 +444,13 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
         result.signals_generated += 1
 
         # ── Phase 1.45: HTF Bias Hard Gate (v2.5 — direction + regime filters) ──
+        # B-021: slice HTF history to bars closed at decision_time (no lookahead)
         try:
             _struct_1d = extract_structure_dict(structure) if structure else None
+            _decision_time = df.index[i] + _tf_duration(timeframe)
             htf_bias = get_htf_bias(
-                df_1d=htf_data.get("1d"),
-                df_4h=htf_data.get("4h"),
+                df_1d=closed_htf_history(htf_data.get("1d"), "1d", _decision_time),
+                df_4h=closed_htf_history(htf_data.get("4h"), "4h", _decision_time),
                 structure_1d=_struct_1d, structure_4h=None,
             )
 
@@ -487,7 +520,10 @@ async def run_symbol(symbol: str, timeframe: str, candles: int) -> SymbolResult:
         htf_score = None
         pd_score = None
         try:
-            htf_score = _calc_htf_score_from_cache(htf_data, setup.direction)
+            htf_score = _calc_htf_score_from_cache(
+                htf_data, setup.direction,
+                decision_time=df.index[i] + _tf_duration(timeframe),
+            )
         except Exception:
             pass
         try:

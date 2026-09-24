@@ -108,6 +108,7 @@ class TradeEngine:
                 swing_lows=recent_lows,
                 bos_level=bos_level,
                 atr=atr,
+                max_sl_atr=getattr(cfg, "max_sl_atr", 3.0),
             )
         else:
             invalidation = find_invalidation_sell(
@@ -117,6 +118,7 @@ class TradeEngine:
                 swing_highs=recent_highs,
                 bos_level=bos_level,
                 atr=atr,
+                max_sl_atr=getattr(cfg, "max_sl_atr", 3.0),
             )
 
         if invalidation is None:
@@ -274,6 +276,24 @@ class TradeEngine:
                 entry_price=entry, is_valid=False,
                 rejection_reason=f"GEOMETRY_INVALID: non-positive price (entry={entry}, sl={sl}, tp={tp})",
             )
+
+        # ═══ MAX_SL_ATR final gate (v2.0 B-001) — after all buffers ═══
+        # Structural SL + ATR buffer + wick safety + HTF POI override may
+        # expand entry-SL beyond the configured ATR cap. Reject the plan;
+        # never pull SL inside invalidation just to pass the filter.
+        _max_sl_atr = getattr(cfg, "max_sl_atr", 3.0)
+        if atr > 0 and _max_sl_atr > 0:
+            _max_sl_distance = atr * _max_sl_atr
+            _sl_distance = abs(entry - sl)
+            if _sl_distance > _max_sl_distance:
+                return TradePlan(
+                    direction=direction, symbol=ind.symbol, timeframe=timeframe,
+                    entry_price=entry, is_valid=False,
+                    rejection_reason=(
+                        f"MAX_SL_ATR={_max_sl_atr}: sl_dist={_sl_distance:.8g} "
+                        f"> {_max_sl_distance:.8g} (atr={atr:.8g})"
+                    ),
+                )
 
         # ═══ Step 4.5: RR Symmetry — reward must be >= risk ═══
         # Live data: avg SL=-3.69%, avg TP=+2.89% — RR < 1 kills expectancy.

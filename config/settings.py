@@ -150,6 +150,8 @@ class TradingConfig:
     min_sl_distance_pct: float = float(os.getenv("MIN_SL_DISTANCE_PCT", "1.0"))
     # Максимальное расстояние SL от entry (%)
     max_sl_distance_pct: float = float(os.getenv("MAX_SL_DISTANCE_PCT", "10.0"))
+    # v2.0 B-001: max SL distance in ATR multiples (final gate after buffers)
+    max_sl_atr: float = float(os.getenv("MAX_SL_ATR", "3.0"))
     # Минимальный R:R для финализации сигнала
     min_rr_threshold: float = float(os.getenv("MIN_RR_THRESHOLD", "1.5"))
     # Буфер stop hunt для structural SL (%) — стоп ставится за уровень, а не на него
@@ -718,9 +720,13 @@ class AppConfig:
     # v2.5: Trading sessions (comma-separated: london,ny)
     trading_sessions_str: str = os.getenv("TRADING_SESSIONS", "london,ny")
     # v2.5: Block SHORT signals when HTF bias is bullish (no edge)
-    block_short_in_bullish_htf: bool = os.getenv("BLOCK_SHORT_IN_BULLISH_HTF", "true").lower() == "true"
+    block_short_in_bullish_htf: bool = os.getenv("BLOCK_SHORT_IN_BULLISH_HTF", "false").lower() == "true"
     # v2.5: Block LONG signals when HTF bias is bearish (no edge)
-    block_long_in_bearish_htf: bool = os.getenv("BLOCK_LONG_IN_BEARISH_HTF", "true").lower() == "true"
+    # default false: preserve soft-penalty behavior; set true for hard gate
+    block_long_in_bearish_htf: bool = os.getenv("BLOCK_LONG_IN_BEARISH_HTF", "false").lower() == "true"
+    # v2.1 B-027: HTF soft-penalty multipliers (A/B via env)
+    htf_penalty_direction: float = float(os.getenv("HTF_PENALTY_DIRECTION", "0.7"))
+    htf_penalty_reversal: float = float(os.getenv("HTF_PENALTY_REVERSAL", "0.85"))
 
     # ─── Breakout Quality (AMD sweep vs real breakout) ─────────────────
     # Enable the breakout-quality classifier (shadow log by default)
@@ -1070,5 +1076,16 @@ def build_config_snapshot() -> str:
         "btc_correlation_enabled": d.btc_correlation_enabled,
         "btc_global_trend_filter": d.btc_global_trend_filter,
         "eth_correlation_enabled": d.eth_correlation_enabled,
+        # HTF soft-penalty (v2.1 B-027)
+        "htf_bias_v2": config.htf_bias_v2,
+        "block_short_in_bullish_htf": config.block_short_in_bullish_htf,
+        "block_long_in_bearish_htf": config.block_long_in_bearish_htf,
+        "htf_penalty_direction": config.htf_penalty_direction,
+        "htf_penalty_reversal": config.htf_penalty_reversal,
+        # Lookback parity (v2.1 B-021) + MAX_SL_ATR (B-024)
+        "sweep_lookback": config.liquidity.sweep_lookback,
+        "ob_lookback": config.liquidity.ob_lookback,
+        "structure_lookback": m.structure_lookback,
+        "max_sl_atr": t.max_sl_atr,
     }
     return _json.dumps(snapshot, sort_keys=True)

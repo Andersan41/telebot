@@ -265,15 +265,15 @@ async def run_one_fast(symbol: str, *, cached_1h, cached_15m) -> FunnelData:
         if rejection is None:
             regime_obj = _compute_regime(ind, [], [], [])
             try:
-                structure = analyze_structure(df.iloc[max(0, i - 100):i + 1])
+                structure = analyze_structure(df.iloc[max(0, i - getattr(config.market_structure, "structure_lookback", 50)):i + 1])
             except Exception:
                 structure = None
             try:
-                all_sweeps = detect_sweeps(df.iloc[max(0, i - 100):i + 1], swing_window=5)
+                all_sweeps = detect_sweeps(df.iloc[max(0, i - getattr(config.liquidity, "sweep_lookback", 50)):i + 1], swing_window=5)
             except Exception:
                 all_sweeps = []
             try:
-                all_obs = detect_order_blocks(df.iloc[max(0, i - 100):i + 1]) or []
+                all_obs = detect_order_blocks(df.iloc[max(0, i - getattr(config.liquidity, "ob_lookback", 100)):i + 1]) or []
             except Exception:
                 all_obs = []
             valid_sweeps = [s for s in all_sweeps if getattr(s, "is_valid", False)]

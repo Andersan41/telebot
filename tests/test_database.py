@@ -147,7 +147,9 @@ class TestHistoricalWinrate:
             )
             outcome = await db.create_outcome(sig.id)
             status = "HIT_TP" if i < 7 else "HIT_SL"
-            await db.close_outcome(outcome.id, status, 52000.0, 4.0)
+            # B-020: WR is money-PnL based — losses must have negative pnl
+            pnl = 4.0 if status == "HIT_TP" else -6.0
+            await db.close_outcome(outcome.id, status, 52000.0, pnl)
 
         # Create signals with fingerprint B (20% WR)
         for i in range(8):
@@ -157,7 +159,8 @@ class TestHistoricalWinrate:
             )
             outcome = await db.create_outcome(sig.id)
             status = "HIT_TP" if i < 2 else "HIT_SL"
-            await db.close_outcome(outcome.id, status, 52000.0, 4.0)
+            pnl = 4.0 if status == "HIT_TP" else -6.0
+            await db.close_outcome(outcome.id, status, 52000.0, pnl)
 
         wr_a = await db.get_historical_winrate("fingerprint_a")
         wr_b = await db.get_historical_winrate("fingerprint_b")
@@ -184,3 +187,111 @@ class TestHistoricalWinrate:
         last = await db.get_last_signal("SOL/USDT", "1h")
         assert last is not None
         assert last.factor_fingerprint is None
+
+
+class TestSaveSignalWithRisk:
+    """v2.1 B-019 — atomic admission: Signal + OPEN outcome + cooldown."""
+
+    @pytest.mark.asyncio
+    async def test_admission_success(self, setup_db):
+        await db.init()
+        sig, reason = await db.save_signal_with_risk(
+            risk_pct=1.0,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            signal_type="BUY",
+            close_price=50000.0,
+            sl=49000.0,
+            tp=53000.0,
+            score=5,
+            reasons=["test"],
+        )
+        assert sig is not None and reason is None
+        stats = await db.get_outcome_stats()
+        assert stats["open"] == 1
+
+    @pytest.mark.asyncio
+    async def test_admission_blocks_cooldown(self, setup_db):
+        await db.init()
+        sig1, _ = await db.save_signal_with_risk(
+            risk_pct=1.0,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            signal_type="BUY",
+            close_price=50000.0,
+            sl=49000.0,
+            tp=53000.0,
+            score=5,
+            reasons=["a"],
+        )
+        assert sig1 is not None
+        sig2, reason = await db.save_signal_with_risk(
+            risk_pct=1.0,
+            symbol="BTC/USDT",
+            timeframe="1h",
+            signal_type="BUY",
+            close_price=50000.0,
+            sl=49000.0,
+            tp=53000.0,
+            score=5,
+            reasons=["b"],
+        )
+        assert sig2 is None
+        assert reason and reason.startswith("cooldown")
+
+    @pytest.mark.asyncio
+    async def test_admission_blocks_risk_budget(self, setup_db):
+        await db.init()
+        # Pre-fill OPEN outcomes up to risk budget.
+        # Patch storage.database.config (not config.settings) — test_config's
+        # importlib.reload leaves database bound to the pre-reload singleton.
+        import storage.database as _dbmod
+        _cfg = _dbmod.config
+        _orig = _cfg.max_portfolio_risk_pct
+        object.__setattr__(_cfg, "max_portfolio_risk_pct", 1.0)
+        try:
+            # Force one open outcome without cooldown interference: different symbols
+            sig0, _ = await db.save_signal_with_risk(
+                risk_pct=0.8,
+                symbol="ETH/USDT",
+                timeframe="4h",
+                signal_type="BUY",
+                close_price=3000.0,
+                sl=2900.0,
+                tp=3300.0,
+                score=5,
+                reasons=["seed"],
+            )
+            assert sig0 is not None
+            sig, reason = await db.save_signal_with_risk(
+                risk_pct=0.5,
+                symbol="BTC/USDT",
+                timeframe="1h",
+                signal_type="BUY",
+                close_price=50000.0,
+                sl=49000.0,
+                tp=53000.0,
+                score=5,
+                reasons=["over"],
+            )
+            assert sig is None
+            assert reason and reason.startswith("risk_budget")
+        finally:
+            object.__setattr__(_cfg, "max_portfolio_risk_pct", _orig)
+
+    @pytest.mark.asyncio
+    async def test_admission_rejects_invalid_risk(self, setup_db):
+        await db.init()
+        sig, reason = await db.save_signal_with_risk(
+            risk_pct=float("nan"),
+            symbol="BTC/USDT",
+            timeframe="1h",
+            signal_type="BUY",
+            close_price=50000.0,
+            sl=49000.0,
+            tp=53000.0,
+            score=5,
+            reasons=["x"],
+        )
+        assert sig is None
+        assert reason == "invalid_new_risk"

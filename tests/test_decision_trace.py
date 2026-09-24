@@ -66,9 +66,13 @@ class TestDecisionTraceBuilder:
 
     def test_gate_order_matches_funnel(self):
         from scheduler.scanner import _FUNNEL_GATES
-        # All gates in GATE_ORDER should be in _FUNNEL_GATES (except compression_block which is special)
-        for gate in GATE_ORDER:
-            assert gate in _FUNNEL_GATES, f"{gate} missing from _FUNNEL_GATES"
+        # GATE_ORDER and _FUNNEL_GATES must be identical (B-016)
+        assert set(GATE_ORDER) == set(_FUNNEL_GATES), (
+            f"only GATE={set(GATE_ORDER)-set(_FUNNEL_GATES)} "
+            f"only FUNNEL={set(_FUNNEL_GATES)-set(GATE_ORDER)}"
+        )
+        assert "portfolio_admission" in GATE_ORDER
+        assert GATE_ORDER.index("portfolio_admission") == GATE_ORDER.index("portfolio_risk") + 1
 
 
 class TestDecisionTraceDB:
@@ -106,6 +110,7 @@ class TestDecisionTraceDB:
         assert trace.score == 5
         assert trace.signal_generated is True
         assert trace.gate_cooldown is True
+        assert trace.gate_portfolio_admission is True
         assert trace.gate_dedup is True
 
     @pytest.mark.asyncio

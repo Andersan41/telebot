@@ -29,9 +29,15 @@ from storage.database import Database
 
 # Canonical gate order — matches _FUNNEL_GATES in scanner.py (ICT Core)
 GATE_ORDER = [
-    "cooldown", "portfolio_risk", "indicators", "pattern_engine",
-    "structure_alignment", "sweep_required", "regime_block",
-    "sl_tp", "risk_engine", "dedup",
+    "cooldown", "portfolio_risk", "portfolio_admission", "daily_limits", "position_limits",
+    "indicators", "volatility_filter", "regime_block",
+    "pattern_engine", "score_gate", "structure_alignment",
+    "sweep_required", "displacement_gate", "bos_gate", "bos_retest",
+    "entry_zone", "confirmation_score", "breakout_quality",
+    "ob_retest", "session_filter", "htf_bias", "htf_bias_penalty",
+    "entry_trigger", "confirm_tf", "sl_tp", "min_p_tp",
+    "risk_engine", "execution_filter", "depth_check", "dedup",
+    "compression_block",
 ]
 
 # Feature keys that are captured in the snapshot
@@ -57,6 +63,9 @@ FEATURE_KEYS = {
     "regime_confidence",
     # Elliott Wave (soft feature)
     "wave_confidence", "wave_direction", "wave_conflict", "wave_label",
+    # Probability / risk decision extras (v2.1 B-025)
+    "p_tp", "expected_rr", "risk_pct",
+    "htf_bias_penalty", "ob_state_multiplier",
 }
 
 
@@ -244,10 +253,6 @@ class DecisionTraceBuilder:
             if not result and self._final_stage == gate and self._blocked_reason:
                 entry += f":{self._blocked_reason[:80]}"
             path.append(entry)
-        # Also add compression_block if recorded (not in canonical GATE_ORDER)
-        if "compression_block" in self._gates:
-            status = "PASS" if self._gates["compression_block"] else "BLOCK"
-            path.append(f"compression_block:{status}")
         return json.dumps(path)
 
     async def save(
@@ -294,5 +299,5 @@ class DecisionTraceBuilder:
             )
             return trace.id
         except Exception as e:
-            logger.debug(f"Decision trace save failed for {self.symbol} {self.timeframe}: {e}")
+            logger.error(f"Decision trace save failed for {self.symbol} {self.timeframe}: {e}")
             return -1

@@ -85,12 +85,11 @@ def detect_fvg(
         if close1 > open1 and close3 > open3 and low3 > high1:
             gap_size_pct = (low3 - high1) / high1 * 100
             if gap_size_pct >= min_size_pct:
-                ts = _to_datetime(df.index[offset + i])
                 fvgs.append(FairValueGap(
                     type="bullish",
                     top=low3,
                     bottom=high1,
-                    timestamp=ts,
+                    timestamp=_to_datetime(df.index[offset + i + 1]),
                     index=offset + i + 1,
                 ))
 
@@ -98,12 +97,11 @@ def detect_fvg(
         if close1 < open1 and close3 < open3 and high3 < low1:
             gap_size_pct = (low1 - high3) / high3 * 100
             if gap_size_pct >= min_size_pct:
-                ts = _to_datetime(df.index[offset + i])
                 fvgs.append(FairValueGap(
                     type="bearish",
                     top=low1,
                     bottom=high3,
-                    timestamp=ts,
+                    timestamp=_to_datetime(df.index[offset + i + 1]),
                     index=offset + i + 1,
                 ))
 

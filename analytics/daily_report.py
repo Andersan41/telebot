@@ -105,22 +105,24 @@ def format_daily_report(data: dict) -> str:
         lines.append("*Нет закрытых сделок за день*")
         lines.append("")
     else:
-        # Summary
+        # Summary — B-020: win = positive money PnL among decided outcomes
         pnls = [o.pnl_pct for o, s in closed if o.pnl_pct is not None]
-        wins = sum(1 for o, s in closed if o.status == "HIT_TP")
-        losses_count = sum(1 for o, s in closed if o.status == "HIT_SL")
+        decided = [(o, s) for o, s in closed if o.status in ("HIT_TP", "HIT_SL")]
+        wins = sum(1 for o, s in decided if (o.pnl_pct or 0) > 0)
+        losses_count = len(decided) - wins
         expired = sum(1 for o, s in closed if o.status == "EXPIRED")
         avg_pnl = sum(pnls) / len(pnls) if pnls else 0.0
-        pf = _calc_profit_factor(pnls)
+        pf = _calc_profit_factor([o.pnl_pct for o, s in decided if o.pnl_pct is not None])
 
         lines.append(f"| Метрика | Значение |")
         lines.append(f"|---------|----------|")
         lines.append(f"| Всего закрыто | {len(closed)} |")
-        lines.append(f"| WIN (TP) | {wins} |")
-        lines.append(f"| LOSS (SL) | {losses_count} |")
+        lines.append(f"| Решено (TP/SL) | {len(decided)} |")
+        lines.append(f"| WIN (PnL>0) | {wins} |")
+        lines.append(f"| LOSS (PnL<=0) | {losses_count} |")
         if expired:
             lines.append(f"| EXPIRED | {expired} |")
-        lines.append(f"| Винрейт | {wins/len(closed)*100:.1f}% |" if closed else "")
+        lines.append(f"| Винрейт | {wins/len(decided)*100:.1f}% |" if decided else "")
         lines.append(f"| Средний PnL | {avg_pnl:+.2f}% |")
         lines.append(f"| Profit Factor | {pf:.2f} |")
         lines.append("")
@@ -166,9 +168,12 @@ def format_daily_report(data: dict) -> str:
     lines.append("")
 
     if all_closed:
-        all_pnls = [o.pnl_pct for o, s in all_closed if o.pnl_pct is not None]
-        all_wins = sum(1 for o, s in all_closed if o.status == "HIT_TP")
-        all_losses = sum(1 for o, s in all_closed if o.status == "HIT_SL")
+        # B-020: money-based WR among decided; EXPIRED tracked separately
+        all_decided = [(o, s) for o, s in all_closed if o.status in ("HIT_TP", "HIT_SL")]
+        all_pnls = [o.pnl_pct for o, s in all_decided if o.pnl_pct is not None]
+        all_wins = sum(1 for o, s in all_decided if (o.pnl_pct or 0) > 0)
+        all_losses = len(all_decided) - all_wins
+        all_expired = sum(1 for o, s in all_closed if o.status == "EXPIRED")
         all_avg = sum(all_pnls) / len(all_pnls) if all_pnls else 0.0
         all_pf = _calc_profit_factor(all_pnls)
         all_best = max(all_pnls) if all_pnls else 0.0
@@ -177,9 +182,12 @@ def format_daily_report(data: dict) -> str:
         lines.append(f"| Метрика | Значение |")
         lines.append(f"|---------|----------|")
         lines.append(f"| Всего закрыто | {len(all_closed)} |")
+        lines.append(f"| Решено (TP/SL) | {len(all_decided)} |")
         lines.append(f"| WIN | {all_wins} |")
         lines.append(f"| LOSS | {all_losses} |")
-        lines.append(f"| Винрейт | {all_wins/len(all_closed)*100:.1f}% |" if all_closed else "")
+        if all_expired:
+            lines.append(f"| EXPIRED | {all_expired} |")
+        lines.append(f"| Винрейт | {all_wins/len(all_decided)*100:.1f}% |" if all_decided else "")
         lines.append(f"| Средний PnL | {all_avg:+.2f}% |")
         lines.append(f"| Profit Factor | {all_pf:.2f} |")
         lines.append(f"| Лучшая | {all_best:+.2f}% |")

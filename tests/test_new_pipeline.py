@@ -70,6 +70,13 @@ class MockSweep:
     volume_ratio: float = 2.0
     timestamp: datetime = None
     candle_index: int = 0
+    atr: float = 100.0
+    pool_age_bars: int = 10
+
+    def passes_false_sweep_filters(
+        self, atr: float = 0.0, pool_age_bars: int = 0
+    ) -> tuple:
+        return True, ""
 
 
 @dataclass
@@ -809,6 +816,27 @@ class TestRiskEngine:
         )
         assert decision.should_trade is False
         assert "invalid price" in decision.rejection_reason
+
+    def test_nan_price_rejects_isfinite(self):
+        """v2.1 B-024: math.isfinite rejects NaN/Inf prices."""
+        import math
+        features = SetupFeatures()
+        prob = TradeProbability(p_tp=0.6, expected_rr=2.0, profit_factor=2.0, confidence=0.7, model_type="rules")
+        portfolio = PortfolioState()
+
+        decision = risk_engine.evaluate(
+            features=features, probability=prob, portfolio=portfolio,
+            entry_price=math.nan, sl=49500.0, tp=51500.0,
+        )
+        assert decision.should_trade is False
+        assert "invalid price" in decision.rejection_reason
+
+        decision_inf = risk_engine.evaluate(
+            features=features, probability=prob, portfolio=portfolio,
+            entry_price=50000.0, sl=math.inf, tp=51500.0,
+        )
+        assert decision_inf.should_trade is False
+        assert "invalid price" in decision_inf.rejection_reason
 
     def test_high_volatility_reduces_risk(self):
         prob = TradeProbability(p_tp=0.65, expected_rr=2.5, profit_factor=2.5, confidence=0.8, model_type="rules")

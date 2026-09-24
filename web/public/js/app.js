@@ -44,7 +44,7 @@ function connect() {
 
 // ── Render ──────────────────────────────────────────
 function renderDashboard(data) {
-  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, cvd, fundingRate, candleHistory, waveOverlay, breakoutQuality, fibZone } = data;
+  const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, cvd, fundingRate, candleHistory, waveOverlay, breakoutQuality, fibZone, htfStructure } = data;
 
   if (error) {
     updateStatus(`Ошибка: ${error}`);
@@ -54,54 +54,94 @@ function renderDashboard(data) {
   const sym = (symbol || '').replace('/USDT', '');
   updateStatus(`Анализ активен · ${sym} $${Number(price || 0).toLocaleString()}`);
 
-  if (indicators) renderIndicators(indicators);
   if (signal) renderSignal(signal);
+  if (signal) renderMarketContext(signal, indicators, htfStructure);
   if (levels) renderLevelsData(levels);
   if (structure) renderSMC(structure, liquidity);
-  if (priceHistory || candleHistory) updatePriceChart(priceHistory, candleHistory, levels);
+  if (priceHistory || candleHistory) {
+    updatePriceChart(priceHistory, candleHistory, levels);
+    drawSweepAnnotation(liquidity);
+  }
+  if (cvd) renderCVD(cvd);
+  if (indicators) renderIndicators(indicators);
   if (openInterest) renderOpenInterest(openInterest);
   if (fundingRate != null) renderFundingRate(fundingRate);
   if (volumeProfile) renderVolumeProfile(volumeProfile, price);
   if (bookAnomalies) renderBookAnomalies(bookAnomalies);
-  if (cvd) renderCVD(cvd);
   if (breakoutQuality) renderBreakoutQuality(breakoutQuality);
-  if (fibZone) renderFibZone(fibZone);
-
-  renderVerdictFromSignal(signal, indicators);
 }
 
-// ── Indicators ──────────────────────────────────────
+// ── Indicators (Уровень 4 — compact) ────────────────
 function renderIndicators(ind) {
   // RSI
   const rsiSignal = ind.rsi > 70 ? 'bearish' : ind.rsi > 55 ? 'bullish' : ind.rsi > 45 ? 'neutral' : ind.rsi > 30 ? 'bearish' : 'bullish';
-  renderCard('rsi', ind.rsi?.toFixed(1) || '—', rsiLabel(ind.rsi), rsiSignal, ind.rsi);
+  renderMiniCard('rsi', ind.rsi?.toFixed(1) || '—', rsiLabel(ind.rsi), rsiSignal);
 
   // MACD
   const macdSig = ind.macd_bullish_cross ? 'bullish_cross' : ind.macd_bearish_cross ? 'bearish_cross' : ind.macd_hist > 0 ? 'bullish' : 'bearish';
   const macdLabel = ind.macd_bullish_cross ? 'Бычье пересечение' : ind.macd_bearish_cross ? 'Медвежье пересечение' : ind.macd_hist > 0 ? 'Выше нуля' : 'Ниже нуля';
-  renderCard('macd', ind.macd_hist?.toFixed(2) || '—', macdLabel, macdSig, 50 + (ind.macd_hist || 0) * 10);
+  renderMiniCard('macd', ind.macd_hist?.toFixed(4) || '—', macdLabel, macdSig);
 
-  // EMA
+  // EMA — meaningful value: price vs EMA position
   const emaSig = ind.ema_bullish_alignment ? 'bullish' : ind.ema_bearish_alignment ? 'bearish' : 'neutral';
-  const emaLabel = ind.ema_bullish_cross ? 'Бычье пересечение' : ind.ema_bearish_cross ? 'Медвежье пересечение' :
-    ind.ema_bullish_alignment ? 'Aligned ↑' : ind.ema_bearish_alignment ? 'Aligned ↓' : 'Neutr.';
-  renderCard('ema', ind.ema_fast?.toFixed(0) || '—', emaLabel, emaSig, 50);
+  let emaValue = ind.ema_fast?.toFixed(2) || '—';
+  let emaLabel = '';
+  if (ind.close && ind.ema_fast) {
+    const diffPct = ((ind.close - ind.ema_fast) / ind.ema_fast * 100).toFixed(1);
+    const above = ind.close > ind.ema_fast;
+    emaLabel = above ? `Цена выше EMA на ${diffPct}%` : `Цена ниже EMA на ${Math.abs(diffPct)}%`;
+  } else {
+    emaLabel = ind.ema_bullish_alignment ? 'Aligned ↑' : ind.ema_bearish_alignment ? 'Aligned ↓' : 'Neutr.';
+  }
+  renderMiniCard('ema', emaValue, emaLabel, emaSig);
 
   // ADX
   const adxSig = ind.trend_is_strong ? (ind.dmi_plus > ind.dmi_minus ? 'bullish' : 'bearish') : 'neutral';
   const adxLabel = ind.trend_is_strong ? `Тренд (${ind.dmi_plus?.toFixed(1)} / ${ind.dmi_minus?.toFixed(1)})` : `Боковой (${ind.adx?.toFixed(1)})`;
-  renderCard('adx', ind.adx?.toFixed(1) || '—', adxLabel, adxSig, Math.min(100, (ind.adx || 0) * 2.5));
+  renderMiniCard('adx', ind.adx?.toFixed(1) || '—', adxLabel, adxSig);
 
-  // Supertrend
+  // Supertrend — level + direction
   const stSig = ind.supertrend_bullish ? 'bullish' : 'bearish';
-  const stLabel = ind.supertrend_bullish ? 'Bullish trend' : 'Bearish trend';
-  renderCard('st', ind.supertrend?.toFixed(0) || '—', stLabel, stSig, ind.supertrend_bullish ? 70 : 30);
+  const stLevel = ind.supertrend?.toFixed(2) || '—';
+  const stLabel = ind.supertrend_bullish ? `▲ ${stLevel}` : `▼ ${stLevel}`;
+  renderMiniCard('st', stLevel, stLabel, stSig);
 
-  // Volume
+  // Volume — with % from average
   const volSig = ind.volume_above_avg ? 'bullish' : 'bearish';
-  const volLabel = ind.volume_above_avg ? `Above SMA (${((ind.volume / ind.volume_sma) * 100).toFixed(0)}%)` : 'Below average';
-  const volPct = ind.volume_sma > 0 ? Math.min(100, (ind.volume / ind.volume_sma) * 50) : 50;
-  renderCard('vol', ind.volume?.toFixed(0) || '—', volLabel, volSig, volPct);
+  const volPctOfAvg = ind.volume_sma > 0 ? ((ind.volume / ind.volume_sma) * 100).toFixed(0) : '—';
+  const volLabel = ind.volume_above_avg ? `${volPctOfAvg}% от среднего` : `${volPctOfAvg}% от среднего`;
+  renderMiniCard('vol', ind.volume?.toFixed(0) || '—', volLabel, volSig);
+
+  // Indicators preview line
+  const preview = document.getElementById('indicatorsPreview');
+  if (preview) {
+    const parts = [];
+    if (ind.rsi) parts.push(`RSI ${ind.rsi.toFixed(0)}`);
+    if (ind.macd_hist != null) parts.push(`MACD ${ind.macd_hist.toFixed(2)}`);
+    if (ind.adx) parts.push(`ADX ${ind.adx.toFixed(0)}`);
+    if (ind.supertrend) parts.push(`ST ${ind.supertrend.toFixed(0)}`);
+    preview.textContent = parts.length > 0 ? `Индикаторы: ${parts.join(' · ')}` : 'Индикаторы';
+  }
+
+  // Update timeframe labels
+  setText('indTfLabel', currentTimeframe?.toUpperCase() || '1H');
+}
+
+function renderMiniCard(id, value, sub, signal) {
+  setText(`val-${id}`, value);
+  setText(`sub-${id}`, sub);
+
+  const signalMap = {
+    bullish:       { text: '▲', cls: 'badge-bull' },
+    bullish_cross: { text: '▲', cls: 'badge-bull' },
+    bearish:       { text: '▼', cls: 'badge-bear' },
+    bearish_cross: { text: '▼', cls: 'badge-bear' },
+    neutral:       { text: '—', cls: 'badge-neu' }
+  };
+  const s = signalMap[signal] || signalMap.neutral;
+
+  const badge = document.getElementById(`badge-${id}`);
+  if (badge) { badge.textContent = s.text; badge.className = `badge ${s.cls}`; }
 }
 
 function rsiLabel(rsi) {
@@ -113,53 +153,74 @@ function rsiLabel(rsi) {
   return 'Перепроданность';
 }
 
-function renderCard(id, value, sub, signal, barWidth) {
-  setText(`val-${id}`, value);
-  setText(`sub-${id}`, sub);
-
-  const signalMap = {
-    bullish:       { text: 'Рост',       cls: 'badge-bull', bar: 'bar-green'  },
-    bullish_cross: { text: 'Рост',       cls: 'badge-bull', bar: 'bar-green'  },
-    bearish:       { text: 'Падение',    cls: 'badge-bear', bar: 'bar-red'    },
-    bearish_cross: { text: 'Падение',    cls: 'badge-bear', bar: 'bar-red'    },
-    neutral:       { text: 'Нейтрально', cls: 'badge-neu',  bar: 'bar-orange' }
-  };
-  const s = signalMap[signal] || signalMap.neutral;
-
-  const badge = document.getElementById(`badge-${id}`);
-  if (badge) { badge.textContent = s.text; badge.className = `badge ${s.cls}`; }
-
-  const bar = document.getElementById(`bar-${id}`);
-  if (bar) {
-    bar.className = `bar-fill ${s.bar}`;
-    bar.style.width = clamp(barWidth ?? 50, 0, 100) + '%';
-  }
-}
-
-// ── Signal ──────────────────────────────────────────
+// ── Signal Header (Уровень 1) ───────────────────────
 function renderSignal(sig) {
-  const card = document.getElementById('signalCard');
-  const typeEl = document.getElementById('signalType');
-  const scoreEl = document.getElementById('signalScore');
+  const header = document.getElementById('signalHeader');
+  const dirEl = document.getElementById('signalDirection');
 
   const signal = sig.signal || 'NO_SIGNAL';
   const isBuy = signal === 'BUY';
   const isSell = signal === 'SELL';
 
-  card.className = `signal-card ${isBuy ? 'buy' : isSell ? 'sell' : 'no'}`;
-  typeEl.className = `signal-type ${isBuy ? 'buy' : isSell ? 'sell' : 'no'}`;
-  typeEl.textContent = signal === 'BUY' ? 'BUY — ПОКУПКА' : signal === 'SELL' ? 'SELL — ПРОДАЖА' : 'НЕТ СИГНАЛА';
-  scoreEl.textContent = `Score: ${sig.score || 0} | ${sig.verdict || ''}`;
+  header.className = `signal-header ${isBuy ? 'buy' : isSell ? 'sell' : 'no'}`;
+  dirEl.className = `signal-direction ${isBuy ? 'buy' : isSell ? 'sell' : 'no'}`;
+  dirEl.textContent = signal === 'BUY' ? 'BUY — ПОКУПКА' : signal === 'SELL' ? 'SELL — ПРОДАЖА' : 'НЕТ СИГНАЛА';
 
-  setText('signalEntry', sig.entry ? `$${sig.entry.toLocaleString()}` : '—');
-  setText('signalSL', sig.sl ? `$${sig.sl.toLocaleString()}` : '—');
-  setText('signalTP', sig.tp ? `$${sig.tp.toLocaleString()}` : '—');
+  // Score + confidence
+  const score = sig.score || 0;
+  const factorsFor = sig.score_factors_for || [];
+  const factorsAgainst = sig.score_factors_against || [];
+  const total = factorsFor.length + factorsAgainst.length;
+  const conf = sig.confidence || 0;
 
-  const reasonsEl = document.getElementById('signalReasons');
-  if (sig.reasons && sig.reasons.length > 0) {
-    reasonsEl.innerHTML = '<ul>' + sig.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('') + '</ul>';
+  setText('signalScore', `Score: ${score} (${factorsFor.length} за / ${factorsAgainst.length} против)`);
+  document.getElementById('confBar').style.width = clamp(conf, 0, 100) + '%';
+  setText('confPct', conf.toFixed(0) + '%');
+
+  // Entry / SL / TP / R:R
+  setText('signalEntry', sig.entry ? `$${formatPrice(sig.entry)}` : '—');
+
+  if (sig.sl != null) {
+    if (typeof sig.sl === 'string') {
+      setText('signalSL', sig.sl);
+    } else {
+      const slPct = sig.entry ? Math.abs((sig.sl - sig.entry) / sig.entry * 100).toFixed(1) : '';
+      setText('signalSL', `$${formatPrice(sig.sl)} (${slPct}%)`);
+    }
   } else {
-    reasonsEl.innerHTML = '';
+    setText('signalSL', 'не рассчитан');
+  }
+
+  if (sig.tp != null) {
+    if (typeof sig.tp === 'string') {
+      setText('signalTP', sig.tp);
+    } else {
+      const tpPct = sig.entry ? Math.abs((sig.tp - sig.entry) / sig.entry * 100).toFixed(1) : '';
+      setText('signalTP', `$${formatPrice(sig.tp)} (${tpPct}%)`);
+    }
+  } else {
+    setText('signalTP', 'не рассчитан');
+  }
+
+  setText('signalRR', sig.rr_ratio ? `1:${sig.rr_ratio}` : '—');
+
+  // Factor breakdown
+  const summary = document.getElementById('factorSummary');
+  const forEl = document.getElementById('factorFor');
+  const againstEl = document.getElementById('factorAgainst');
+
+  if (total > 0) {
+    summary.textContent = `Факторы (${total})`;
+    forEl.innerHTML = factorsFor.map(f =>
+      `<div class="factor-item factor-for-item"><span class="factor-dot for"></span>${escapeHtml(f.factor)}</div>`
+    ).join('');
+    againstEl.innerHTML = factorsAgainst.map(f =>
+      `<div class="factor-item factor-against-item"><span class="factor-dot against"></span>${escapeHtml(f.factor)}</div>`
+    ).join('');
+  } else {
+    summary.textContent = 'Нет данных о факторах';
+    forEl.innerHTML = '';
+    againstEl.innerHTML = '';
   }
 }
 
@@ -173,44 +234,66 @@ function renderLevels(items, containerId, isSupport) {
   const container = document.getElementById(containerId);
   if (!container) return;
 
-  const strCls = { strong: 'str-strong', medium: 'str-medium', weak: 'str-weak' };
-  const strRu = { strong: 'Сильный', medium: 'Средний', weak: 'Слабый' };
-
-  container.innerHTML = items.map(lvl => `
-    <div class="level-row">
+  container.innerHTML = items.map(lvl => {
+    const price = `$${formatPrice(lvl.price)}`;
+    const dist = lvl.distance_pct != null
+      ? (isSupport ? `−${Math.abs(lvl.distance_pct)}%` : `+${Math.abs(lvl.distance_pct)}%`)
+      : '';
+    return `<div class="level-row">
       <span class="${isSupport ? 'level-dot-g' : 'level-dot-r'}"></span>
-      <span class="level-price">$${Number(lvl.price || 0).toLocaleString(undefined, {minimumFractionDigits: 4, maximumFractionDigits: 4})}</span>
-      <span class="str-pill ${strCls[lvl.strength] || 'str-medium'}">${strRu[lvl.strength] || 'Средний'}</span>
-    </div>
-  `).join('') || '<div style="font-size:11px;color:#444;padding:4px 0;">Нет данных</div>';
+      <span class="level-price">${price}</span>
+      <span class="level-distance">${dist}</span>
+    </div>`;
+  }).join('') || '<div style="font-size:11px;color:#444;padding:4px 0;">Нет данных</div>';
 }
 
-// ── Verdict ─────────────────────────────────────────
-function renderVerdictFromSignal(signal, indicators) {
-  const verdictMain = document.getElementById('verdict-main');
-  const verdictConf = document.getElementById('verdict-conf');
-  const verdictRegime = document.getElementById('verdict-regime');
-  const verdictTrend = document.getElementById('verdict-trend');
-  const confBar = document.getElementById('conf-bar');
+// ── Market Context (Уровень 2) ──────────────────────
+function renderMarketContext(signal, indicators, htfStructure) {
+  const regimeEl = document.getElementById('ctxRegime');
+  const trendEl = document.getElementById('ctxTrend');
+  const htfEl = document.getElementById('ctxHtf');
+  const conflictEl = document.getElementById('conflictCallout');
+  const conflictText = document.getElementById('conflictText');
+  const regimeWrap = document.getElementById('ctxRegimeWrap');
 
-  if (!signal || !verdictMain) return;
+  if (!signal) return;
 
-  const conf = signal.confidence || 0;
-  const verdict = signal.verdict || '—';
-  const isBull = signal.signal === 'BUY';
-  const isBear = signal.signal === 'SELL';
+  // Regime
+  const regimeLabels = { trending: 'Трендовый', range: 'Боковой', volatile: 'Волатильный', squeeze: 'Сжатие' };
+  if (signal.regime) {
+    regimeEl.textContent = regimeLabels[signal.regime] || signal.regime;
+    regimeEl.className = 'ctx-value';
+    regimeWrap.style.display = '';
+  } else {
+    regimeWrap.style.display = 'none';
+  }
 
-  verdictMain.textContent = verdict;
-  verdictMain.style.color = isBull ? '#a3e635' : isBear ? '#f87171' : '#facc15';
-  verdictConf.textContent = `Уверенность: ${conf.toFixed(1)}%`;
-  confBar.style.width = clamp(conf, 0, 100) + '%';
+  // Trend strength
+  setText('ctxTrend', signal.trend_strength || '—');
 
-  const regimeLabels = { trending: 'Трендовый', ranging: 'Боковой', volatile: 'Волатильный' };
-  setText('verdict-regime', regimeLabels[signal.regime] || signal.regime || '—');
-  setText('verdict-trend', indicators?.trend_is_strong ? 'Сильный' : 'Слабый');
+  // HTF Bias
+  if (signal.htf_bias) {
+    const isBullHtf = signal.htf_bias === 'bullish';
+    htfEl.textContent = isBullHtf ? 'Бычий' : signal.htf_bias === 'bearish' ? 'Медвежий' : 'Нейтральный';
+    htfEl.className = `ctx-value ${isBullHtf ? 'ctx-bull' : signal.htf_bias === 'bearish' ? 'ctx-bear' : ''}`;
+  } else if (htfStructure && htfStructure.trend) {
+    const t = htfStructure.trend;
+    htfEl.textContent = t === 'bullish' ? 'Бычий' : t === 'bearish' ? 'Медвежий' : 'Нейтральный';
+    htfEl.className = `ctx-value ${t === 'bullish' ? 'ctx-bull' : t === 'bearish' ? 'ctx-bear' : ''}`;
+  } else {
+    setText('ctxHtf', '—');
+  }
+
+  // Conflict explanation
+  if (signal.conflict_explanation) {
+    conflictEl.style.display = '';
+    conflictText.textContent = signal.conflict_explanation;
+  } else {
+    conflictEl.style.display = 'none';
+  }
 }
 
-// ── SMC ─────────────────────────────────────────────
+// ── Smart Money Panel (полноценный столбец) ──────────
 function renderSMC(structure, liquidity) {
   const container = document.getElementById('smc-list');
   if (!container) return;
@@ -219,24 +302,41 @@ function renderSMC(structure, liquidity) {
 
   // BOS
   if (structure?.bos && structure.bos.type !== 'none') {
+    const isBull = structure.bos.type === 'bullish';
     items.push({
-      iconCls: structure.bos.type === 'bullish' ? 'smc-icon-green' : 'smc-icon-red',
-      icon: structure.bos.type === 'bullish' ? '↗' : '↘',
-      name: 'Break of Structure (смена структуры)',
-      desc: `${structure.bos.type === 'bullish' ? 'Бычий' : 'Медвежий'} @ $${(structure.bos.level || 0).toLocaleString()}`,
-      badgeCls: structure.bos.type === 'bullish' ? 'smc-bull' : 'smc-target',
-      badge: structure.bos.type === 'bullish' ? '+Bull' : '-Bear'
+      iconCls: isBull ? 'smc-icon-green' : 'smc-icon-red',
+      icon: isBull ? '↗' : '↘',
+      name: 'Break of Structure',
+      desc: `${isBull ? 'Бычий' : 'Медвежий'} @ $${formatPrice(structure.bos.level)}`,
+      badgeCls: isBull ? 'smc-bull' : 'smc-target',
+      badge: isBull ? '+Bull' : '-Bear',
+    });
+  }
+
+  // MSS
+  if (structure?.mss) {
+    const isBull = structure.mss.type === 'bullish';
+    items.push({
+      iconCls: isBull ? 'smc-icon-green' : 'smc-icon-red',
+      icon: '⟐',
+      name: 'Market Structure Shift',
+      desc: `${isBull ? 'Бычий' : 'Медвежий'} @ $${formatPrice(structure.mss.level || 0)}`,
+      badgeCls: isBull ? 'smc-bull' : 'smc-target',
+      badge: isBull ? '+Bull' : '-Bear',
     });
   }
 
   // Order Blocks
   if (liquidity?.order_blocks) {
     liquidity.order_blocks.slice(0, 2).forEach(ob => {
+      const isBull = ob.type === 'bullish';
       items.push({
-        iconCls: 'smc-icon-blue', icon: '▣',
-        name: 'Order Block (ордер блок)',
-        desc: `${ob.type === 'bullish' ? 'Бычий' : 'Медвежий'} @ $${(ob.price || 0).toLocaleString()}`,
-        badgeCls: 'smc-support', badge: 'Поддержка'
+        iconCls: 'smc-icon-blue',
+        icon: '▣',
+        name: 'Order Block',
+        desc: `${isBull ? 'Бычий' : 'Медвежий'} @ $${formatPrice(ob.price)}`,
+        badgeCls: 'smc-support',
+        badge: 'Поддержка',
       });
     });
   }
@@ -244,34 +344,41 @@ function renderSMC(structure, liquidity) {
   // FVG
   if (liquidity?.fvg) {
     liquidity.fvg.slice(0, 1).forEach(f => {
+      const isBull = f.type === 'bullish';
       items.push({
-        iconCls: 'smc-icon-yellow', icon: '═',
-        name: 'Fair Value Gap (честный разрыв)',
-        desc: `$${(f.bottom || 0).toLocaleString()} — $${(f.top || 0).toLocaleString()}`,
-        badgeCls: 'smc-magnet', badge: 'Магнит'
+        iconCls: 'smc-icon-yellow',
+        icon: '═',
+        name: 'Fair Value Gap',
+        desc: `$${formatPrice(f.bottom)} — $${formatPrice(f.top)}`,
+        badgeCls: 'smc-magnet',
+        badge: 'Магнит',
       });
     });
   }
 
   // Sweep
   if (liquidity?.sweep?.detected) {
+    const isBull = liquidity.sweep.type === 'bullish';
     items.push({
-      iconCls: 'smc-icon-red', icon: '⚠',
-      name: 'Liquidity Sweep (смыв ликвидности)',
-      desc: `${liquidity.sweep.type === 'bullish' ? 'Бычий' : 'Медвежий'} sweep detected`,
-      badgeCls: 'smc-target', badge: 'Цель'
+      iconCls: 'smc-icon-red',
+      icon: '⚠',
+      name: 'Liquidity Sweep',
+      desc: `${isBull ? 'Бычий' : 'Медвежий'} sweep detected`,
+      badgeCls: 'smc-target',
+      badge: 'Цель',
     });
   }
 
-  // Trend
+  // Market Trend
   if (structure?.trend) {
+    const t = structure.trend;
     items.push({
-      iconCls: structure.trend === 'bullish' ? 'smc-icon-green' : structure.trend === 'bearish' ? 'smc-icon-red' : 'smc-icon-yellow',
+      iconCls: t === 'bullish' ? 'smc-icon-green' : t === 'bearish' ? 'smc-icon-red' : 'smc-icon-yellow',
       icon: '◈',
-      name: 'Market Trend (тренд рынка)',
-      desc: structure.trend === 'bullish' ? 'Бычий' : structure.trend === 'bearish' ? 'Медвежий' : 'Боковой',
-      badgeCls: structure.trend === 'bullish' ? 'smc-bull' : structure.trend === 'bearish' ? 'smc-target' : 'smc-magnet',
-      badge: structure.trend === 'bullish' ? 'Бычий' : structure.trend === 'bearish' ? 'Медвежий' : 'Боковой'
+      name: 'Market Trend',
+      desc: t === 'bullish' ? 'Бычий' : t === 'bearish' ? 'Медвежий' : 'Боковой',
+      badgeCls: t === 'bullish' ? 'smc-bull' : t === 'bearish' ? 'smc-target' : 'smc-magnet',
+      badge: t === 'bullish' ? 'Бычий' : t === 'bearish' ? 'Медвежий' : 'Боковой',
     });
   }
 
@@ -287,7 +394,7 @@ function renderSMC(structure, liquidity) {
   `).join('') || '<div style="font-size:11px;color:#444;padding:4px 0;">Нет данных SMC</div>';
 }
 
-// ── Chart ───────────────────────────────────────────
+// ── Chart (Уровень 3 — Annotated) ──────────────────
 let mainCandleSeries = null;
 let currentPriceLine = null;
 let overlayPriceLines = [];
@@ -304,7 +411,7 @@ function updatePriceChart(history, candleHistory, levels) {
   if (!priceChart) {
     priceChart = LightweightCharts.createChart(el, {
       width: wrap.clientWidth,
-      height: 160,
+      height: 220,
       layout: { background: { color: '#111' }, textColor: '#555' },
       grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
       rightPriceScale: { borderColor: '#222', scaleMargins: { top: 0.1, bottom: 0.1 } },
@@ -322,6 +429,24 @@ function updatePriceChart(history, candleHistory, levels) {
     new ResizeObserver(() => {
       if (priceChart) priceChart.applyOptions({ width: wrap.clientWidth });
     }).observe(wrap);
+
+    // Chart tab switching
+    document.querySelectorAll('.chart-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.chart-tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const mode = btn.dataset.chart;
+        const priceEl = document.getElementById('priceChart');
+        const cvdWrap = document.getElementById('chartCvdWrap');
+        if (mode === 'price') {
+          priceEl.style.display = '';
+          cvdWrap.style.display = 'none';
+        } else {
+          priceEl.style.display = 'none';
+          cvdWrap.style.display = '';
+        }
+      });
+    });
   }
 
   mainCandleSeries.setData(candles);
@@ -332,7 +457,7 @@ function updatePriceChart(history, candleHistory, levels) {
   }
   overlayPriceLines = [];
 
-  // Update current price line (remove old one first)
+  // Update current price line
   const lastCandle = candles[candles.length - 1];
   if (lastCandle) {
     if (currentPriceLine) {
@@ -371,6 +496,29 @@ function updatePriceChart(history, candleHistory, levels) {
   }
 
   priceChart.timeScale().fitContent();
+}
+
+let sweepAnnotation = null;
+
+function drawSweepAnnotation(liquidity) {
+  if (!mainCandleSeries) return;
+
+  // Remove old sweep line
+  if (sweepAnnotation) {
+    try { mainCandleSeries.removePriceLine(sweepAnnotation); } catch {}
+    sweepAnnotation = null;
+  }
+
+  if (liquidity?.sweep?.detected && liquidity.sweep.swept_level) {
+    sweepAnnotation = mainCandleSeries.createPriceLine({
+      price: liquidity.sweep.swept_level,
+      color: '#ff9800',
+      lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: 'Sweep',
+    });
+  }
 }
 
 // ── Open Interest (compact) ────────────────────────
@@ -440,66 +588,6 @@ function renderBreakoutQuality(bq) {
   setText('bq-volume', bq.volume_ratio != null ? bq.volume_ratio.toFixed(1) + 'x' : '—');
 }
 
-// ── Fibonacci / Premium-Discount Zone ───────────────
-function renderFibZone(fz) {
-  const container = document.getElementById('smc-list');
-  if (!container) return;
-
-  const zoneLabels = { premium: 'Премиум', discount: 'Дисконт', equilibrium: 'Равновесие' };
-  const zoneColors = { premium: 'smc-target', discount: 'smc-bull', equilibrium: 'smc-magnet' };
-  const zoneIcons = { premium: '△', discount: '▽', equilibrium: '◇' };
-
-  const zoneType = fz.zone_type || 'equilibrium';
-  const fibPct = fz.fib_level != null ? (fz.fib_level * 100).toFixed(1) : '—';
-  const zoneRange = fz.zone_low != null && fz.zone_high != null
-    ? `$${Number(fz.zone_low).toLocaleString()} — $${Number(fz.zone_high).toLocaleString()}`
-    : '—';
-
-  const items = [
-    {
-      iconCls: `smc-icon ${zoneColors[zoneType] || 'smc-icon-yellow'}`,
-      icon: zoneIcons[zoneType] || '◇',
-      name: `Fibonacci Zone (${zoneLabels[zoneType] || zoneType})`,
-      desc: `Fib ${fibPct}% · ${zoneRange}`,
-      badgeCls: zoneColors[zoneType] || 'smc-magnet',
-      badge: zoneLabels[zoneType] || zoneType,
-    },
-  ];
-
-  // Swing range
-  if (fz.swing_high != null && fz.swing_low != null) {
-    items.push({
-      iconCls: 'smc-icon-blue', icon: '⇅',
-      name: 'Dealing Range (диапазон)',
-      desc: `High: $${Number(fz.swing_high).toLocaleString()} · Low: $${Number(fz.swing_low).toLocaleString()}`,
-      badgeCls: 'smc-support', badge: `${((fz.swing_high - fz.swing_low) / fz.swing_high * 100).toFixed(1)}%`,
-    });
-  }
-
-  // Distance to zones
-  if (fz.distance_to_premium_pct != null && fz.distance_to_discount_pct != null) {
-    items.push({
-      iconCls: 'smc-icon-yellow', icon: '↔',
-      name: 'Расстояние до зон',
-      desc: `До премиума: ${fz.distance_to_premium_pct.toFixed(1)}% · До дисконта: ${fz.distance_to_discount_pct.toFixed(1)}%`,
-      badgeCls: 'smc-magnet', badge: 'Дистанция',
-    });
-  }
-
-  const html = items.map(it => `
-    <div class="smc-item">
-      <div class="smc-icon ${it.iconCls}">${it.icon}</div>
-      <div>
-        <div class="smc-name">${it.name}</div>
-        <div class="smc-desc">${it.desc}</div>
-      </div>
-      <span class="smc-badge ${it.badgeCls}">${it.badge}</span>
-    </div>
-  `).join('');
-
-  container.insertAdjacentHTML('beforeend', html);
-}
-
 // ── Book Anomalies ─────────────────────────────────
 function renderBookAnomalies(book) {
   const bidVol = book.total_bid || 0;
@@ -549,13 +637,10 @@ function renderBookAnomalies(book) {
 // ── CVD (Cumulative Volume Delta) ──────────────────
 function renderCVD(cvd) {
   if (!cvd) return;
-  const trendColors = { bullish: '#4caf50', bearish: '#f44336', neutral: '#888' };
   const trendLabels = { bullish: 'Bullish', bearish: 'Bearish', neutral: 'Neutral' };
   setText('cvd-current', cvd.current != null ? formatLargeNumber(cvd.current) : '—');
   setText('cvd-trend-text', trendLabels[cvd.trend] || '—');
-  setText('cvd-trend', trendLabels[cvd.trend] || '—');
-  const trendEl = document.getElementById('cvd-trend');
-  if (trendEl && cvd.trend) trendEl.style.color = trendColors[cvd.trend] || '#fff';
+
   const cvdCurrentEl = document.getElementById('cvd-current');
   if (cvdCurrentEl && cvd.current != null) cvdCurrentEl.style.color = cvd.current >= 0 ? '#4caf50' : '#f44336';
 
@@ -761,6 +846,7 @@ function switchTab(tab) {
   document.getElementById('tab-dashboard')?.classList.toggle('hidden', tab !== 'dashboard');
   document.getElementById('tab-scan')?.classList.toggle('hidden', tab !== 'scan');
   document.getElementById('tab-sandbox')?.classList.toggle('hidden', tab !== 'sandbox');
+  document.getElementById('tab-token-analysis')?.classList.toggle('hidden', tab !== 'token-analysis');
 
   if (tab === 'scan') {
     loadScanStats();

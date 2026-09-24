@@ -196,11 +196,15 @@ async def load_log_errors() -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 
 def plot_equity_curve(df: pd.DataFrame, output_path: Path):
-    """Plot cumulative PnL equity curve."""
+    """Plot cumulative PnL equity curve — B-020: only rows with known PnL."""
     if df.empty:
         return
 
-    df_sorted = df.sort_values("closed_at")
+    # Equity = closed outcomes with actual money PnL (exclude OPEN/unknown EXPIRED)
+    equity_df = df[df["pnl_pct"].notna()].copy()
+    if equity_df.empty:
+        return
+    df_sorted = equity_df.sort_values("closed_at")
     cumulative_pnl = df_sorted["pnl_pct"].cumsum()
 
     fig, ax = plt.subplots(figsize=(14, 6))
@@ -210,7 +214,7 @@ def plot_equity_curve(df: pd.DataFrame, output_path: Path):
     ax.fill_between(df_sorted["closed_at"], 0, cumulative_pnl,
                      where=cumulative_pnl < 0, alpha=0.15, color="red")
     ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
-    ax.set_title("Equity Curve (Cumulative PnL %)", fontsize=14, fontweight="bold")
+    ax.set_title("Equity Curve (Cumulative net PnL %)", fontsize=14, fontweight="bold")
     ax.set_ylabel("Cumulative PnL %")
     ax.set_xlabel("")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
@@ -222,11 +226,14 @@ def plot_equity_curve(df: pd.DataFrame, output_path: Path):
 
 
 def plot_drawdown(df: pd.DataFrame, output_path: Path):
-    """Plot drawdown chart."""
+    """Plot drawdown chart — B-020: only rows with known PnL."""
     if df.empty:
         return
 
-    df_sorted = df.sort_values("closed_at")
+    equity_df = df[df["pnl_pct"].notna()].copy()
+    if equity_df.empty:
+        return
+    df_sorted = equity_df.sort_values("closed_at")
     cumulative = df_sorted["pnl_pct"].cumsum()
     running_max = cumulative.cummax()
     drawdown = cumulative - running_max

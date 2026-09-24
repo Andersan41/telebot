@@ -27,6 +27,7 @@ from scheduler.circuit_breaker import is_circuit_breaker_active, check_recent_lo
 from storage.trace import DecisionTraceBuilder, ExecutionSnapshot
 from storage.audit_reasons import (
     COOLDOWN_ACTIVE, PORTFOLIO_MAX_ACTIVE, PORTFOLIO_MAX_RISK,
+    PORTFOLIO_ADMISSION,
     DAILY_LIMIT_HIT, POSITION_LIMIT_HIT, DATA_INTEGRITY_FAIL,
     VOLATILITY_TOO_LOW, VOLATILITY_TOO_HIGH,
     REGIME_BLOCKED, SCORE_TOO_LOW, SWEEP_CONTINUATION_MISMATCH,
@@ -90,7 +91,7 @@ _ema_spread_history: dict[str, list[float]] = {}
 # sl_absolute_min/max, max_active_signals, etc.).
 # Required for audit log versioning: signals under different configs
 # are tagged with different config_version for A/B analysis.
-_CONFIG_VERSION = 10  # v10: volatility_max_atr=8%, sweep_min_wick=0.01% (H-014)
+_CONFIG_VERSION = 11  # v11: HTF soft-penalty honest audit + env multipliers (B-017/B-027)
 
 
 async def _audit_log(
@@ -138,9 +139,15 @@ def get_cooldown_minutes(timeframe: str, base_minutes: int, multiplier: float) -
 
 # ── Signal Funnel Logging ──────────────────────────────────────────────
 _FUNNEL_GATES = [
-    "cooldown", "portfolio_risk", "indicators", "pattern_engine",
-    "structure_alignment", "sweep_required", "regime_block",
-    "sl_tp", "risk_engine", "dedup",
+    "cooldown", "portfolio_risk", "portfolio_admission", "daily_limits", "position_limits",
+    "indicators", "volatility_filter", "regime_block",
+    "pattern_engine", "score_gate", "structure_alignment",
+    "sweep_required", "displacement_gate", "bos_gate", "bos_retest",
+    "entry_zone", "confirmation_score", "breakout_quality",
+    "ob_retest", "session_filter", "htf_bias", "htf_bias_penalty",
+    "entry_trigger", "confirm_tf", "sl_tp", "min_p_tp",
+    "risk_engine", "execution_filter", "depth_check", "dedup",
+    "compression_block",
 ]
 
 
@@ -150,6 +157,7 @@ class _FunnelCounter:
         self.entered = 0
         self.passed = 0
         self.blocked_by = collections.Counter()
+        self.penalties = collections.Counter()
 
     def log_gate(self, symbol: str, tf: str, gate: str, status: str, detail: str = ""):
         tag = f"[FUNNEL] {symbol} {tf}"
@@ -159,6 +167,10 @@ class _FunnelCounter:
             reason = f" ({detail})" if detail else ""
             logger.bind(tags="signal_block").info(f"{tag} → {gate}: BLOCKED{reason}")
             self.blocked_by[gate] += 1
+        elif status == "PENALTY":
+            reason = f" ({detail})" if detail else ""
+            logger.debug(f"{tag} → {gate}: PENALTY{reason}")
+            self.penalties[gate] += 1
         elif status == "ENTER":
             self.entered += 1
 
@@ -168,6 +180,8 @@ class _FunnelCounter:
         parts = [f"entered={self.entered}", f"sent={self.passed}"]
         for gate, count in self.blocked_by.most_common():
             parts.append(f"{gate}={count}")
+        for gate, count in self.penalties.most_common():
+            parts.append(f"{gate}_penalty={count}")
         logger.info(f"[FUNNEL SUMMARY] {', '.join(parts)}")
 
 
@@ -490,10 +504,10 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                 from liquidity.fvg import detect_fvg
                 from liquidity.candle_quality import analyze_last_candle
 
-                sweeps = detect_sweeps(_df_clean, lookback=50)
-                order_blocks = detect_order_blocks(_df_clean, lookback=100)
+                sweeps = detect_sweeps(_df_clean, lookback=config.liquidity.sweep_lookback)
+                order_blocks = detect_order_blocks(_df_clean, lookback=config.liquidity.ob_lookback)
                 candle_quality = analyze_last_candle(_df_clean, atr_value=ind.atr)
-                fvgs = detect_fvg(_df_clean, lookback=getattr(config, "liquidity_fvg_lookback", 100))
+                fvgs = detect_fvg(_df_clean, lookback=getattr(config.liquidity, "fvg_lookback", 100))
 
                 # TZ §6.2: For each valid sweep, find OB by backward scan
                 # and add to order_blocks if not already present
@@ -533,7 +547,7 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                     _disp_atr = candle_quality.body_atr_ratio if hasattr(candle_quality, 'body_atr_ratio') else 0.0
 
                 structure = analyze_structure(
-                    _df_clean, lookback=50,
+                    _df_clean, lookback=config.market_structure.structure_lookback,
                     sweeps=sweeps,
                     displacement_atr=_disp_atr,
                     atr_value=ind.atr if ind.atr else 0.0,
@@ -967,12 +981,12 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             else:
                 _bias_enum = HTFBias.NEUTRAL
 
-            # ── Direction Filter (v2.5): Block SHORT in bullish HTF, LONG in bearish HTF ──
-            # Neutral HTF = no directional confirmation — allow signals through
+            # ── Direction Filter (v2.5): Soft penalty SHORT in bullish HTF, LONG in bearish HTF ──
+            # Neutral HTF = no directional confirmation — no penalty
             if _bias_enum != HTFBias.NEUTRAL:
                 if setup.direction == 'sell' and _bias_enum == HTFBias.BULLISH:
-                    if getattr(config, 'block_short_in_bullish_htf', True):
-                        reason = f"SHORT blocked: HTF bias is bullish"
+                    if config.block_short_in_bullish_htf:
+                        reason = f"HTF hard gate: SHORT vs bullish HTF {htf_bias_str}"
                         _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
                         trace.blocked("htf_bias", reason)
                         trace.set_version(VERSION, build_config_snapshot())
@@ -980,11 +994,19 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                                          "htf_bias", HTF_SHORT_IN_BULLISH, False,
                                          setup_type=setup.setup_type, direction=setup.direction,
-                                         meta=f"version=v2,htf_bias={htf_bias_str}")
+                                         meta=f"version=v2,htf_bias={htf_bias_str},hard=1")
                         return None
+                    _htf_bias_penalty = config.htf_penalty_direction
+                    reason = f"SHORT soft penalty: HTF bias is bullish"
+                    _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PENALTY", reason)
+                    trace.record("htf_bias_penalty", True)
+                    await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                     "htf_bias", HTF_SHORT_IN_BULLISH, True,
+                                     setup_type=setup.setup_type, direction=setup.direction,
+                                     meta=f"version=v2,htf_bias={htf_bias_str},penalty={_htf_bias_penalty},soft=1")
                 if setup.direction == 'buy' and _bias_enum == HTFBias.BEARISH:
-                    if getattr(config, 'block_long_in_bearish_htf', True):
-                        reason = f"LONG blocked: HTF bias is bearish"
+                    if config.block_long_in_bearish_htf:
+                        reason = f"HTF hard gate: LONG vs bearish HTF {htf_bias_str}"
                         _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
                         trace.blocked("htf_bias", reason)
                         trace.set_version(VERSION, build_config_snapshot())
@@ -992,8 +1014,16 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                                          "htf_bias", HTF_LONG_IN_BEARISH, False,
                                          setup_type=setup.setup_type, direction=setup.direction,
-                                         meta=f"version=v2,htf_bias={htf_bias_str}")
+                                         meta=f"version=v2,htf_bias={htf_bias_str},hard=1")
                         return None
+                    _htf_bias_penalty = config.htf_penalty_direction
+                    reason = f"LONG soft penalty: HTF bias is bearish"
+                    _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PENALTY", reason)
+                    trace.record("htf_bias_penalty", True)
+                    await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                     "htf_bias", HTF_LONG_IN_BEARISH, True,
+                                     setup_type=setup.setup_type, direction=setup.direction,
+                                     meta=f"version=v2,htf_bias={htf_bias_str},penalty={_htf_bias_penalty},soft=1")
 
                 direction_map = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
 
@@ -1023,11 +1053,15 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                     setup_bias = direction_map.get(setup.direction)
                     if setup_bias != _bias_enum:
                         # Soft penalty for reversal vs HTF mismatch (not a hard block)
-                        _htf_bias_penalty = 0.85
+                        _htf_bias_penalty = config.htf_penalty_reversal
                         reason = f"HTF soft penalty: reversal {setup.direction} vs HTF {htf_bias_str}"
-                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PASS",
-                                                 f"penalty=0.85 {reason}")
-                        trace.passed("htf_bias", note=reason)
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PENALTY",
+                                                 f"penalty={_htf_bias_penalty} {reason}")
+                        trace.record("htf_bias_penalty", True)
+                        await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                         "htf_bias", HTF_REVERSAL_MISMATCH, True,
+                                         setup_type=setup.setup_type, direction=setup.direction,
+                                         meta=f"version=v2,htf_bias={htf_bias_str},penalty={_htf_bias_penalty},soft=1")
                     else:
                         _current_funnel.log_gate(
                             symbol, timeframe, "htf_bias", "PASS",
@@ -1059,11 +1093,11 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             _bias_enum = get_htf_bias(df_1d, df_4h, _struct_1d, _struct_4h)
             htf_bias_str = _bias_enum.value
 
-            # ── Direction Filter (v2.5): Block SHORT in bullish HTF, LONG in bearish HTF ──
+            # ── Direction Filter (v2.5): Soft penalty SHORT in bullish HTF, LONG in bearish HTF ──
             if _bias_enum != HTFBias.NEUTRAL:
                 if setup.direction == 'sell' and _bias_enum == HTFBias.BULLISH:
-                    if getattr(config, 'block_short_in_bullish_htf', True):
-                        reason = f"SHORT blocked: HTF bias is bullish"
+                    if config.block_short_in_bullish_htf:
+                        reason = f"HTF hard gate: SHORT vs bullish HTF {_bias_enum.value}"
                         _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
                         trace.blocked("htf_bias", reason)
                         trace.set_version(VERSION, build_config_snapshot())
@@ -1071,11 +1105,19 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                                          "htf_bias", HTF_SHORT_IN_BULLISH, False,
                                          setup_type=setup.setup_type, direction=setup.direction,
-                                         meta=f"version=v1,htf_bias={htf_bias_str}")
+                                         meta=f"version=v1,htf_bias={htf_bias_str},hard=1")
                         return None
+                    _htf_bias_penalty = config.htf_penalty_direction
+                    reason = f"SHORT soft penalty: HTF bias is bullish"
+                    _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PENALTY", reason)
+                    trace.record("htf_bias_penalty", True)
+                    await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                     "htf_bias", HTF_SHORT_IN_BULLISH, True,
+                                     setup_type=setup.setup_type, direction=setup.direction,
+                                     meta=f"version=v1,htf_bias={htf_bias_str},penalty={_htf_bias_penalty},soft=1")
                 if setup.direction == 'buy' and _bias_enum == HTFBias.BEARISH:
-                    if getattr(config, 'block_long_in_bearish_htf', True):
-                        reason = f"LONG blocked: HTF bias is bearish"
+                    if config.block_long_in_bearish_htf:
+                        reason = f"HTF hard gate: LONG vs bearish HTF {_bias_enum.value}"
                         _current_funnel.log_gate(symbol, timeframe, "htf_bias", "BLOCKED", reason)
                         trace.blocked("htf_bias", reason)
                         trace.set_version(VERSION, build_config_snapshot())
@@ -1083,8 +1125,16 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                                          "htf_bias", HTF_LONG_IN_BEARISH, False,
                                          setup_type=setup.setup_type, direction=setup.direction,
-                                         meta=f"version=v1,htf_bias={htf_bias_str}")
+                                         meta=f"version=v1,htf_bias={htf_bias_str},hard=1")
                         return None
+                    _htf_bias_penalty = config.htf_penalty_direction
+                    reason = f"LONG soft penalty: HTF bias is bearish"
+                    _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PENALTY", reason)
+                    trace.record("htf_bias_penalty", True)
+                    await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                                     "htf_bias", HTF_LONG_IN_BEARISH, True,
+                                     setup_type=setup.setup_type, direction=setup.direction,
+                                     meta=f"version=v1,htf_bias={htf_bias_str},penalty={_htf_bias_penalty},soft=1")
 
                 direction_map = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
 
@@ -1114,13 +1164,15 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                     setup_bias = direction_map.get(setup.direction)
                     if setup_bias != _bias_enum:
                         # Soft penalty for reversal vs HTF mismatch (not a hard block)
-                        _htf_bias_penalty = 0.85
+                        _htf_bias_penalty = config.htf_penalty_reversal
                         reason = f"HTF soft penalty: reversal {setup.direction} vs HTF {_bias_enum.value}"
-                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PASS",
-                                                 f"penalty=0.85 {reason}")
-                        trace.passed("htf_bias", note=reason)
+                        _current_funnel.log_gate(symbol, timeframe, "htf_bias", "PENALTY",
+                                                 f"penalty={_htf_bias_penalty} {reason}")
+                        trace.record("htf_bias_penalty", True)
                         await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
-                                        "htf_bias", "ok", passed=True)
+                                         "htf_bias", HTF_REVERSAL_MISMATCH, True,
+                                         setup_type=setup.setup_type, direction=setup.direction,
+                                         meta=f"version=v1,htf_bias={htf_bias_str},penalty={_htf_bias_penalty},soft=1")
                     else:
                         _current_funnel.log_gate(
                             symbol, timeframe, "htf_bias", "PASS",
@@ -1183,13 +1235,16 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
         tp = trade_plan.tp
         sl_source = trade_plan.sl_source
 
-        if sl is None or tp is None:
-            _current_funnel.log_gate(symbol, timeframe, "sl_tp", "BLOCKED", "calculation failed")
-            trace.blocked("sl_tp", "SL/TP calculation failed")
+        if (not trade_plan.is_valid) or sl is None or tp is None \
+                or not (sl > 0 and tp > 0):
+            _plan_reason = trade_plan.rejection_reason or "SL/TP calculation failed"
+            _current_funnel.log_gate(symbol, timeframe, "sl_tp", "BLOCKED", _plan_reason)
+            trace.blocked("sl_tp", _plan_reason)
             await trace.save(db)
             await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                              "sl_tp", SL_TP_FAILED, False,
-                             setup_type=setup.setup_type, direction=setup.direction)
+                             setup_type=setup.setup_type, direction=setup.direction,
+                             meta=f"trade_plan_reject={trade_plan.rejection_reason}")
             return None
 
         entry_price = ind.close
@@ -2201,7 +2256,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                              "daily_limits", DAILY_LIMIT_HIT, False)
             return None
 
-        saved_signal = await db.save_signal(
+        saved_signal, _admission_reason = await db.save_signal_with_risk(
+            risk_pct=risk_decision.risk_pct,
             symbol=result.symbol,
             timeframe=result.timeframe,
             signal_type=result.signal.value,
@@ -2229,6 +2285,27 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             ob_midpoint=_nearest_ob.midpoint if _nearest_ob else None,
             ob_type=_nearest_ob.type if _nearest_ob else None,
         )
+
+        if saved_signal is None:
+            # Rollback daily pre-reserve (Phase 7.5)
+            try:
+                from risk.daily_limits import daily_limits
+                daily_limits.release_trade(risk_decision.risk_pct)
+            except Exception:
+                pass
+            _current_funnel.log_gate(symbol, timeframe, "portfolio_admission", "BLOCKED", _admission_reason or "admission")
+            trace.blocked("portfolio_admission", _admission_reason or "admission")
+            await trace.save(db)
+            _code = PORTFOLIO_MAX_RISK if (_admission_reason or "").startswith("risk_budget") else (
+                PORTFOLIO_MAX_ACTIVE if (_admission_reason or "").startswith("active_limit") else PORTFOLIO_ADMISSION
+            )
+            await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
+                             "portfolio_admission", _code, False,
+                             setup_type=setup.setup_type, direction=setup.direction,
+                             meta=f"admission={_admission_reason},risk={risk_decision.risk_pct:.4f}")
+            return None
+        _current_funnel.log_gate(symbol, timeframe, "portfolio_admission", "PASS")
+        trace.passed("portfolio_admission")
 
         trace.set_signal(
             signal_type=result.signal.value,
@@ -2281,21 +2358,9 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                          setup_type=setup.setup_type, direction=setup.direction,
                          features_snapshot=json.dumps(_trace_features) if _trace_features else None)
 
-        # ═══ Phase 8: Atomic outcome + cooldown ═══
-        # Daily limits already pre-reserved in Phase 7.5.
-        try:
-            await db.create_outcome(saved_signal.id, risk_pct=risk_decision.risk_pct)
-        except Exception as e:
-            logger.error(f"Phase 8 atomic save failed for {symbol} {timeframe}: {e}")
-            # Rollback: release the pre-reserved daily limit
-            try:
-                from risk.daily_limits import daily_limits
-                daily_limits.release_trade(risk_decision.risk_pct)
-            except Exception:
-                pass
-            return None
-
-        await _set_cooldown(symbol, timeframe)
+        # ═══ Phase 8: Cooldown already written inside save_signal_with_risk ═══
+        # Daily limits pre-reserved in Phase 7.5 (release on admission failure above).
+        # create_outcome also written atomically with the signal — do not call again.
 
         # Generate signal chart PNG
         _chart_png = None

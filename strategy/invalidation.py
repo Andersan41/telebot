@@ -40,6 +40,7 @@ def find_invalidation_buy(
     atr: float = 0.0,
     buffer_atr_pct: float = 15.0,  # buffer = ATR * 15%
     min_distance_pct: float = 0.5,  # minimum SL distance from entry (%)
+    max_sl_atr: float = 3.0,  # v2.0 B-001: skip structural levels farther than this
 ) -> Optional[Invalidation]:
     """Find the invalidation level for a BUY setup.
 
@@ -51,9 +52,13 @@ def find_invalidation_buy(
     5. ATR fallback
     """
     min_dist = entry * min_distance_pct / 100
+    max_dist = atr * max_sl_atr if atr > 0 and max_sl_atr > 0 else float("inf")
 
-    # 1. Sweep extreme — strongest invalidation
-    valid_sweeps = [s for s in sweep_lows if s < entry and (entry - s) >= min_dist]
+    # 1. Sweep extreme — strongest invalidation (within MAX_SL_ATR)
+    valid_sweeps = [
+        s for s in sweep_lows
+        if s < entry and (entry - s) >= min_dist and (entry - s) <= max_dist
+    ]
     if valid_sweeps:
         level = max(valid_sweeps)  # closest sweep low to entry (but still far enough)
         return Invalidation(
@@ -65,7 +70,10 @@ def find_invalidation_buy(
         )
 
     # 2. OB boundary
-    valid_obs = [ob for ob in ob_lows if ob < entry]
+    valid_obs = [
+        ob for ob in ob_lows
+        if ob < entry and (entry - ob) <= max_dist
+    ]
     if valid_obs:
         level = max(valid_obs)  # closest OB low to entry
         return Invalidation(
@@ -77,7 +85,10 @@ def find_invalidation_buy(
         )
 
     # 3. Swing low (fractal)
-    valid_swings = [s for s in swing_lows if s < entry]
+    valid_swings = [
+        s for s in swing_lows
+        if s < entry and (entry - s) <= max_dist
+    ]
     if valid_swings:
         level = max(valid_swings)
         return Invalidation(
@@ -89,7 +100,7 @@ def find_invalidation_buy(
         )
 
     # 4. BOS level
-    if bos_level and bos_level < entry:
+    if bos_level and bos_level < entry and (entry - bos_level) <= max_dist:
         return Invalidation(
             level=bos_level,
             type="structure_break",
@@ -121,6 +132,7 @@ def find_invalidation_sell(
     atr: float = 0.0,
     buffer_atr_pct: float = 15.0,
     min_distance_pct: float = 0.5,  # minimum SL distance from entry (%)
+    max_sl_atr: float = 3.0,  # v2.0 B-001
 ) -> Optional[Invalidation]:
     """Find the invalidation level for a SELL setup.
 
@@ -132,9 +144,13 @@ def find_invalidation_sell(
     5. ATR fallback
     """
     min_dist = entry * min_distance_pct / 100
+    max_dist = atr * max_sl_atr if atr > 0 and max_sl_atr > 0 else float("inf")
 
     # 1. Sweep extreme
-    valid_sweeps = [s for s in sweep_highs if s > entry and (s - entry) >= min_dist]
+    valid_sweeps = [
+        s for s in sweep_highs
+        if s > entry and (s - entry) >= min_dist and (s - entry) <= max_dist
+    ]
     if valid_sweeps:
         level = min(valid_sweeps)  # closest sweep high to entry (but still far enough)
         return Invalidation(
@@ -146,7 +162,10 @@ def find_invalidation_sell(
         )
 
     # 2. OB boundary
-    valid_obs = [ob for ob in ob_highs if ob > entry]
+    valid_obs = [
+        ob for ob in ob_highs
+        if ob > entry and (ob - entry) <= max_dist
+    ]
     if valid_obs:
         level = min(valid_obs)
         return Invalidation(
@@ -158,7 +177,10 @@ def find_invalidation_sell(
         )
 
     # 3. Swing high
-    valid_swings = [s for s in swing_highs if s > entry]
+    valid_swings = [
+        s for s in swing_highs
+        if s > entry and (s - entry) <= max_dist
+    ]
     if valid_swings:
         level = min(valid_swings)
         return Invalidation(
@@ -170,7 +192,7 @@ def find_invalidation_sell(
         )
 
     # 4. BOS level
-    if bos_level and bos_level > entry:
+    if bos_level and bos_level > entry and (bos_level - entry) <= max_dist:
         return Invalidation(
             level=bos_level,
             type="structure_break",

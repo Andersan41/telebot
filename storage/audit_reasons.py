@@ -10,6 +10,7 @@ The code is stable (never changes wording) so audit queries remain valid.
 COOLDOWN_ACTIVE = "cooldown_active"
 PORTFOLIO_MAX_ACTIVE = "portfolio_max_active"
 PORTFOLIO_MAX_RISK = "portfolio_max_risk"
+PORTFOLIO_ADMISSION = "portfolio_admission"
 DAILY_LIMIT_HIT = "daily_limit_hit"
 POSITION_LIMIT_HIT = "position_limit_hit"
 DATA_INTEGRITY_FAIL = "data_integrity_fail"

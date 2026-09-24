@@ -416,7 +416,13 @@ class ProbabilityEngine:
                 p_tp = max(0.05, min(0.65, p_tp))
 
                 # Expected RR from features (structural TP/SL already baked in)
-                expected_rr = f.rr_ratio if f.rr_ratio > 0 else 1.0
+                expected_rr = f.rr_ratio
+                if not (expected_rr and expected_rr > 0):
+                    logger.warning(
+                        f"expected_return model: rr_ratio={f.rr_ratio} invalid — "
+                        f"falling back to rules"
+                    )
+                    return self._predict_rules(f)
 
                 # Apply HTF bias penalty and OB mitigation
                 multiplier = f.htf_bias_penalty * f.ob_state_multiplier

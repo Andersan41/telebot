@@ -48,6 +48,17 @@ MAX_TRADE_DURATION_BARS = 96
 CANDLES_PER_TF = {"1h": 24, "4h": 6, "1d": 1}
 
 
+def _closed_htf(frame, timeframe: str, decision_time, limit: int = 60):
+    """Only HTF bars closed at decision_time (B-021 causal parity)."""
+    if frame is None or len(frame) == 0:
+        return None
+    unit = timeframe[-1].lower()
+    seconds = {"m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
+    duration = pd.Timedelta(seconds=int(timeframe[:-1]) * seconds)
+    available = frame.index + duration <= decision_time
+    return frame.loc[available].tail(limit)
+
+
 @dataclass
 class Trade:
     symbol: str
@@ -166,15 +177,15 @@ async def run_symbol(symbol, timeframe, candles):
         current_price = float(ind.close)
 
         try:
-            sweeps = detect_sweeps(window, lookback=50)
+            sweeps = detect_sweeps(window, lookback=config.liquidity.sweep_lookback)
         except Exception:
             sweeps = []
         try:
-            order_blocks = detect_order_blocks(window, lookback=100)
+            order_blocks = detect_order_blocks(window, lookback=config.liquidity.ob_lookback)
         except Exception:
             order_blocks = []
         try:
-            fvgs = detect_fvg(window, lookback=100)
+            fvgs = detect_fvg(window, lookback=getattr(config.liquidity, "fvg_lookback", 100))
         except Exception:
             fvgs = []
         try:
@@ -186,7 +197,7 @@ async def run_symbol(symbol, timeframe, candles):
         if candle_quality and ind.atr and ind.atr > 0:
             _disp_atr = getattr(candle_quality, 'body_atr_ratio', 0.0) or 0.0
         try:
-            structure = analyze_structure(window, lookback=50, sweeps=sweeps,
+            structure = analyze_structure(window, lookback=config.market_structure.structure_lookback, sweeps=sweeps,
                                           displacement_atr=_disp_atr,
                                           atr_value=ind.atr if ind.atr else 0.0)
         except Exception:
@@ -199,10 +210,15 @@ async def run_symbol(symbol, timeframe, candles):
             continue
 
         # ── HTF bias gate (mimic scanner) ──
+        # B-021: causal HTF slice — only bars closed at decision_time
         try:
             _struct_1d = extract_structure_dict(structure) if structure else None
-            htf_bias = get_htf_bias(df_1d=htf_data.get("1d"), df_4h=htf_data.get("4h"),
-                                    structure_1d=_struct_1d, structure_4h=None)
+            _tf_sec = {"m": 60, "h": 3600, "d": 86400, "w": 604800}[timeframe[-1].lower()] * int(timeframe[:-1])
+            _decision_time = df.index[i] + pd.Timedelta(seconds=_tf_sec)
+            htf_bias = get_htf_bias(
+                df_1d=_closed_htf(htf_data.get("1d"), "1d", _decision_time),
+                df_4h=_closed_htf(htf_data.get("4h"), "4h", _decision_time),
+                structure_1d=_struct_1d, structure_4h=None)
             if htf_bias != HTFBias.NEUTRAL:
                 dm = {"buy": HTFBias.BULLISH, "sell": HTFBias.BEARISH}
                 if dm.get(setup.direction) != htf_bias:

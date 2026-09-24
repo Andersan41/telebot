@@ -199,6 +199,54 @@ class TestExpired:
         open_outcomes = await db.get_open_outcomes()
         assert len(open_outcomes) == 0
 
+        # B-018: EXPIRED uses real PnL (entry=50 → mark=51 = +2% before fees)
+        async with db._session_factory() as session:
+            from sqlalchemy import select as _sel
+            from storage.database import SignalOutcome as _SO
+            row = (await session.execute(_sel(_SO))).scalars().first()
+            assert row is not None
+            assert row.status == "EXPIRED"
+            assert row.pnl_pct is not None
+            assert row.pnl_pct > 0
+
+    @pytest.mark.asyncio
+    async def test_expired_unknown_price_keeps_pnl_none(self, setup_db):
+        old_ts = datetime.now(timezone.utc) - timedelta(days=8)
+        sig = await db.save_signal(
+            symbol="SOL/USDT",
+            timeframe="1h",
+            signal_type="BUY",
+            close_price=50.0,
+            sl=48.0,
+            tp=55.0,
+            score=5,
+            reasons=["test"],
+            entry_candle_open=old_ts - timedelta(hours=1),
+        )
+        async with db._session_factory() as session:
+            result = await session.execute(
+                select(Signal).where(Signal.id == sig.id)
+            )
+            row = result.scalar_one()
+            row.created_at = old_ts
+            await session.commit()
+        await db.create_outcome(sig.id)
+
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=None,
+        ):
+            await check_open_outcomes()
+
+        async with db._session_factory() as session:
+            from sqlalchemy import select as _sel
+            from storage.database import SignalOutcome as _SO
+            row = (await session.execute(_sel(_SO))).scalars().first()
+            assert row is not None
+            assert row.status == "EXPIRED"
+            # Unknown price ≠ scratch 0.0 — pnl stays None (B-018)
+            assert row.pnl_pct is None
+
 
 class TestGetOutcomeStats:
     """Проверка get_outcome_stats."""

@@ -151,6 +151,11 @@ class TestScanSymbolV2:
                             MagicMock(get_tick_size=MagicMock(return_value=0.01),
                                       fetch_ticker_full=AsyncMock(return_value={"bid": 50000.0, "ask": 50001.0})))
         monkeypatch.setattr("scheduler.scanner.db", MagicMock(
+            save_signal_with_risk=AsyncMock(return_value=(MagicMock(
+                id=1,
+                signal_detected_at=None,
+                sent_at=None,
+            ), None)),
             save_signal=AsyncMock(return_value=MagicMock(id=1)),
             set_cooldown=AsyncMock(),
             get_active_signals_count=AsyncMock(return_value=0),
@@ -191,6 +196,11 @@ class TestScanSymbolV2:
         ind_mock = MagicMock(atr=600.0, close=50000.0)
 
         mock_db = MagicMock(
+            save_signal_with_risk=AsyncMock(return_value=(MagicMock(
+                id=1,
+                signal_detected_at=None,
+                sent_at=None,
+            ), None)),
             save_signal=AsyncMock(return_value=MagicMock(id=1)),
             set_cooldown=AsyncMock(),
             get_active_signals_count=AsyncMock(return_value=0),

@@ -80,6 +80,10 @@ class TestTradingConfig:
         assert cfg.max_sl_distance_pct == 10.0
         assert cfg.min_rr_threshold == 1.5
 
+    def test_max_sl_atr_default(self):
+        cfg = TradingConfig()
+        assert cfg.max_sl_atr == 3.0
+
 
 class TestAppConfig:
     def test_database_url_from_env(self):
@@ -159,6 +163,10 @@ class TestEnvFile:
         "ATR_MULTIPLIER_TP",
         "MIN_SL_DISTANCE_PCT",
         "MAX_SL_DISTANCE_PCT",
+        "MAX_SL_ATR",
+        "SWEEP_LOOKBACK",
+        "OB_LOOKBACK",
+        "STRUCTURE_LOOKBACK",
         "MIN_RR_THRESHOLD",
         "SUPERTREND_PERIOD",
         "SUPERTREND_MULTIPLIER",

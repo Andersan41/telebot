@@ -143,6 +143,48 @@ class TestSLDistanceGuardParity:
         assert rejected
 
 
+class TestMaxSLAtrParity:
+    """v2.0 B-001 / v2.1 B-024 — final SL cap in ATR multiples after all buffers."""
+
+    def test_max_sl_atr_rejects_wide_stop(self):
+        entry = 50000.0
+        atr = 1000.0
+        max_sl_atr = config.trading.max_sl_atr
+        # SL 4 ATR away → must reject when max is 3
+        sl = entry - atr * (max_sl_atr + 1.0)
+        sl_dist = abs(entry - sl)
+        assert sl_dist > atr * max_sl_atr
+
+    def test_max_sl_atr_passes_tight_stop(self):
+        entry = 50000.0
+        atr = 1000.0
+        max_sl_atr = config.trading.max_sl_atr
+        sl = entry - atr * (max_sl_atr - 0.5)
+        sl_dist = abs(entry - sl)
+        assert sl_dist <= atr * max_sl_atr
+
+    def test_find_invalidation_respects_max_sl_atr(self):
+        """Structural levels farther than max_sl_atr are skipped."""
+        from strategy.invalidation import find_invalidation_buy
+        atr = 100.0
+        max_sl_atr = 1.0
+        # Far sweep low 5 ATR below entry — beyond cap
+        far = 100.0 - atr * 5
+        # Near swing low 0.8 ATR below — within cap
+        near = 100.0 - atr * 0.8
+        result = find_invalidation_buy(
+            entry=100.0,
+            sweep_lows=[far],
+            ob_lows=[],
+            swing_lows=[near],
+            atr=atr,
+            max_sl_atr=max_sl_atr,
+        )
+        assert result is not None
+        assert abs(100.0 - result.level) <= atr * max_sl_atr + 1e-9
+        assert result.level != far
+
+
 class TestRRFilterParity:
     """Verify RR filter matches scanner.py logic (lines 923-938)."""
 

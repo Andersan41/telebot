@@ -3,200 +3,185 @@
 ## Context
 
 You are reviewing a crypto trading bot (Telegram + Binance Futures) that uses ICT methodology.
-The bot scans 150 symbols on 1h/4h timeframes every 15 minutes and sends signals to a Telegram channel.
+The bot scans symbols on 1h/4h timeframes every 15 minutes and sends signals to a Telegram channel.
 
 **Repository:** https://github.com/Andersan41/telebot
 **Branch:** feat/htf-bias-v2-premium-discount
-**Documentation:** See `fix/bot_fix_v1.2.md` in the repo for full context.
+**Prior audits:** `fix/bot_fix_v1.1.md`, `fix/bot_fix_v1.2.md`, `fix/bot_fix_v1.3.md`
+**Modernization baseline:** `bot_fix_v2.0.md` (sibling project `E:\Projects\tgbot-claude`) — B-001…B-012
+**Current audit:** `fix/bot_fix_v2.1.md` — B-013…B-027 (this cycle)
 
-## What happened
+## What happened (2026-09-24)
 
-The bot was blocking 100% of signals for over a week.
-We identified and fixed 3 bugs (see section "Fixes applied" below), but the core question remains:
-**Why does the bot produce zero signals despite 77,253 entries over 7 days?**
+v2.0 fixes were **not ported** to this repo. Live DB (`data/signals.db`) shows a mature
+funnel with **zero decision traces** and a large false-fail class (`data_integrity_fail`
+with sl/tp=0). A `note=` crash was fixed in the working tree this session but the live
+process has not been restarted.
 
-## Scan Engine — Funnel Statistics (7 days, live data)
+User claim "бот модернизирован по bot_fix_v2.0.md" does **not** match this working tree:
+`save_signal_with_risk`, `entry_mode`, `max_sl_atr`, `poi_entry`, `BEGIN IMMEDIATE`,
+`select_causal_sweep`, `closed_htf_history`, `first_touch`, `load_outcome_window` are absent.
+
+## Scan Engine — Live DB stats (cumulative, not 7-day window)
 
 | Metric | Value |
 |--------|-------|
-| Total Entries | 77,253 |
-| Signals Sent | **0** |
-| Config Version | 10 |
+| signal_audit_log | 229,972 (pass 173,424 / fail 56,548) |
+| decision_traces | **0** (migration bug) |
+| signal_candidates | 0 |
+| signals | 4 |
+| signal_outcomes | 4 × HIT_TP |
+| Config version | 11 (`_CONFIG_VERSION`) |
+| App VERSION | 2.5.0 |
 
-### Pipeline Funnel (all 0 sent, blocked at each gate):
+### Fail by reason (top)
 
-| Gate | Blocked | % of Total |
-|------|---------|-----------|
-| Pattern Engine | 47,359 | 61.3% |
-| Score Gate | 16,084 | 20.8% |
-| Confirmation | 3,225 | 4.2% |
-| Indicators | 1,988 | 2.6% |
-| Displacement | 1,199 | 1.6% |
-| Volatility | 983 | 1.3% |
-| HTF Bias | 936 | 1.2% |
-| Entry Trigger | 1,090 | 1.4% |
-| Risk Engine | 153 | 0.2% |
-| Portfolio Risk | 2 | 0.0% |
+| Reason | Count |
+|--------|------:|
+| mss_none | 35,405 |
+| entry_trigger_no | 7,446 |
+| htf_short_in_bullish | 5,919 |
+| data_integrity_fail | 5,822 |
+| ob_retest_failed | 651 |
+| min_p_tp | 372 |
+| volatility_too_low | 301 |
+| htf_long_in_bearish | 227 |
+| rr_too_low | 153 |
 
-### Top Rejection Reasons (ranked):
+### Fail by stage
 
-| Reason | Count | % of Total |
-|--------|-------|-----------|
-| pattern_no_setup | 34,764 | 45.0% |
-| score_too_low | 16,084 | 20.8% |
-| mss_none | 12,179 | 15.8% |
-| time_of_day_blocked | 4,003 | 5.2% |
-| confirmation_low | 3,225 | 4.2% |
-| data_integrity_fail | 2,141 | 2.8% |
-| displacement_missing | 1,199 | 1.6% |
-| entry_trigger_no | 1,090 | 1.4% |
-| htf_short_in_bullish | 817 | 1.1% |
-| volatility_too_low | 655 | 0.8% |
+| Stage | Count |
+|-------|------:|
+| pattern_engine | 35,413 |
+| entry_trigger | 7,446 |
+| htf_bias | 6,156 |
+| risk_engine | 5,881 |
+| ob_retest | 651 |
+| volatility_filter | 379 |
+| min_p_tp | 372 |
+| indicators | 195 |
+| dedup | 55 |
 
-### Critical observations from these numbers:
+### Critical observations
 
-1. **Pattern Engine kills 61%** — but `pattern_no_setup` (34,764) is only 73% of that.
-   The remaining ~12,598 pattern_engine blocks are OTHER reasons (ranging, etc.)
+1. **decision_traces = 0** — `hypothesis_snapshot` missing from `trace_migrations`;
+   every `trace.save()` fails with OperationalError, swallowed at DEBUG.
+2. **data_integrity_fail** — meta `hyp_sl=0.0000,hyp_tp=0.0000`: scanner never checks
+   `trade_plan.is_valid`; TradePlan defaults sl/tp=0.0.
+3. **htf_short_in_bullish (5,919)** — uncommitted soft-penalty path writes audit
+   `passed=False` while pipeline **continues**; funnel "PENALTY" not counted; config
+   flags `block_short/long_*_htf` are dead (never read in scanner).
+4. **ML logs** `P(TP)=65% | RR=1.00 | PF=1.86` — `rr_ratio=0` → `expected_rr=1.0`
+   fallback + p_tp clamp 0.65. Floor 0.05 → min_p_tp blocks on some symbols.
+5. **mss_none still dominant** at pattern_engine (35k) — B-006 same-type fix only
+   partial (`structure.py:150`); no shared causal sweep selector.
 
-2. **Score Gate kills 20.8%** — this is the SECOND biggest bottleneck. `score_too_low` = 16,084.
-   This means ~16K setups DETECTED but with too few components (score < 2).
+## v2.0 port status (summary)
 
-3. **MSS None = 12,179 (15.8%)** — sweep detected but no MSS classification.
-   This is what P0-1 (reclaim_bars fix) should address.
+| v2.0 | Status |
+|------|--------|
+| B-001 MAX_SL_ATR | NOT ported |
+| B-002 isfinite/directed geo | PARTIAL (U10 yes, isfinite no) |
+| B-003 atomic save | NOT ported |
+| B-004 FVG entry price | not verified |
+| B-005 FVG causality | PARTIAL (ts off-by-one) |
+| B-006 MSS same-type sweep | PARTIAL |
+| B-007 HTF causal history | NOT ported |
+| B-008/B-009 outcome window / EXPIRED | NOT ported |
+| B-010 WR by pnl | NOT ported |
+| B-011 trace features | BROKEN (migration) |
+| B-012 lookback parity | PARTIAL (engine tail(100) ≠ live 50/100/50) |
 
-4. **time_of_day_blocked = 4,003 (5.2%)** — THIS IS ACTIVE despite being "commented out"
-   in the version we reviewed. Either: (a) the deployed code differs from repo, or
-   (b) there's another code path we missed. **THIS NEEDS INVESTIGATION.**
+## Pipeline architecture (current)
 
-5. **Confirmation low = 3,225 (4.2%)** — setup detected but confirmation_score < 2.
+Pattern Engine → Feature Builder → Probability Engine → Risk Engine
+(`scan_symbol_v2`). Audit reason codes in `storage/audit_reasons.py`.
+HTF Bias V2 ON; premium/discount OFF; breakout quality soft gate.
 
-6. **Displacement missing = 1,199 (1.6%)** — sweep exists but no displacement candle.
+## Uncommitted / operational state
 
-7. **Zero signals through ALL gates** — not just one gate is the problem.
-   The funnel is a cascade: even if we fix pattern_engine, score_gate blocks 16K more.
-
-## What we already fixed (deployed 2026-09-19)
-
-1. **P0-1 (reclaim_bars):** `classify_choch()` used wrong sweep for reclaim_bars.
-   Should reduce `mss_none` from 12,179.
-
-2. **P1-1 (SL dead zone):** 8% hard cap on dynamic_sl_max.
-   Should reduce risk_engine blocks for wide-SL setups.
-
-3. **P2-2 (block_neutral_htf):** Dead config field. Removed.
+- Working tree: `note=` crash fix (scanner 1024/1109); HTF soft-penalty diff;
+  web/dashboard; bot `/report`; .env.example HTF flags flipped.
+- Live process: **old code** — restart required after deploy of B-013/B-015.
+- Tests: `pytest --co` = 1301; focused subset ~14 fails (MockSweep, wave_label str);
+  full suite hangs without pytest-timeout.
 
 ## What I need you to review
 
-### 1. Why is score_too_low = 16,084 (20.8%)?
+### 1. Confirm or refute B-013…B-017 root causes
 
-This is the BIGGEST surprise. Score gate should only block weak setups.
-But 16K blocks means the score formula is too strict OR the components are not being detected.
+- Is the `trade_plan.is_valid` gap the full explanation for 5,822 data_integrity_fail?
+- Is missing `hypothesis_snapshot` migration the full explanation for 0 traces?
+- Any second path that could write traces to a different DB?
+- Should HTF soft-penalty audit be `passed=True` + penalty meta, or a new reason code?
 
-Look at:
-- `strategy/pattern_engine.py` — `_build_components()` method
-- `strategy/pattern_engine.py` — `confirmation_score` property
-- `scheduler/scanner.py:588-603` — score gate logic
+### 2. ML probability integrity
 
-Questions:
-- What is the formula for confirmation_score?
-- For reversal: what components contribute? (sweep=2, MSS=1, FVG=1, OB=1?)
-- For continuation: what components contribute? (BOS=2, Trend=1, FVG=1, OB=1?)
-- If a setup has score=1 (e.g., BOS-only continuation), it's blocked. Is this correct?
-- Should we lower min_score_for_signal from 2 to 1?
+- After blocking invalid plans, is `_predict_rules` fallback on `rr_ratio<=0` correct,
+  or should probability be skipped entirely?
+- Is `p_tp` clamp [0.05, 0.65] still appropriate for expected_return+isotonic?
+- When to retrain `models/probability_model.pkl` (features will shift)?
 
-### 2. Why is time_of_day_blocked = 4,003 if the code is "commented out"?
+### 3. Gate/path schema
 
-In `scanner.py:455-470` the time-of-day filter appears commented out.
-But 4,003 blocks with this reason exist.
+- Canonical GATE_ORDER list for gate_path JSON?
+- How to represent PENALTY vs BLOCK in funnel counters and get_trace_stats?
 
-Possibilities:
-- The deployed code on the server has a different version than the repo
-- There's another code path that uses TIME_OF_DAY_BLOCKED
-- The comment-out was not deployed
+### 4. v2.0 rebase vs cherry-pick
 
-Action: Check if the bot running on the server matches the repo code.
+- Recommend full rebase of bot_fix_v2.0.md onto this branch, or cherry-pick only
+  B-003, B-007–B-012?
 
-### 3. Are the pattern_engine thresholds reasonable?
+### 5. Signal volume reality check
 
-`pattern_no_setup` = 34,764 (45%) — nearly HALF of all entries.
-This could mean:
-- Markets genuinely don't have ICT patterns (unlikely for 150 symbols over 7 days)
-- The detection is too strict (max_causal_bars, displacement_atr, etc.)
-
-Look at:
-- `strategy/pattern_engine.py` — `detect()` method
-- What are the exact conditions for `no valid setup`?
-- Is `max_causal_bars=10` too tight for 1h/4h?
-- Is `displacement_atr >= 0.2` threshold reasonable?
-
-### 4. The funnel cascade problem
-
-Even if we fix ALL pattern_engine blocks (47,359), score_gate blocks 16,084 more.
-Even if we fix score_gate, confirmation blocks 3,225 more.
-
-The question is: **what is the realistic maximum number of signals?**
-
-Assume:
-- Pattern engine allows 30% instead of 0% → 23,176 pass
-- Score gate allows 80% of those → 18,541 pass
-- Confirmation allows 90% → 16,687 pass
-- Other gates allow 95% → ~15,853 pass
-
-Is this realistic? Or are the gates correlated (same setups blocked by multiple gates)?
-
-### 5. What should we prioritize after the deployed fixes?
-
-Given the 7-day data, rank these by expected impact:
-- A: Lower min_score_for_signal from 2 to 1
-- B: Tune pattern_engine (max_causal_bars, displacement_atr)
-- C: Investigate time_of_day_blocked (4,003 blocks)
-- D: Improve MSS detection (12,179 mss_none)
-- E: Improve displacement detection (1,199 displacement_missing)
-- F: Something else entirely
+Given pattern_engine still kills 35k and entry_trigger 7.4k, what is the realistic
+ceiling for 2–5 quality signals/week after B-013/B-015 (without loosening thresholds)?
 
 ## How to review
 
-1. Read `fix/bot_fix_v1.2.md` for full context on what was reviewed and fixed
-2. Read `scheduler/scanner.py` — focus on `scan_symbol_v2()` (line 294+) and each gate
-3. Read `strategy/pattern_engine.py` — focus on `detect()`, `_build_components()`, `confirmation_score`
-4. Read `risk/engine.py` — focus on `evaluate()` method
-5. Read `storage/audit_reasons.py` — all 40+ rejection codes
-6. Read `config/settings.py` — all default thresholds
+1. Read `fix/bot_fix_v2.1.md` for findings B-013…B-027 (machine-actionable fixes)
+2. Read `fix/bot_fix_v1.3.md` for historical findings lineage
+3. Read `scheduler/scanner.py` — `scan_symbol_v2()` gates, especially 940–1210 (HTF),
+   1158–1181 (trade_plan), 2192/2264/2275 (save)
+4. Read `storage/database.py` — `trace_migrations` (~407), `save_decision_trace` (~801)
+5. Read `storage/trace.py` — GATE_ORDER, build_gate_path, save
+6. Read `strategy/trade_plan.py`, `strategy/trade_engine.py`, `strategy/probability_engine.py`
+7. Read `risk/engine.py` — evaluate()
+8. Read `config/settings.py` — VERSION, min_p_tp, risk, HTF flags
+9. Optional: sibling `E:\Projects\tgbot-claude\bot_fix_v2.0.md` for port diffs
 
 ## Constraints
 
-- Bot trades BTC/USDT and ETH/USDT primarily, 150 symbols total
-- Timeframes: 1h and 4h
-- Exchange: Binance Futures (via ccxt)
-- Must NOT send false signals (risk management is priority)
-- Currently 0 signals/week is unacceptable — need at least 2-5 quality signals/week
-- Config version is 10 (latest: H-014 volatility_max_atr 5→8%, sweep_min_wick 0.02→0.01%)
+- Must NOT send false signals (risk first)
+- 2–5 quality signals/week target; 0/week unacceptable
+- Config version 11; VERSION 2.5.0
+- Do not loosen min_p_tp / min_rr until B-013/B-014 land and baseline remeasured
+- Premium/discount stays OFF
+- Telegram HTML requires `html.escape()` on dynamic substrings
 
 ---
 
-## Output: create file fix/bot_fix_v1.3.md
+## Output: create file fix/bot_fix_v2.2.md (or update bot_fix_v2.1.md)
 
-After completing your review, save your findings to `fix/bot_fix_v1.3.md` using the
-template below. This file will be given to a junior AI (mimo) that will implement
-every fix you specify. Your instructions must be **precise, unambiguous, and
-machine-actionable**.
+After completing your review, save findings using the template below.
+This file will be given to a junior AI (mimo) that will implement every fix.
+Instructions must be **precise, unambiguous, and machine-actionable**.
 
-### Template for bot_fix_v1.3.md:
+### Template:
 
 ```markdown
-# bot_fix_v1.3.md — Senior model audit
+# bot_fix_vX.Y.md — Senior model audit
 
 ## Date: [YYYY-MM-DD]
 ## Auditor: [model name]
 ## Branch: feat/htf-bias-v2-premium-discount
-## Config version: 10
+## Config version: 11
 
 ---
 
 ## I. Executive summary
 
-[2-3 paragraphs: overall health of codebase, top 3 critical issues,
-expected impact of fixing them]
+[2-3 paragraphs: overall health, top 3 critical issues, expected impact of fixing them]
 
 ---
 
@@ -230,8 +215,6 @@ For EACH finding use this EXACT format:
 
 | ID | Title | Severity | File | Status |
 |----|-------|----------|------|--------|
-| B-001 | ... | CRITICAL | scanner.py | OPEN |
-| B-002 | ... | HIGH | pattern_engine.py | OPEN |
 
 ---
 
@@ -240,7 +223,6 @@ For EACH finding use this EXACT format:
 Ranked by (signal_volume_impact × confidence):
 
 1. B-XXX — [title] — [why first]
-2. B-XXX — [title] — [why second]
 
 ---
 
@@ -248,13 +230,10 @@ Ranked by (signal_volume_impact × confidence):
 
 | Param | Current | Recommended | Reason |
 |-------|---------|-------------|--------|
-| min_score_for_signal | 2 | ? | ... |
 
 ---
 
 ## VI. Questions for the team
-
-[Anything ambiguous needing human decision]
 
 ---
 
@@ -271,7 +250,11 @@ Ranked by (signal_volume_impact × confidence):
 
 1. **Every finding MUST have a code snippet.** No vague statements.
 2. **Every fix MUST be syntactically correct Python.** mimo will copy-paste directly.
-3. **Do not report issues fixed in v1.2** — check `bot_fix_v1.2.md` section "Fixes applied".
-4. **Number findings sequentially** (B-001, B-002, ...) and reference in summary table.
-5. **Severity:** CRITICAL = crashes/wrong signals, HIGH = >5% signal loss, MEDIUM = suboptimal, LOW = code quality.
+3. **Do not report issues already fixed** — check bot_fix_v1.3 "Fixes applied" and
+   bot_fix_v2.1 "Status" column.
+4. **Number findings sequentially** continuing the open series (next free: B-028
+   after v2.1, or restart B-001 only if starting a clean series and say so).
+5. **Severity:** CRITICAL = crashes/wrong signals/dead telemetry, HIGH = >5% signal
+   loss or decision integrity, MEDIUM = suboptimal, LOW = code quality.
 6. **Mark uncertain findings** with "(UNCERTAIN)" in the title.
+7. **Port-gap findings** must cite the v2.0 ID (B-001…B-012) they correspond to.

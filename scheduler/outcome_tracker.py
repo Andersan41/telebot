@@ -275,12 +275,29 @@ async def check_open_outcomes() -> None:
         signal = await db.get_signal(outcome.signal_id)
         if signal is None:
             continue
-        # Просроченный сигнал → EXPIRED
+        # Просроченный сигнал → EXPIRED with real PnL (B-018 / v2.0 B-009)
         age = now - signal.created_at.replace(tzinfo=timezone.utc)
         if age > timedelta(days=OUTCOME_TTL_DAYS):
+            last_close = None
+            try:
+                last_close = await exchange_client.fetch_ticker_price(signal.symbol)
+            except Exception:
+                last_close = None
+            if last_close is not None and signal.close_price and signal.close_price > 0:
+                _direction_mult = 1.0 if signal.signal_type == "BUY" else -1.0
+                _gross = (last_close - signal.close_price) / signal.close_price * 100 * _direction_mult
+                _fee = config.trading.exchange_fee_pct
+                _slip = config.trading.slippage_pct
+                _pnl = _gross - (_fee + _slip) * 2
+                _pnl = round(_pnl, 4)
+                _close_px = float(last_close)
+            else:
+                # Unknown exit ≠ scratch 0.0 — pnl_pct stays None
+                _pnl = None
+                _close_px = signal.close_price
             await db.close_outcome(
                 outcome.id, "EXPIRED",
-                close_price=signal.close_price, pnl_pct=0.0,
+                close_price=_close_px, pnl_pct=_pnl,
             )
             try:
                 from storage.database import DecisionTrace
@@ -292,10 +309,11 @@ async def check_open_outcomes() -> None:
                     trace_row = result.scalar_one_or_none()
                     if trace_row:
                         trace_row.outcome = "EXPIRED"
-                        trace_row.pnl_pct = 0.0
+                        trace_row.pnl_pct = _pnl
                         await session.commit()
                         _record_hypothesis_outcome(
-                            trace_row, signal, "EXPIRED", 0.0,
+                            trace_row, signal, "EXPIRED",
+                            _pnl if _pnl is not None else 0.0,
                             0.0, 0.0, 0,
                         )
             except Exception:

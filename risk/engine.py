@@ -17,6 +17,7 @@ Soft adjustments (affect sizing, not blocking):
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal, Optional
 
@@ -144,7 +145,8 @@ class RiskEngine:
             )
 
         # 1. Data integrity
-        if entry_price <= 0 or sl <= 0 or tp <= 0:
+        if not all(map(math.isfinite, (entry_price, sl, tp))) \
+                or entry_price <= 0 or sl <= 0 or tp <= 0:
             return RiskDecision(
                 should_trade=False,
                 rejection_reason="invalid price data",

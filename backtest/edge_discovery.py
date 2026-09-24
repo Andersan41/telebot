@@ -114,15 +114,15 @@ def precompute_snapshots(
         regime_obj = _compute_regime(ind, atr_history, ema_spread_history, volume_history)
 
         try:
-            structure = analyze_structure(window.tail(100))
+            structure = analyze_structure(window.tail(getattr(config.market_structure, "structure_lookback", 50)))
         except Exception:
             structure = None
         try:
-            all_sweeps = detect_sweeps(window.tail(100), swing_window=5)
+            all_sweeps = detect_sweeps(window.tail(getattr(config.liquidity, "sweep_lookback", 50)), swing_window=5)
         except Exception:
             all_sweeps = []
         try:
-            all_obs = detect_order_blocks(window.tail(100)) or []
+            all_obs = detect_order_blocks(window.tail(getattr(config.liquidity, "ob_lookback", 100))) or []
         except Exception:
             all_obs = []
         valid_sweeps = [s for s in all_sweeps if getattr(s, "is_valid", False)]
@@ -132,7 +132,7 @@ def precompute_snapshots(
         try:
             _df_clean = window.dropna(subset=["open", "high", "low", "close", "volume"])
             if len(_df_clean) >= 10:
-                fvgs = detect_fvg(_df_clean, lookback=100)
+                fvgs = detect_fvg(_df_clean, lookback=getattr(config.liquidity, "fvg_lookback", 100))
         except Exception:
             pass
 
