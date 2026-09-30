@@ -167,6 +167,11 @@ class ExchangeClient:
         RateLimitExceeded/DDoSProtection получают больше попыток.
         BadSymbol/BadRequest не ретраятся.
         """
+        if self._exchange is None:
+            # close() уже вызван (shutdown), а скан-задачи ещё дорабатывают:
+            # раньше падали в общий except как ERROR 'NoneType' fetch_ohlcv
+            logger.debug(f"Exchange closed, skipping {symbol} {timeframe}")
+            return None
         ccxt_symbol = self._resolve_symbol(symbol)
         if ccxt_symbol not in self._available_symbols:
             logger.warning(

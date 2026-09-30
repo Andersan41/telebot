@@ -1,17 +1,109 @@
 """
 storage/database.py — SQLAlchemy модели и методы работы с БД
 """
+import asyncio
+import functools
 import json
 import os
+import weakref
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, select, desc, ForeignKey, text
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, select, desc, ForeignKey, text, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
 from loguru import logger
 from config.settings import config
 
 Base = declarative_base()
+
+# ── SQLite lock handling ──────────────────────────────────────────────
+# A scan cycle writes hundreds of short transactions (one per gate audit row
+# + one per decision trace) from ~150 parallel symbol×TF tasks. Without a
+# busy timeout those writers fail with "database is locked" and the rows are
+# lost. Two layers of defence:
+#   1. busy_timeout per connection (see SQLITE_BUSY_TIMEOUT_MS)
+#   2. bounded retry of the hot write paths (retry_on_db_lock)
+# journal_mode=WAL is set once in Database.init() (persistent in the file).
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "30000"))
+
+DB_LOCK_RETRY_ATTEMPTS = int(os.getenv("DB_LOCK_RETRY_ATTEMPTS", "4"))
+DB_LOCK_RETRY_BASE_DELAY = float(os.getenv("DB_LOCK_RETRY_BASE_DELAY", "0.25"))
+
+_LOCK_MESSAGES = (
+    "database is locked",
+    "database is busy",
+    "database table is locked",
+)
+
+
+def _is_db_locked(exc: BaseException) -> bool:
+    """True if the exception chain is a SQLite 'database is locked' error."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current).lower()
+        if any(lock_msg in message for lock_msg in _LOCK_MESSAGES):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def retry_on_db_lock(fn):
+    """Retry an awaitable DB write on SQLITE_BUSY with exponential backoff.
+
+    Only lock errors are retried; the retry re-enters the wrapped method, so
+    it must open its own session (all wrapped methods do).
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        for attempt in range(1, DB_LOCK_RETRY_ATTEMPTS + 1):
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as exc:
+                if attempt >= DB_LOCK_RETRY_ATTEMPTS or not _is_db_locked(exc):
+                    raise
+                delay = DB_LOCK_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(
+                    f"DB locked in {fn.__name__} "
+                    f"(attempt {attempt}/{DB_LOCK_RETRY_ATTEMPTS}), "
+                    f"retrying in {delay:.2f}s: {exc}"
+                )
+                await asyncio.sleep(delay)
+    return wrapper
+
+
+_configured_sqlite_engines: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def configure_sqlite_engine(engine) -> None:
+    """Register per-connection PRAGMA for a sqlite+aiosqlite engine.
+
+    journal_mode=WAL is persistent in the DB file and applied once in
+    Database.init(); everything here is per-connection and must be repeated
+    on every connect (the sqlite aiosqlite dialect pools with NullPool).
+    synchronous=NORMAL is only paired with WAL — in the default rollback
+    journal it would skip fsync and risk corruption, so it is set only when
+    the connection actually sees WAL. Non-sqlite engines are untouched.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    if engine in _configured_sqlite_engines:
+        return
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _apply_sqlite_pragmas(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            cursor.execute("PRAGMA journal_mode")
+            row = cursor.fetchone()
+            if row and str(row[0]).lower() == "wal":
+                cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
+
+    _configured_sqlite_engines.add(engine)
 
 
 class Signal(Base):
@@ -342,16 +434,35 @@ class SignalAuditLog(Base):
 class Database:
     def __init__(self):
         os.makedirs("data", exist_ok=True)
+        engine_kwargs: dict = {"echo": False}
+        if config.database_url.startswith("sqlite"):
+            # sqlite3 busy timeout (seconds) — writers wait for the lock
+            # instead of failing with "database is locked".
+            engine_kwargs["connect_args"] = {"timeout": 30}
         self._engine = create_async_engine(
             config.database_url,
-            echo=False,
+            **engine_kwargs,
         )
+        configure_sqlite_engine(self._engine)
         self._session_factory = sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
         )
 
     async def init(self):
         """Создаём таблицы при первом запуске + миграции"""
+        if self._engine.dialect.name == "sqlite":
+            # WAL is stored in the DB file header: set once here and every
+            # later connection (any pool, any process) runs in WAL mode.
+            # Readers no longer block the writers of a scan cycle.
+            async with self._engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA journal_mode=WAL"))
+                mode = str(result.scalar() or "").lower()
+                if mode != "wal":
+                    logger.warning(
+                        f"SQLite journal_mode is {mode!r}, expected 'wal' — "
+                        "concurrent readers and writers may still block "
+                        "each other (network share? read-only file?)"
+                    )
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         await self._migrate()
@@ -911,6 +1022,7 @@ class Database:
             await session.refresh(snap)
             return snap
 
+    @retry_on_db_lock
     async def save_decision_trace(
         self,
         symbol: str,
@@ -1024,8 +1136,10 @@ class Database:
                 hypothesis_snapshot=json.dumps(hypothesis_snapshot) if hypothesis_snapshot else None,
             )
             session.add(trace)
+            # PK is set by the flush; no refresh() here — an extra SELECT per
+            # row (it ran after commit, so a lock error in it would also make
+            # retry_on_db_lock insert a duplicate).
             await session.commit()
-            await session.refresh(trace)
             return trace
 
     async def link_trace_to_signal(
@@ -1499,6 +1613,7 @@ class Database:
 
     # ── SignalAuditLog CRUD ────────────────────────────────────────
 
+    @retry_on_db_lock
     async def create_audit_entry(
         self,
         symbol: str,
@@ -1549,8 +1664,9 @@ class Database:
                 data_age_ms=data_age_ms,
             )
             session.add(entry)
+            # PK is set by the flush — skip the post-commit refresh() SELECT
+            # (see save_decision_trace).
             await session.commit()
-            await session.refresh(entry)
             return entry.id
 
     async def update_audit_outcome(

@@ -307,6 +307,49 @@ class TestExportdb:
         call_args = mock_update.message.reply_text.call_args[0][0]
         assert "\u274c" in call_args or "\u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d" in call_args
 
+    @pytest.mark.asyncio
+    async def test_exportdb_copies_uncheckpointed_wal_rows(
+        self, tmp_path, mock_update, mock_context, monkeypatch
+    ):
+        """Backup must contain rows still sitting in the -wal file."""
+        import sqlite3
+
+        from config.settings import config
+
+        src_path = tmp_path / "hot.db"
+        src = sqlite3.connect(str(src_path))
+        src.execute("PRAGMA journal_mode=WAL")
+        src.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+        src.execute("INSERT INTO t (v) VALUES ('wal-row')")
+        src.commit()
+        src.close()  # no checkpoint: the row lives only in hot.db-wal
+
+        monkeypatch.setattr(config.telegram, "admin_ids", [111111])
+        monkeypatch.setattr(config, "database_url", f"sqlite+aiosqlite:///{src_path}")
+
+        sent = {}
+
+        async def _capture(document=None, filename=None, caption=None, **kwargs):
+            sent["bytes"] = document.read()
+            sent["filename"] = filename
+
+        mock_update.message.reply_document = _capture
+
+        from bot.admin import exportdb_command
+        await exportdb_command(mock_update, mock_context)
+
+        assert sent.get("bytes"), "backup file was not sent"
+        assert sent["filename"].startswith("signals_")
+
+        copy_path = tmp_path / "copy.db"
+        copy_path.write_bytes(sent["bytes"])
+        dst = sqlite3.connect(str(copy_path))
+        try:
+            rows = dst.execute("SELECT v FROM t").fetchall()
+        finally:
+            dst.close()
+        assert rows == [("wal-row",)]
+
 
 # ── DB: get_disabled_symbols / set_disabled_symbols ───────────────────
 

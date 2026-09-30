@@ -222,7 +222,7 @@ async def exportdb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     from config.settings import config
     db_path = config.database_url.replace("sqlite+aiosqlite:///", "")
     import os as _os
-    import shutil
+    import sqlite3
     import tempfile
 
     if not Path(db_path).exists():
@@ -236,15 +236,38 @@ async def exportdb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        shutil.copy(db_path, tmp.name)
+    fd, tmp_name = tempfile.mkstemp(suffix=".db")
+    _os.close(fd)
+    try:
+        # WAL-safe snapshot: shutil.copy would miss commits still sitting in
+        # the -wal file and can tear a DB that is being written right now.
+        # The backup API paginates and respects locks instead.
+        src = sqlite3.connect(db_path)
+        try:
+            src.execute("PRAGMA busy_timeout=30000")
+            dst = sqlite3.connect(tmp_name)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+
         filename = f"signals_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.db"
-        with open(tmp.name, "rb") as f:
+        with open(tmp_name, "rb") as f:
             await update.message.reply_document(
                 document=f,
                 filename=filename,
                 caption="\U0001f4e6 Backup SQLite",
             )
+    except sqlite3.Error as e:
+        logger.warning(f"exportdb backup failed: {e}")
+        await update.message.reply_text(f"\u274c \u041e\u0448\u0438\u0431\u043a\u0430 \u0431\u044d\u043a\u0430\u043f\u0430: {e}")
+    finally:
+        try:
+            _os.unlink(tmp_name)
+        except OSError:
+            pass
 
 
 async def trades_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

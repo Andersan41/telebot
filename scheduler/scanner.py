@@ -129,7 +129,8 @@ async def _audit_log(
             data_age_ms=data_age_ms,
         )
     except Exception as e:
-        logger.debug(f"[AUDIT] write failed: {e}")
+        # warning, not debug: a dropped audit row silently skews the funnel
+        logger.warning(f"[AUDIT] write failed: {e}")
 
 
 def get_cooldown_minutes(timeframe: str, base_minutes: int, multiplier: float) -> int:

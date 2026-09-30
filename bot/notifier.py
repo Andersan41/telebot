@@ -6,7 +6,7 @@ import html
 import io
 from telegram import Bot
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import Forbidden, TelegramError
 from loguru import logger
 from config.settings import config
 from strategy.signal_engine import SignalResult
@@ -194,6 +194,11 @@ async def send_error_alert(message: str, retries: int = 3):
                 logger.info(f"Error alert sent to admin {admin_id}")
                 break
             except TelegramError as e:
+                if isinstance(e, Forbidden):
+                    # постоянная ошибка (админ-бот: User_bot_to_bot_disabled,
+                    # блокировка, нет чата) — повторы только задержат и заспамят
+                    logger.error(f"Error alert to admin {admin_id} rejected: {e}")
+                    break
                 if attempt < retries - 1:
                     delay = 2 ** attempt
                     logger.warning(f"Admin alert send failed (attempt {attempt + 1}/{retries}), retrying in {delay}s: {e}")

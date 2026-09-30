@@ -58,7 +58,11 @@ main.py
   → app.updater.start_polling()        # Telegram polling
 ```
 
-**Lock-файл**: `.trading_bot.lock` — защита от повторного запуска. PID-проверка через `os.kill(0)`.
+**Lock-файл**: `.trading_bot.lock` — защита от повторного запуска. Byte-range lock ОС
+(`msvcrt.locking` на Windows, `fcntl.flock` на POSIX), удерживается открытым дескриптором
+до выхода и снимается ядром при смерти процесса — устаревший файл с мёртвым PID не мешает
+старту. Файл в `.gitignore` (не хранить в git: checkout подсовывал бы чужой PID).
+Путь переопределяется `TRADING_BOT_LOCK_FILE` — тесты работают с временным файлом.
 
 ### Модули проекта
 

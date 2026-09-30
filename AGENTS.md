@@ -114,6 +114,28 @@ Key baselines (post H-003 fix, 500 candles 1h):
 - **`config_version`**: Bump `_CONFIG_VERSION` in `scheduler/scanner.py` when any config
   threshold changes (e.g. min_rr_ratio, volatility limits, SL bounds, max_active_signals).
   Audit logs use this to distinguish signals under different configs for A/B analysis.
+- **Single-instance lock is an OS byte-range lock, not a PID check** (`main.py:acquire_lock`):
+  `msvcrt.locking` (Windows) / `fcntl.flock` (POSIX) on `.trading_bot.lock` at offset 1024,
+  held by an open fd until exit — the kernel releases it if the process dies, so a stale
+  file with a dead PID never blocks a restart. The file is gitignored (was tracked: a
+  `git checkout` could resurrect a foreign PID) and is never deleted on exit (unlink would
+  race inode identities). Path is overridable via `TRADING_BOT_LOCK_FILE` — tests must set
+  it, otherwise running `tests/test_main.py` locks/releases the real file of the live bot.
+  Note: instances started before this change hold no OS lock, so the guard cannot see them.
+- **Position R-ladder is measured from `ManagedPosition.initial_risk`** (entry → original SL),
+  never from the live SL: breakeven sets SL = entry, so live risk is 0 and the old formula
+  collapsed 2R/3R/4R targets to the entry price — the whole ladder fired in one bar as
+  `TP3_FULL` ("✅ Тейк Профит") while `signal.tp` was never touched (NEAR/USDT 1h
+  signal_id=8, 25.09.2026; 5 such rows in `positions`). Telegram labels for `TP*_FULL`
+  now show the R-level; `_normalize_close_reason` still maps them to `HIT_TP` for stats.
+- **SQLite runs in WAL with `busy_timeout=30s`**: `Database.init()` sets `journal_mode=WAL`
+  once (persistent), `configure_sqlite_engine()` sets `busy_timeout`/`synchronous` per
+  connection, and `save_decision_trace` / `create_audit_entry` retry on `database is locked`
+  (`retry_on_db_lock`, `DB_LOCK_RETRY_*` env). A scan cycle is ~150 parallel tasks writing
+  hundreds of rows — never add a DB write path that opens its own engine, and copy the DB
+  with the sqlite backup API (as `/exportdb` does), never `shutil.copy` (misses `-wal`).
+  Ad-hoc analytics scripts reading `data/signals.db` should pass `timeout=` to
+  `sqlite3.connect`.
 
 ## Required `.env`
 

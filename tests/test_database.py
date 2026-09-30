@@ -1,20 +1,33 @@
 import sys
 import os
+import asyncio
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from storage.database import db, Base, Signal
+from storage.database import (
+    db,
+    Base,
+    Signal,
+    DecisionTrace,
+    SignalAuditLog,
+    configure_sqlite_engine,
+)
 
 
 @pytest.fixture(autouse=True)
 async def setup_db(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path}/test_signals.db"
-    db._engine = create_async_engine(db_url, echo=False)
+    db._engine = create_async_engine(db_url, echo=False, connect_args={"timeout": 30})
+    configure_sqlite_engine(db._engine)
     db._session_factory = sessionmaker(
         db._engine, class_=AsyncSession, expire_on_commit=False
     )
@@ -295,3 +308,96 @@ class TestSaveSignalWithRisk:
         )
         assert sig is None
         assert reason == "invalid_new_risk"
+
+
+class TestSQLiteLockHandling:
+    """Guards for the "database is locked" fix: WAL + busy_timeout + retry."""
+
+    @pytest.mark.asyncio
+    async def test_wal_and_pragmas_applied(self, setup_db):
+        await db.init()
+        async with db._engine.connect() as conn:
+            journal = (await conn.execute(text("PRAGMA journal_mode"))).scalar()
+            busy = (await conn.execute(text("PRAGMA busy_timeout"))).scalar()
+            synchronous = (await conn.execute(text("PRAGMA synchronous"))).scalar()
+        assert journal == "wal"
+        assert busy == 30000
+        assert synchronous == 1  # NORMAL
+
+    @pytest.mark.asyncio
+    async def test_concurrent_writes_do_not_fail_with_locked(self, setup_db):
+        await db.init()
+
+        async def write_trace(i: int):
+            return await db.save_decision_trace(
+                f"SYM{i % 5}/USDT",
+                "1h",
+                gate_results={"cooldown": True, "pattern_engine": False},
+                final_stage="pattern_engine",
+                blocked_reason="unit-test",
+                signal_generated=False,
+            )
+
+        async def write_audit(i: int):
+            return await db.create_audit_entry(
+                symbol=f"SYM{i % 5}/USDT",
+                timeframe="1h",
+                ts_event=datetime.now(timezone.utc),
+                config_version=1,
+                stage="pattern_engine",
+                reason_code="unit_test",
+                passed=False,
+            )
+
+        tasks = [write_trace(i) for i in range(25)]
+        tasks += [write_audit(i) for i in range(25)]
+        # Any surviving SQLITE_BUSY raises out of gather and fails the test.
+        await asyncio.gather(*tasks)
+
+        async with db._session_factory() as session:
+            n_traces = (await session.execute(
+                select(func.count()).select_from(DecisionTrace)
+            )).scalar_one()
+            n_audit = (await session.execute(
+                select(func.count()).select_from(SignalAuditLog)
+            )).scalar_one()
+        assert n_traces == 25
+        assert n_audit == 25
+
+    @pytest.mark.asyncio
+    async def test_retry_recovers_from_transient_lock(self, monkeypatch):
+        import storage.database as dbmod
+        monkeypatch.setattr(dbmod, "DB_LOCK_RETRY_ATTEMPTS", 4)
+        monkeypatch.setattr(dbmod, "DB_LOCK_RETRY_BASE_DELAY", 0.01)
+        calls = {"n": 0}
+
+        @dbmod.retry_on_db_lock
+        async def flaky_write():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise OperationalError(
+                    "INSERT INTO t VALUES (?)",
+                    {},
+                    sqlite3.OperationalError("database is locked"),
+                )
+            return "ok"
+
+        assert await flaky_write() == "ok"
+        assert calls["n"] == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_does_not_swallow_other_errors(self, monkeypatch):
+        import storage.database as dbmod
+        monkeypatch.setattr(dbmod, "DB_LOCK_RETRY_BASE_DELAY", 0.01)
+        calls = {"n": 0}
+
+        @dbmod.retry_on_db_lock
+        async def hard_failure():
+            calls["n"] += 1
+            raise OperationalError(
+                "SELECT 1", {}, sqlite3.OperationalError("no such table: nope")
+            )
+
+        with pytest.raises(OperationalError):
+            await hard_failure()
+        assert calls["n"] == 1

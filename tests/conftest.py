@@ -3,6 +3,11 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# Тесты не должны писать в боевой logs/bot.log (config.settings читает
+# LOG_FILE при импорте, load_dotenv не перетирает уже заданные значения).
+# Туда же уходят loguru-записи тестов, которые иначе выглядят как сбои бота.
+os.environ.setdefault("LOG_FILE", os.path.join("logs", "pytest.log"))
+
 collect_ignore = ["test_weight_sweep.py"]
 
 import numpy as np

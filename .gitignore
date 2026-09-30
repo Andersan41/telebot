@@ -19,3 +19,4 @@ logs/*.log
 logs/*.zip
 venv/
 scripts/data/
+.trading_bot.lock
