@@ -70,6 +70,11 @@ class TradingConfig:
     primary_timeframes: List[str] = field(default_factory=lambda: [
         tf.strip() for tf in os.getenv("PRIMARY_TIMEFRAMES", "1h,4h").split(",")
     ])
+    # Таймфреймы на паузе — исключаются из scan cycle (H-018: 1h under review,
+    # v12 1h stats 2TP/7SL until ~100 closed trades)
+    paused_timeframes: List[str] = field(default_factory=lambda: [
+        tf.strip() for tf in os.getenv("PAUSED_TIMEFRAMES", "").split(",") if tf.strip()
+    ])
     # Режим сканирования: "single_tf" (один TF) или "multi_tf" (1h setup + 5m confirm)
     scan_mode: str = os.getenv("SCAN_MODE", "single_tf")
     # Таймфрейм подтверждения сигнала
@@ -1096,5 +1101,8 @@ def build_config_snapshot() -> str:
         # H-016 (v2.3): ATR-relative entry proximity
         "entry_proximity_pct": config.entry_proximity_pct,
         "entry_proximity_atr_mult": config.entry_proximity_atr_mult,
+        # H-018: scan set controls
+        "primary_timeframes": t.primary_timeframes,
+        "paused_timeframes": t.paused_timeframes,
     }
     return _json.dumps(snapshot, sort_keys=True)

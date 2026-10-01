@@ -80,6 +80,21 @@ from storage.position_store import (
 )
 _position_state: dict[str, ManagedPosition] = {}  # key = signal.id
 
+# Close-reason → (emoji, human label) for Telegram notifications.
+# TP*_FULL is an R-ladder exit (partial-close plan completed), NOT a fill at
+# signal.tp — label it with the R-level so it is never mistaken for the
+# structural take-profit. Key order follows PARTIAL_CLOSE_TARGETS.
+_STATUS_LABELS = {
+    "HIT_TP": ("✅", "Тейк Профит"),
+    "HIT_SL": ("🛑", "Стоп Лосс"),
+    "TIME_STOP": ("⏰", "Тайм Стоп"),
+    "FLIP_BIAS": ("🔄", "Смена Тренда"),
+    "SWEEP_BREACH": ("💥", "Пробой Уровня"),
+    "TP1_FULL": ("🎯", "Тейк Профит (2R)"),
+    "TP2_FULL": ("🎯", "Тейк Профит (3R)"),
+    "TP3_FULL": ("🎯", "Тейк Профит (4R)"),
+}
+
 
 async def _calc_atr_for_signal(signal, period: int = 14) -> float:
     """Calculate ATR for a signal's symbol/timeframe."""
@@ -131,16 +146,6 @@ async def _send_close_notification(
         from telegram.constants import ParseMode
 
         bot = get_bot()
-        _STATUS_LABELS = {
-            "HIT_TP": ("✅", "Тейк Профит"),
-            "HIT_SL": ("🛑", "Стоп Лосс"),
-            "TIME_STOP": ("⏰", "Тайм Стоп"),
-            "FLIP_BIAS": ("🔄", "Смена Тренда"),
-            "SWEEP_BREACH": ("💥", "Пробой Уровня"),
-            "TP1_FULL": ("✅", "Тейк Профит"),
-            "TP2_FULL": ("✅", "Тейк Профит"),
-            "TP3_FULL": ("✅", "Тейк Профит"),
-        }
         emoji, action = _STATUS_LABELS.get(status, ("🛑", status))
         pnl_sign = "+" if net_pnl >= 0 else ""
         pnl_cls = "green" if net_pnl >= 0 else "red"
@@ -160,8 +165,12 @@ async def _send_close_notification(
             f"📊 {html.escape(signal.signal_type)} {html.escape(signal.symbol)} {html.escape(signal.timeframe)}\n"
             f"💰 Entry: <code>{_fp(signal.close_price)}</code>\n"
             f"📍 Закрытие: <code>{_fp(current_price)}</code>\n"
-            f"📈 PnL: <b>{pnl_sign}{net_pnl:.2f}%</b>"
         )
+        if tp_val:
+            text += f"🎯 TP: <code>{_fp(tp_val)}</code>\n"
+        if sl_val:
+            text += f"🛑 SL: <code>{_fp(sl_val)}</code>\n"
+        text += f"📈 PnL: <b>{pnl_sign}{net_pnl:.2f}%</b>"
         if wave_label and wave_direction:
             direction_icon = "🟢" if wave_direction == "bullish" else "🔴" if wave_direction == "bearish" else "⚪"
             text += f"\n🌊 Волна: {html.escape(wave_label)} {direction_icon}"
@@ -243,6 +252,66 @@ def _calculate_excursion(
     return mfe_pct, mae_pct
 
 
+def _capital_pnl_pct(net_price_pct: float, entry_price, sl_price, risk_pct: float) -> float:
+    """Convert net price-move % into capital PnL % (daily-limits units).
+
+    _calculate_net_pnl returns the price move %, but daily_limits thresholds
+    (profit_target_daily_pct / max_drawdown_daily_pct) are capital %.
+    Capital PnL % = R-multiple × risk_pct, where R = net_price_pct / sl_distance_pct.
+
+    Fallback when SL basis is unusable: assume the outcome was ±1R
+    (one risk unit), so magnitudes stay in the capital-% scale.
+    """
+    if not risk_pct or risk_pct <= 0:
+        risk_pct = config.risk_engine.base_risk_pct
+    try:
+        entry = float(entry_price)
+        sl = float(sl_price)
+    except (TypeError, ValueError):
+        entry = sl = 0.0
+    if entry > 0 and sl > 0:
+        sl_dist_pct = abs(entry - sl) / entry * 100
+        if sl_dist_pct > 0:
+            return net_price_pct / sl_dist_pct * risk_pct
+    if net_price_pct == 0:
+        return 0.0
+    logger.debug(
+        f"capital_pnl fallback (±1R): entry={entry_price} sl={sl_price} "
+        f"net_price={net_price_pct:+.2f}% risk={risk_pct}%"
+    )
+    return risk_pct if net_price_pct > 0 else -risk_pct
+
+
+def _position_close_metrics(
+    signal, close_price: float, net_price_pct: float, quantity: float = 1.0,
+) -> dict:
+    """Close-time metrics for the positions table.
+
+    - pnl_percent: net price-move % (same unit as signal_outcomes.pnl_pct)
+    - pnl_usdt: net price % × entry × quantity (quote units)
+    - actual_rr: gross R-multiple of the exit vs the ORIGINAL SL
+      (signal.sl — positions.stop_loss mutates on BE/trailing)
+    - expected_rr: planned |tp-entry| / |entry-sl|
+    """
+    entry = float(signal.close_price or 0)
+    sl = float(signal.sl or 0)
+    tp = float(signal.tp or 0)
+    qty = quantity or 1.0
+    metrics: dict = {
+        "pnl_percent": round(net_price_pct, 4),
+        "pnl_usdt": round(net_price_pct / 100.0 * entry * qty, 8) if entry else None,
+    }
+    risk = abs(entry - sl) if entry and sl else 0.0
+    if risk > 0:
+        if signal.signal_type == "BUY":
+            metrics["actual_rr"] = round((close_price - entry) / risk, 4)
+        else:
+            metrics["actual_rr"] = round((entry - close_price) / risk, 4)
+        if tp:
+            metrics["expected_rr"] = round(abs(tp - entry) / risk, 4)
+    return metrics
+
+
 def _normalize_close_reason(reason: str, net_pnl: float) -> str:
     """Normalize position manager reason to DB status for stats tracking.
 
@@ -318,6 +387,20 @@ async def check_open_outcomes() -> None:
                         )
             except Exception:
                 pass
+            # Close position row if it exists (TTL-expired outcomes also left it OPEN)
+            try:
+                _pos_entry = signal.created_at.replace(tzinfo=timezone.utc)
+                _metrics = (_position_close_metrics(signal, _close_px, _pnl)
+                            if _pnl is not None else {})
+                await close_position(
+                    f"{signal.symbol}_{int(_pos_entry.timestamp())}",
+                    float(_close_px) if _close_px is not None else 0.0,
+                    "EXPIRED",
+                    **_metrics,
+                )
+            except Exception as e:
+                logger.debug(f"Failed to close expired position for {signal.symbol}: {e}")
+            _position_state.pop(str(signal.id), None)
             continue
 
         # Skip if current candle is the same as the entry candle.
@@ -471,7 +554,10 @@ async def check_open_outcomes() -> None:
 
             # Update position DB
             pos_id = await get_position_id(pos)
-            await close_position(pos_id, current_price, raw_reason)
+            await close_position(
+                pos_id, current_price, raw_reason,
+                **_position_close_metrics(signal, current_price, net_pnl, pos.quantity),
+            )
 
             try:
                 await db.update_candidate_outcome_by_signal(signal.id, db_status, net_pnl)
@@ -505,7 +591,10 @@ async def check_open_outcomes() -> None:
                                            actual_sl=pos.stop_loss,
                                            wave_label=wave_label, wave_direction=wave_dir)
             from risk.daily_limits import daily_limits
-            daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0), risk_pct=outcome.risk_pct or 0.0)
+            daily_limits.record_trade_closed(
+                _capital_pnl_pct(net_pnl, signal.close_price, signal.sl, outcome.risk_pct or 0.0),
+                was_loss=(net_pnl < 0), risk_pct=outcome.risk_pct or 0.0,
+            )
             _position_state.pop(sig_id, None)
             continue
 
@@ -514,7 +603,11 @@ async def check_open_outcomes() -> None:
             pos.stop_loss = mgmt["new_sl"]
             # Persist state change
             pos_id = await get_position_id(pos)
-            await update_position_state(pos_id, stop_loss=mgmt["new_sl"])
+            await update_position_state(
+                pos_id,
+                stop_loss=mgmt["new_sl"],
+                breakeven_moved=pos.breakeven_moved,
+            )
             logger.debug(
                 f"SL updated for {signal.symbol}: {mgmt['new_sl']:.4f} "
                 f"(breakeven={mgmt['breakeven']}, trailing={mgmt['trailing']})"
@@ -594,7 +687,21 @@ async def check_open_outcomes() -> None:
                                            wave_label=wave_label, wave_direction=wave_dir)
             # Record daily limits
             from risk.daily_limits import daily_limits
-            daily_limits.record_trade_closed(net_pnl, was_loss=False, risk_pct=outcome.risk_pct or 0.0)
+            daily_limits.record_trade_closed(
+                _capital_pnl_pct(net_pnl, signal.close_price, signal.sl, outcome.risk_pct or 0.0),
+                was_loss=False, risk_pct=outcome.risk_pct or 0.0,
+            )
+            # Close position row in DB (only mgmt["close"] branch did this before —
+            # HIT_TP via candle path left positions stuck OPEN forever)
+            try:
+                pos_id = await get_position_id(pos)
+                await close_position(
+                    pos_id, close_price, "HIT_TP",
+                    **_position_close_metrics(signal, close_price, net_pnl, pos.quantity),
+                )
+            except Exception as e:
+                logger.debug(f"Failed to close position for {signal.symbol}: {e}")
+            _position_state.pop(sig_id, None)
         elif hit_sl:
             # Use actual SL price as close (may have been moved by BE/trailing)
             close_price = actual_sl if (
@@ -645,7 +752,21 @@ async def check_open_outcomes() -> None:
                                            wave_label=wave_label, wave_direction=wave_dir)
             # Record daily limits
             from risk.daily_limits import daily_limits
-            daily_limits.record_trade_closed(net_pnl, was_loss=(net_pnl < 0), risk_pct=outcome.risk_pct or 0.0)
+            daily_limits.record_trade_closed(
+                _capital_pnl_pct(net_pnl, signal.close_price, signal.sl, outcome.risk_pct or 0.0),
+                was_loss=(net_pnl < 0), risk_pct=outcome.risk_pct or 0.0,
+            )
+            # Close position row in DB (only mgmt["close"] branch did this before —
+            # HIT_SL via candle path left positions stuck OPEN forever)
+            try:
+                pos_id = await get_position_id(pos)
+                await close_position(
+                    pos_id, close_price, "HIT_SL",
+                    **_position_close_metrics(signal, close_price, net_pnl, pos.quantity),
+                )
+            except Exception as e:
+                logger.debug(f"Failed to close position for {signal.symbol}: {e}")
+            _position_state.pop(sig_id, None)
         else:
             # Time Stop (TZ §8.6) — PAUSED
             await db.touch_outcome_checked(outcome.id)

@@ -94,8 +94,21 @@ Key baselines (post H-003 fix, 500 candles 1h):
 
 - `scan_all_tfs` (cron `:02, :17, :32, :47`) → `run_scan_cycle()` over all `primary_timeframes`.
 - Каждые 15 минут сканируются все таймфреймы (1h, 4h).
+- `PAUSED_TIMEFRAMES` (env, H-018) исключает TF из scan/shadow циклов — сейчас `1h`
+  (v12 1h: 2TP/7SL, review после ~100 закрытых сделок).
 - Cooldown 45 мин защищает от дублей.
 - `cmd_scan` (admin `/scan`) → `run_scan_cycle()` over all `primary_timeframes`.
+- `price_alert_loop` (`scheduler/price_alerts.py`, каждые `PRICE_ALERT_CHECK_SECONDS=15`)
+  → веб-алерты на цену (вкладка Alerts): касание уровня → `send_price_alert` админу в
+  личку, one-shot гашение. Тесты (`tests/test_price_alerts.py`) берут `db` через прокси —
+  `test_architecture.py::test_db_singleton` удаляет `storage.database` из `sys.modules`
+  и статический import на уровне модуля отвязался бы от нового синглтона.
+- `audit_resolver_loop` (`scheduler/audit_resolver.py`, каждые `AUDIT_RESOLVER_INTERVAL_SECONDS=1800`)
+  → теневые outcome в `signal_audit_log`: blocked-кандидаты с полным планом
+  (`hyp_entry/sl/tp` + `synthetic_plan=1`, пишутся через `scanner._hyp_plan`) симулируются
+  first-touch (SL-приоритет в баре, входной бар пропускается) → `outcome` (HIT_TP/HIT_SL/
+  EXPIRED), `outcome_r`, `mae_r ≤ 0 ≤ mfe_r`. Основа A/B по порогам (min_p_tp и т.п.).
+  Бэклог: `scripts/backfill_audit_hyp.py` (гипотетика из meta → колонки).
 
 ## Project-specific gotchas
 
@@ -114,6 +127,15 @@ Key baselines (post H-003 fix, 500 candles 1h):
 - **`config_version`**: Bump `_CONFIG_VERSION` in `scheduler/scanner.py` when any config
   threshold changes (e.g. min_rr_ratio, volatility limits, SL bounds, max_active_signals).
   Audit logs use this to distinguish signals under different configs for A/B analysis.
+- **daily_limits PnL is CAPITAL %, not price %** (H-017): `record_trade_closed()` expects
+  equity-% — callers convert via `outcome_tracker._capital_pnl_pct()` (R × risk_pct).
+  Passing raw price move % falsely trips `PROFIT_TARGET_DAILY_PCT` (NEAR 25.09: +11%
+  price → 6,450 blocks/day). Thresholds `MAX_DRAWDOWN_DAILY_PCT` / `PROFIT_TARGET_DAILY_PCT`
+  are capital %.
+- **`positions` close metrics use the ORIGINAL SL**: `actual_rr`/`expected_rr` are computed
+  from `signal.sl` (never from `positions.stop_loss` — it mutates on BE/trailing, e.g. NEAR
+  SL 4.242 → 4.577). `quantity` is physically always 1.0, so `pnl_usdt` is per-1-unit, not
+  per-real-size. Backfill for old rows: `scripts/backfill_position_metrics.py`.
 - **Single-instance lock is an OS byte-range lock, not a PID check** (`main.py:acquire_lock`):
   `msvcrt.locking` (Windows) / `fcntl.flock` (POSIX) on `.trading_bot.lock` at offset 1024,
   held by an open fd until exit — the kernel releases it if the process dies, so a stale

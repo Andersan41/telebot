@@ -161,3 +161,56 @@
 - **Impact:** Ожидание: часть класса sweep-only со зоной OB/FVG проходит pattern_engine (rescued); калибровка по офлайн-реплею 7д — сдвиг воронки. `sent>0` может остаться 0 из-за `MIN_P_TP_REVERSAL=0.50` при сниженном edge +1.5 — это ОК, важен сдвиг воронки и телеметрия rescued. ATR-проксимити: BTC 1h (ATR~1%) → 0.5% вместо 0.3%; альты (ATR~4%) → 2%.
 - **Risk:** Приток слабых reversal-сигналов. Защита: guard (только со зоной), reduced sweep edge, `MIN_P_TP_REVERSAL=0.50`, risk engine downstream. Мониторинг: доля `rescued_sweep_only=1` в audit meta, доля rescued среди отправленных, winrate rescued-когорты. Откат: revert rescue-блока в `pattern_engine.detect()` + `ENTRY_PROXIMITY_ATR_MULT=0` (проксимити вырождается в legacy floor).
 - **Тесты:** `tests/test_new_pipeline.py` (rescue/guard/merge/continuation-priority + bare-sweep edge), `tests/test_entry_trigger.py` (TestResolveProximityPct), `tests/test_scanner.py` (mss_gate SOFT reachable).
+
+## H-017: daily_limits — единицы daily_pnl: price % → capital %
+
+- **Дата:** 2026-10-01
+- **Что:**
+  1. `scheduler/outcome_tracker.py` — новый хелпер `_capital_pnl_pct(net_price_pct, entry, sl, risk_pct)`; все 3 вызова `daily_limits.record_trade_closed()` теперь передают capital PnL % вместо price move %. Формула: `capital% = (net_price% / sl_distance%) × risk_pct` (R-множитель × риск на сделку). Fallback при нечитаемом SL — ±1R (`config.risk_engine.base_risk_pct`). Пороги `PROFIT_TARGET_DAILY_PCT=10` / `MAX_DRAWDOWN_DAILY_PCT=10` НЕ менялись.
+  2. `risk/daily_limits.py` — docstring `record_trade_closed` зафиксировал единицы.
+- **Причина:** Живой баг единиц: NEAR 25.09 +11.01% price-движение записалось как `daily_pnl=+11.01%` и уже на 13:17 триггернуло `daily profit target reached (10.0%)` — дальше 6,450 блокировок за день (в т.ч. 2,046 `daily trades limit` и 599 `consecutive losses` как каскад). Threshold — доля капитала, а записывался % движения цены (не совпадают: при SL 4.6% и risk 1% +11% price = +2.4R = +2.4% капитала).
+- **Impact:** Дневной profit-target/drawdown реально отражают капитал; NEAR-сценарий перестанет блокировать весь день. Ранее накопленный `daily_pnl` (in-memory, сбрасывается при рестарте) обнуляется сам.
+- **Risk:** Если `signal.sl` отсутствует — fallback ±1R может быть неточен (на практике SL обязателен risk engine'ом). Стало консервативнее: дневной профит достигается медленнее (капитал-метод даёт меньше «плюсов» при сильных price-движениях малорисковых сделок).
+
+## H-018: PAUSED_TIMEFRAMES=1h — пауза 1h таймфрейма
+
+- **Дата:** 2026-10-01
+- **Что:**
+  1. `config/settings.py` — новый `TradingConfig.paused_timeframes` (env `PAUSED_TIMEFRAMES`, default пусто); добавлен в `build_config_snapshot()`.
+  2. `scheduler/scanner.py:run_scan_cycle` и `scheduler/shadow.py:run_shadow_cycle` — фильтр paused TF из списка (явно переданный `timeframes` тоже фильтруется: пауза = пауза).
+  3. `.env` — `PAUSED_TIMEFRAMES=1h` (вторичный TF остаётся 4h); `.env.example` — пустой дефолт с комментарием.
+- **Причина:** v12-результаты (24–30.09): 4h — 5TP/1SL (хорошо), **1h — 2TP/7SL, −0.49R/сделка**; BUY-v12 в целом 1/7. Недостаточно данных, чтобы решить «1h сломан» или «проскачка», но достаточно, чтобы не копить убытки. Снимается вручную (убрать из env) после ~100 закрытых сделок.
+- **Impact:** Скан-цикл 15 мин обходит 1h полностью (снижение нагрузки примерно вдвое); все воронки/аудит по 1h замирают до снятия паузы. 4h продолжает собирать статистику.
+- **Risk:** Пропуск 1h-сигналов, которые оказались бы прибыльными; A/B по 1h-параметрам невозможен до снятия. Снятие = удалить `PAUSED_TIMEFRAMES` из `.env` + рестарт.
+
+## H-019: shadow outcome resolver — разрешение теневых outcome в signal_audit_log
+
+- **Дата:** 2026-10-01
+- **Что:**
+  1. `scheduler/scanner.py` — `_audit_log` получил kwargs `hyp_entry/hyp_sl/hyp_tp/hyp_rr/hyp_ptp/synthetic_plan`; новый хелпер `_hyp_plan()`. Колонки hypothetical_* + `synthetic_plan=1` теперь пишутся на всех blocked-гейтах с полным планом: min_p_tp, risk_engine, entry_trigger, execution_filter, depth_check, correlated_entry, portfolio_risk (TOCTOU), daily_limits (pre-reserve), portfolio_admission. Раньше hyp-данные жили только в строке `meta`, колонки были NULL → `get_unresolved_audits()` их не видел.
+  2. Новый `scheduler/audit_resolver.py` — цикл (env `AUDIT_RESOLVER_*`, дефолт 30 мин / batch 300 / max age 14д / expire 7д): группирует unresolved по (symbol, tf), качает OHLCV после `ts_event`, симулирует first-touch SL-приоритетом (как `scripts/virtual_outcomes.py`, входной бар пропускается), пишет `outcome` (HIT_TP/HIT_SL/EXPIRED), `outcome_r`, `mae_r ≤ 0 ≤ mfe_r`, `resolved_at`. Зарегистрирован в `main.py`.
+  3. `storage/database.py` — `get_unresolved_audits(limit, max_age_days)` (oldest-first); комментарий колонки `outcome` → HIT_TP/HIT_SL/EXPIRED.
+  4. `scripts/backfill_audit_hyp.py` — одноразовый перенос hyp_* из meta в колонки для исторических строк (≤14д, только с direction).
+  5. `_CONFIG_VERSION` 12→13.
+- **Причина:** Без разрешённых outcome теневые кандидаты нечем сравнивать — A/B по `MIN_P_TP` 30% vs 50% (и любой порог, блокирующий после появления плана) был невозможен: `signal_audit_log.outcome` пуст в 100% строк, `update_audit_outcome` не вызывался ниоткуда.
+- **Impact:** Появляется counterfactual-датасет: что было бы с каждым заблокированным кандидатом. Сопоставление «отклонённые vs отправленные» по outcome_r. Нагрузка: ≤1 запроса OHLCV на (symbol,tf) за цикл, батч ограничен.
+- **Risk:** Симуляция консервативна (SL-first в пределах бара — реальный порядок внутри бара неизвестен); не учитывает частичные закрытия/BE/trailing (гипотетическая сделка идёт до первого касания SL/TP). EXPIRED после 7 дней без касания. Старше 14 дней не разрешаются.
+
+## H-020: STG/USDT убран из SYMBOLS
+
+- **Дата:** 2026-10-01
+- **Что:** `.env` — `SYMBOLS`: удалён `STG/USDT`.
+- **Причина:** Каждый scan-цикл падал в WARNING `"STG/USDT not on swap exchange"` (биржа не листингует символ) — мусор в логах и бесполезный скан одного символа каждые 15 минут.
+- **Impact:** −1 символ из скана; WARNING исчезает. Динамические символы из БД не затронуты.
+- **Risk:** Минимальный (симвел и так не сканировался).
+
+## H-021: positions — метрики закрытия pnl_usdt/pnl_percent/actual_rr/expected_rr
+
+- **Дата:** 2026-10-01
+- **Что:**
+  1. `storage/position_store.py` — `close_position()` принял опциональные `pnl_usdt/pnl_percent/actual_rr/expected_rr` и пишет их в одноимённые колонки.
+  2. `scheduler/outcome_tracker.py` — хелпер `_position_close_metrics()` на всех 4 сайтах закрытия (mgmt-close, HIT_TP, HIT_SL, EXPIRED): `pnl_percent` = net price % (те же единицы, что `signal_outcomes.pnl_pct`), `pnl_usdt` = % × entry × quantity, `actual_rr` = gross R к ОРИГИНАЛЬНОМУ `signal.sl` (не к мутировавшему `positions.stop_loss`), `expected_rr` = |tp−entry|/|entry−sl|.
+  3. `scripts/backfill_position_metrics.py` — одноразовый перенос для 15 уже закрытых строк (15/15 джойнят signals+outcomes).
+- **Причина:** Колонки существовали, но были NULL во всех 15 закрытых строках — веб/аналитика по позициям не имела ни PnL, ни RR.
+- **Impact:** Дашборд и ad-hoc SQL по `positions` получают заполненные метрики; новые закрытия пишутся автоматически.
+- **Risk:** `quantity` физически всегда 1.0 (реальный размер не сохраняется) → `pnl_usdt` трактуется как PnL на 1 единицу базы, не на реальный объём. RR к оригинальному SL может отличаться от «мгновенного» RR закрытия по мутировавшему SL — это осознанный выбор (R-лестница считается от первоначального риска).

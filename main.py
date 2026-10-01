@@ -255,6 +255,10 @@ async def main():
     from scheduler.price_alerts import price_alert_loop
     asyncio.create_task(price_alert_loop())
 
+    # H-019: разрешение теневых outcome в signal_audit_log (A/B по порогам)
+    from scheduler.audit_resolver import audit_resolver_loop
+    asyncio.create_task(audit_resolver_loop())
+
     try:
         # Запускаем бота в режиме polling
         logger.info("Starting Telegram bot (polling mode)...")

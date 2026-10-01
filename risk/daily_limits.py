@@ -134,7 +134,15 @@ class DailyLimitsTracker:
         )
 
     def record_trade_closed(self, pnl_pct: float, was_loss: bool, risk_pct: float = 0.0) -> None:
-        """Record trade closure outcome."""
+        """Record trade closure outcome.
+
+        Args:
+            pnl_pct: capital PnL % of equity (NOT price move %) — thresholds
+                profit_target_daily_pct / max_drawdown_daily_pct are capital %.
+                Callers convert price % via outcome_tracker._capital_pnl_pct.
+            was_loss: True if the trade lost money.
+            risk_pct: risk budget to free back into daily_risk_used_pct.
+        """
         self._maybe_reset()
         self._state.daily_pnl_pct += pnl_pct
 

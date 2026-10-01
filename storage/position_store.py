@@ -171,8 +171,16 @@ async def update_position_state(position_id: str, **kwargs) -> None:
         logger.error(f"Failed to update position {position_id}: {e}")
 
 
-async def close_position(position_id: str, close_price: float, reason: str) -> None:
-    """Mark a position as closed."""
+async def close_position(
+    position_id: str,
+    close_price: float,
+    reason: str,
+    pnl_usdt: Optional[float] = None,
+    pnl_percent: Optional[float] = None,
+    actual_rr: Optional[float] = None,
+    expected_rr: Optional[float] = None,
+) -> None:
+    """Mark a position as closed (optionally with close-time metrics)."""
     now = datetime.now(timezone.utc)
     await update_position_state(
         position_id,
@@ -180,6 +188,10 @@ async def close_position(position_id: str, close_price: float, reason: str) -> N
         close_price=close_price,
         close_reason=reason,
         close_time=now,
+        pnl_usdt=pnl_usdt,
+        pnl_percent=pnl_percent,
+        actual_rr=actual_rr,
+        expected_rr=expected_rr,
     )
 
 

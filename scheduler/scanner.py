@@ -92,7 +92,7 @@ _ema_spread_history: dict[str, list[float]] = {}
 # sl_absolute_min/max, max_active_signals, etc.).
 # Required for audit log versioning: signals under different configs
 # are tagged with different config_version for A/B analysis.
-_CONFIG_VERSION = 12  # v12: H-016 sweep-only rescue + ATR entry proximity (v2.3)
+_CONFIG_VERSION = 13  # v13: H-017 daily-limit capital units, H-018 pause 1h, H-019 shadow outcomes
 
 
 async def _audit_log(
@@ -109,8 +109,20 @@ async def _audit_log(
     as_of_utc: Optional[datetime] = None,
     is_final: bool = True,
     data_age_ms: Optional[int] = None,
+    hyp_entry: Optional[float] = None,
+    hyp_sl: Optional[float] = None,
+    hyp_tp: Optional[float] = None,
+    hyp_rr: Optional[float] = None,
+    hyp_ptp: Optional[float] = None,
+    synthetic_plan: bool = False,
 ):
-    """Write one row to signal_audit_log. Fire-and-forget — errors logged, not raised."""
+    """Write one row to signal_audit_log. Fire-and-forget — errors logged, not raised.
+
+    hyp_* + synthetic_plan=True mark a row as a resolvable hypothetical plan:
+    scheduler/audit_resolver.py later simulates first-touch outcome (SL/TP)
+    and fills outcome/outcome_r/mae_r/mfe_r — the basis for A/B threshold
+    analysis (e.g. min_p_tp 30% vs 50%).
+    """
     try:
         await db.create_audit_entry(
             symbol=symbol,
@@ -123,6 +135,12 @@ async def _audit_log(
             setup_type=setup_type,
             direction=direction,
             features_snapshot=features_snapshot,
+            hypothetical_entry=hyp_entry,
+            hypothetical_sl=hyp_sl,
+            hypothetical_tp=hyp_tp,
+            hypothetical_rr=hyp_rr,
+            hypothetical_p_tp=hyp_ptp,
+            synthetic_plan=synthetic_plan,
             meta=meta,
             as_of_utc=as_of_utc,
             is_final=is_final,
@@ -131,6 +149,44 @@ async def _audit_log(
     except Exception as e:
         # warning, not debug: a dropped audit row silently skews the funnel
         logger.warning(f"[AUDIT] write failed: {e}")
+
+
+def _hyp_plan(
+    entry_price: float,
+    sl: float,
+    tp: float,
+    p_tp: Optional[float] = None,
+    rr: Optional[float] = None,
+) -> dict:
+    """Build hyp_* kwargs for _audit_log — a resolvable hypothetical plan.
+
+    Rows written with these kwargs get synthetic_plan=True and are later
+    resolved by scheduler/audit_resolver.py (first-touch SL/TP simulation),
+    enabling A/B analysis of thresholds (e.g. min_p_tp 30% vs 50%).
+    """
+    if rr is None:
+        rr = (abs(tp - entry_price) / abs(entry_price - sl)
+              if entry_price and sl and entry_price != sl else 0.0)
+    return dict(
+        hyp_entry=entry_price, hyp_sl=sl, hyp_tp=tp,
+        hyp_rr=round(float(rr), 4), hyp_ptp=p_tp, synthetic_plan=True,
+    )
+
+
+def filter_paused_timeframes(tfs: list[str]) -> list[str]:
+    """Drop paused timeframes (H-018, config.trading.paused_timeframes).
+
+    Applies to any scan entry point — explicit `timeframes` args included
+    (a paused TF stays paused).
+    """
+    paused = set(config.trading.paused_timeframes)
+    if not paused:
+        return list(tfs)
+    kept = [tf for tf in tfs if tf not in paused]
+    dropped = [tf for tf in tfs if tf in paused]
+    if dropped:
+        logger.info(f"Paused timeframes skipped: {dropped}")
+    return kept
 
 
 def get_cooldown_minutes(timeframe: str, base_minutes: int, multiplier: float) -> int:
@@ -1896,7 +1952,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                              "min_p_tp", MIN_P_TP, False,
                              setup_type=setup.setup_type, direction=setup.direction,
                              meta=f"p_tp={probability.p_tp:.3f},threshold={_effective_min_p_tp:.3f}{_hyp}",
-                             as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
+                             as_of_utc=_as_of_utc, data_age_ms=_data_age_ms,
+                             **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=_rr))
             logger.info(f"min_p_tp BLOCKED: {symbol} {timeframe} — {reason}")
             return None
         trace.passed("min_p_tp")
@@ -1961,7 +2018,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                              "risk_engine", _rcode, False,
                              setup_type=setup.setup_type, direction=setup.direction,
                              meta=f"reason={_rr},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={risk_decision.rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
-                             as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
+                             as_of_utc=_as_of_utc, data_age_ms=_data_age_ms,
+                             **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
             logger.info(f"Risk BLOCKED: {symbol} {timeframe} — {risk_decision.rejection_reason}")
             return None
 
@@ -2025,7 +2083,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                                  "entry_trigger", ENTRY_TRIGGER_NO, False,
                                  setup_type=setup.setup_type, direction=setup.direction,
                                  meta=f"reason={trigger_result.reason},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={risk_decision.rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
-                                 as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
+                                 as_of_utc=_as_of_utc, data_age_ms=_data_age_ms,
+                                 **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
                 return None
 
             _current_funnel.log_gate(symbol, timeframe, "entry_trigger", "PASS")
@@ -2197,7 +2256,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                                  "execution_filter", SPREAD_TOO_WIDE, False,
                                  setup_type=setup.setup_type, direction=setup.direction,
                                  meta=f"spread={_spread_pct:.4f}%,hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={risk_decision.rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
-                                 as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
+                                 as_of_utc=_as_of_utc, data_age_ms=_data_age_ms,
+                                 **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
                 return None
 
         # Depth check (TZ §7.3): order book depth within 0.5% > min_required_usdt
@@ -2221,7 +2281,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                                          "depth_check", DEPTH_TOO_LOW, False,
                                          setup_type=setup.setup_type, direction=setup.direction,
                                          meta=f"depth=${_total_depth:,.0f},hyp_entry={entry_price:.4f},hyp_sl={sl:.4f},hyp_tp={tp:.4f},hyp_rr={risk_decision.rr_ratio:.2f},hyp_ptp={probability.p_tp:.3f}",
-                                         as_of_utc=_as_of_utc, data_age_ms=_data_age_ms)
+                                         as_of_utc=_as_of_utc, data_age_ms=_data_age_ms,
+                                         **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
                         return None
             except Exception as e:
                 logger.debug(f"Depth check failed for {symbol}: {e}")
@@ -2241,7 +2302,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
                         await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                                          "correlated_entry", CORRELATION_BLOCKED, False,
                                          setup_type=setup.setup_type, direction=setup.direction,
-                                         meta=f"corr_sym={_corr_sym},group={_group}")
+                                         meta=f"corr_sym={_corr_sym},group={_group}",
+                                         **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
                         await trace.save(db)
                         return None
 
@@ -2257,7 +2319,9 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             trace.blocked("portfolio_risk", reason)
             await trace.save(db)
             await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
-                             "portfolio_risk", PORTFOLIO_MAX_ACTIVE, False)
+                             "portfolio_risk", PORTFOLIO_MAX_ACTIVE, False,
+                             setup_type=setup.setup_type, direction=setup.direction,
+                             **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
             return None
         _risk_now = await db.get_portfolio_risk_sum()
         if _risk_now >= config.max_portfolio_risk_pct:
@@ -2266,7 +2330,9 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             trace.blocked("portfolio_risk", reason)
             await trace.save(db)
             await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
-                             "portfolio_risk", PORTFOLIO_MAX_RISK, False)
+                             "portfolio_risk", PORTFOLIO_MAX_RISK, False,
+                             setup_type=setup.setup_type, direction=setup.direction,
+                             **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
             return None
 
         # ═══ Phase 7.5: Pre-reserve daily limits BEFORE saving signal ═══
@@ -2279,7 +2345,10 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             trace.blocked("daily_limits", reason)
             await trace.save(db)
             await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
-                             "daily_limits", DAILY_LIMIT_HIT, False)
+                             "daily_limits", DAILY_LIMIT_HIT, False,
+                             setup_type=setup.setup_type, direction=setup.direction,
+                             meta=f"risk={risk_decision.risk_pct:.4f},reason={_dl_pre_reason}",
+                             **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
             return None
 
         saved_signal, _admission_reason = await db.save_signal_with_risk(
@@ -2328,7 +2397,8 @@ async def scan_symbol_v2(symbol: str, timeframe: str, notify_callback, blocked_c
             await _audit_log(symbol, timeframe, datetime.now(timezone.utc),
                              "portfolio_admission", _code, False,
                              setup_type=setup.setup_type, direction=setup.direction,
-                             meta=f"admission={_admission_reason},risk={risk_decision.risk_pct:.4f}")
+                             meta=f"admission={_admission_reason},risk={risk_decision.risk_pct:.4f}",
+                             **_hyp_plan(entry_price, sl, tp, p_tp=probability.p_tp, rr=risk_decision.rr_ratio))
             return None
         _current_funnel.log_gate(symbol, timeframe, "portfolio_admission", "PASS")
         trace.passed("portfolio_admission")
@@ -2447,7 +2517,9 @@ async def run_scan_cycle(notify_callback, blocked_callback=None, timeframes: Opt
         symbols = get_active_symbols()
         disabled = await db.get_disabled_symbols() or []
         symbols = [s for s in symbols if s not in disabled]
-        tfs = timeframes if timeframes is not None else config.trading.primary_timeframes
+        tfs = filter_paused_timeframes(
+            timeframes if timeframes is not None else config.trading.primary_timeframes
+        )
 
         logger.info(f"Starting scan: {len(symbols)} symbols × {tfs}")
 

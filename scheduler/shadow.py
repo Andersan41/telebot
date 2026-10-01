@@ -17,7 +17,7 @@ from typing import Optional
 from loguru import logger
 from config.settings import config, get_active_symbols
 from storage.database import db
-from scheduler.scanner import scan_symbol_v2, _current_funnel
+from scheduler.scanner import scan_symbol_v2, _current_funnel, filter_paused_timeframes
 from scheduler.circuit_breaker import is_circuit_breaker_active, check_recent_losses
 
 
@@ -47,7 +47,9 @@ async def run_shadow_cycle(
     symbols = get_active_symbols()
     disabled = await db.get_disabled_symbols() or []
     symbols = [s for s in symbols if s not in disabled]
-    tfs = timeframes if timeframes is not None else config.trading.primary_timeframes
+    tfs = filter_paused_timeframes(
+        timeframes if timeframes is not None else config.trading.primary_timeframes
+    )
 
     logger.info(f"[SHADOW] Starting shadow scan: {len(symbols)} symbols × {tfs}")
 

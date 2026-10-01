@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from storage.database import db, Base, Signal, SignalOutcome
+from storage.position_store import PositionModel
 from scheduler.outcome_tracker import check_open_outcomes
 
 
@@ -359,3 +360,190 @@ class TestTickerSLBreachWhileCandleInside:
         stats = await db.get_outcome_stats()
         assert stats["closed"] == 1
         assert stats["wins"] == 1  # TP
+
+
+class TestPositionRowClosed:
+    """Регрессионный тест: HIT_TP / HIT_SL / EXPIRED должны закрывать строку в positions.
+
+    Баг: только ветка mgmt["close"] вызывала close_position(). Ветки hit_tp/hit_sl
+    (и EXPIRED) закрывали signal_outcomes, но позиция в таблице positions навсегда
+    оставалась OPEN — реальный ETC/USDT HIT_SL (signal id=6) оставил фантомную
+    OPEN-строку. Дашборд читает signal_outcomes, но таблица positions рассинхронизировалась.
+    """
+
+    @staticmethod
+    async def _get_position(symbol: str):
+        async with db._session_factory() as session:
+            result = await session.execute(
+                select(PositionModel).where(PositionModel.symbol == symbol)
+            )
+            return result.scalars().first()
+
+    @pytest.mark.asyncio
+    async def test_hit_sl_closes_position_row(self, buy_signal, setup_db):
+        """BUY entry=100 SL=95, ticker=93 → outcome HIT_SL, position row CLOSED."""
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=93.0,
+        ):
+            await check_open_outcomes()
+
+        row = await self._get_position("BTC/USDT")
+        assert row is not None, "position row should have been created by tracker"
+        assert row.status == "CLOSED"
+        assert row.close_reason == "HIT_SL"
+        assert row.close_price is not None
+
+        from scheduler.outcome_tracker import _position_state
+        assert str(buy_signal.id) not in _position_state
+
+    @pytest.mark.asyncio
+    async def test_hit_tp_closes_position_row(self, buy_signal, setup_db):
+        """BUY entry=100 TP=110, ticker=112 → outcome HIT_TP, position row CLOSED."""
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=112.0,
+        ):
+            await check_open_outcomes()
+
+        row = await self._get_position("BTC/USDT")
+        assert row is not None
+        assert row.status == "CLOSED"
+        assert row.close_reason == "HIT_TP"
+
+        from scheduler.outcome_tracker import _position_state
+        assert str(buy_signal.id) not in _position_state
+
+    @pytest.mark.asyncio
+    async def test_sell_hit_sl_closes_position_row(self, sell_signal, setup_db):
+        """SELL entry=100 SL=105, ticker=107 → outcome HIT_SL, position row CLOSED."""
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=107.0,
+        ):
+            await check_open_outcomes()
+
+        row = await self._get_position("ETH/USDT")
+        assert row is not None
+        assert row.status == "CLOSED"
+        assert row.close_reason == "HIT_SL"
+
+    @pytest.mark.asyncio
+    async def test_expired_closes_existing_position_row(self, setup_db):
+        """EXPIRED (TTL 8 дней) → ранее созданная OPEN-позиция должна закрыться."""
+        old_ts = datetime.now(timezone.utc) - timedelta(days=8)
+        sig = await db.save_signal(
+            symbol="AVAX/USDT", timeframe="1h", signal_type="BUY",
+            close_price=50.0, sl=48.0, tp=55.0, score=5, reasons=["test"],
+            entry_candle_open=old_ts - timedelta(hours=1),
+        )
+        async with db._session_factory() as session:
+            result = await session.execute(select(Signal).where(Signal.id == sig.id))
+            row = result.scalar_one()
+            row.created_at = old_ts
+            await session.commit()
+        await db.create_outcome(sig.id)
+
+        # Позиция была создана при прошлом проходе трекера (id по created_at)
+        pos_id = f"AVAX/USDT_{int(old_ts.timestamp())}"
+        async with db._session_factory() as session:
+            session.add(PositionModel(
+                id=pos_id, symbol="AVAX/USDT", direction="BUY",
+                entry_price=50.0, stop_loss=48.0, quantity=1.0,
+                entry_time=old_ts.replace(tzinfo=None), status="OPEN",
+            ))
+            await session.commit()
+
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=51.0,
+        ):
+            await check_open_outcomes()
+
+        stats = await db.get_outcome_stats()
+        assert stats["closed"] == 1
+
+        async with db._session_factory() as session:
+            result = await session.execute(
+                select(PositionModel).where(PositionModel.id == pos_id)
+            )
+            pos_row = result.scalar_one()
+        assert pos_row.status == "CLOSED"
+        assert pos_row.close_reason == "EXPIRED"
+
+
+class TestCloseNotificationLabels:
+    """R-лесеночное закрытие не должно выглядеть как fill по signal.tp."""
+
+    def test_r_ladder_label_differs_from_signal_tp(self):
+        from scheduler.outcome_tracker import _STATUS_LABELS
+
+        assert _STATUS_LABELS["HIT_TP"] == ("✅", "Тейк Профит")
+        for key, rr in (("TP1_FULL", "2R"), ("TP2_FULL", "3R"), ("TP3_FULL", "4R")):
+            emoji, label = _STATUS_LABELS[key]
+            assert rr in label
+            assert _STATUS_LABELS[key] != _STATUS_LABELS["HIT_TP"]
+
+
+def _single_candle(high: float, low: float, close: float) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "open": [close],
+            "high": [high],
+            "low": [low],
+            "close": [close],
+            "volume": [100.0],
+        }
+    )
+
+
+class TestBreakevenThenLadder:
+    """Регрессия NEAR/USDT (signal_id=8): breakeven на 1.5R переносил SL на
+    entry → risk=0 → все R-цели схлопывались в цену entry → лесенка
+    закрывалась одной свечей по рынку с reason=TP3_FULL («✅ Тейк Профит»),
+    хотя до signal.tp цена не доходила.
+    """
+
+    @staticmethod
+    async def _get_position(symbol: str):
+        async with db._session_factory() as session:
+            result = await session.execute(
+                select(PositionModel).where(PositionModel.symbol == symbol)
+            )
+            return result.scalars().first()
+
+    @pytest.mark.asyncio
+    async def test_be_persisted_and_position_stays_open(self, buy_signal, setup_db):
+        # entry=100, SL=95 → 1.5R=107.5; свеча 107..108 двигает SL на entry,
+        # 2R (110) при этом ещё не достигнут
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=108.0,
+        ), patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
+            new_callable=AsyncMock, return_value=_single_candle(108.0, 107.0, 108.0),
+        ):
+            await check_open_outcomes()
+
+        row = await self._get_position("BTC/USDT")
+        assert row is not None
+        assert row.status == "OPEN"
+        assert row.stop_loss == pytest.approx(100.0)
+        assert row.breakeven_moved is True
+
+        # Второй цикл: цена 108 < 2R (110) — позиция должна остаться открытой
+        with patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ticker_price",
+            new_callable=AsyncMock, return_value=108.0,
+        ), patch(
+            "scheduler.outcome_tracker.exchange_client.fetch_ohlcv",
+            new_callable=AsyncMock, return_value=_single_candle(108.0, 107.0, 108.0),
+        ):
+            await check_open_outcomes()
+
+        row = await self._get_position("BTC/USDT")
+        assert row.status == "OPEN"
+        assert row.close_reason is None
+
+        stats = await db.get_outcome_stats()
+        assert stats["closed"] == 0

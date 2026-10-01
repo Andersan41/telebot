@@ -95,6 +95,8 @@ class TestMainStartup:
             patch(
                 "scheduler.outcome_tracker.outcome_tracker_loop", AsyncMock()
             ),
+            patch("scheduler.price_alerts.price_alert_loop", AsyncMock()),
+            patch("scheduler.audit_resolver.audit_resolver_loop", AsyncMock()),
             patch("config.logger.setup_error_sink"),
             patch("main.asyncio.sleep", AsyncMock(side_effect=KeyboardInterrupt)),
         ):

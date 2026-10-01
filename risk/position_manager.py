@@ -140,6 +140,12 @@ class ManagedPosition:
     # A13: Exit plan — links TradeEngine TP to position management rules
     exit_plan: Optional[ExitPlan] = None
 
+    # Risk at position creation (entry → original SL). The R-ladder
+    # (2R/3R/4R partial closes) is ALWAYS measured from it: the live SL
+    # moves to breakeven, which collapses `risk` to 0 and would otherwise
+    # make every R-target equal to the entry price.
+    initial_risk: float = 0.0
+
     # Breakeven (TZ §8.4)
     breakeven_moved: bool = False
 
@@ -164,6 +170,21 @@ class ManagedPosition:
         else:
             return self.stop_loss - self.entry_price
 
+    def __post_init__(self) -> None:
+        if self.initial_risk <= 0:
+            self.initial_risk = abs(self.entry_price - self.stop_loss)
+
+    def ladder_risk(self) -> float:
+        """Risk used for R-multiple targets: initial risk when known.
+
+        Falls back to live risk only when the position was rebuilt without
+        an initial SL (initial_risk == 0). Returns 0 when no reference risk
+        exists — callers must skip the ladder in that case.
+        """
+        if self.initial_risk > 0:
+            return self.initial_risk
+        return self.risk
+
     def current_rr(self, current_price: float) -> float:
         """Calculate current R:R ratio."""
         if self.risk <= 0:
@@ -175,11 +196,12 @@ class ManagedPosition:
         return reward / self.risk
 
     def target_price(self, rr: float) -> float:
-        """Calculate price at given R:R level."""
+        """Calculate price at given R:R level (measured from initial risk)."""
+        risk = self.ladder_risk()
         if self.direction == "BUY":
-            return self.entry_price + self.risk * rr
+            return self.entry_price + risk * rr
         else:
-            return self.entry_price - self.risk * rr
+            return self.entry_price - risk * rr
 
     def elapsed_minutes(self, current_time: Optional[datetime] = None) -> float:
         """Minutes since entry."""
@@ -242,6 +264,12 @@ def check_partial_closes(
     [{"action": "breakeven"|"trailing"|"close_all", "close_pct": int, "rr": float}]
     """
     actions = []
+
+    # No reference risk → R-targets are undefined. Never evaluate the
+    # ladder against a moved SL (after breakeven it equals entry price,
+    # which would trigger 2R/3R/4R in a single bar at ~0% profit).
+    if position.ladder_risk() <= 0:
+        return actions
 
     targets = (
         position.exit_plan.partial_close_targets
@@ -502,6 +530,9 @@ def manage_position(
     if be_sl is not None:
         result["new_sl"] = be_sl
         result["breakeven"] = True
+        # Flag must be set here too: without it the position looks
+        # "never moved to BE" in the DB while its SL already sits at entry.
+        position.breakeven_moved = True
 
     # 6. Trailing stop check (TZ §8.5)
     trail_sl = calculate_trailing_stop(position, candle_close, atr)
