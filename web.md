@@ -21,6 +21,10 @@ web/
         └── app.js       # all frontend logic (WS client, renderers)
 ```
 
+Background (Alerts tab): `scheduler/price_alerts.py` → `price_alert_loop()`
+проверяет активные строки таблицы `price_alerts` (`storage/database.py`)
+и шлёт админу Telegram-DM при касании уровня.
+
 ## Configuration
 
 From `config/settings.py` → `WebConfig`:
@@ -31,6 +35,7 @@ From `config/settings.py` → `WebConfig`:
 | `WEB_HOST` | `0.0.0.0` | Bind address |
 | `WEB_ENABLED` | `true` | Enable/disable |
 | `WEB_UPDATE_INTERVAL` | `5` | Broadcast interval (seconds) |
+| `PRICE_ALERT_CHECK_SECONDS` | `15` | Интервал проверки веб-алертов на цену (читается в `scheduler/price_alerts.py`) |
 
 ## WebSocket Protocol
 
@@ -255,6 +260,34 @@ Toggle a filter on/off. Persists to DB.
 
 Same data as the WebSocket `open_trades` message. REST fallback for initial load.
 
+### `GET /api/price-alerts`
+
+All price alerts (active + triggered), newest first.
+
+```json
+{"alerts": [{"id": 1, "symbol": "BTC/USDT", "price": 100000.0,
+  "direction": "ABOVE", "active": true, "created_at": "...",
+  "triggered_at": null, "triggered_price": null}]}
+```
+
+### `POST /api/price-alerts`
+
+Create one-shot price alert → `201`. Body: `{"symbol": "BTC", "price": 100000, "direction": "ABOVE"}`.
+
+- `symbol` нормализуется как в `bot/menu.py` (`BTCUSDT`/`BTC` → `BTC/USDT`), must exist on exchange
+  (`exchange_client.is_symbol_available`); `direction` ∈ `ABOVE | BELOW | ANY`;
+  `price > 0`; target must be on the not-yet-reached side of the current price
+  (ABOVE: `current < price`, BELOW: `current > price`) — иначе `400`.
+  `fetch_ticker_price` недоступен → `503`.
+- `ANY` запоминает текущую цену как `prev_price` (для детекции crossing).
+- При касании `scheduler/price_alerts.py` шлёт `bot.notifier.send_price_alert`
+  админам и гасит алерт (`active=false`, `triggered_at/triggered_price`).
+
+### `DELETE /api/price-alerts/{id}`
+
+`201`-created alert removal → `{"deleted": id}`; не найден → `404`;
+не число → `400`.
+
 ### `GET /` and `GET /{path:.*}`
 
 Serves `web/public/index.html` (SPA catch-all). Static files served from `web/public/`.
@@ -293,6 +326,7 @@ Serves `web/public/index.html` (SPA catch-all). Static files served from `web/pu
 | Smart Money | `#smc-list` | `structure` + `liquidity` |
 | Filter toggles | `#filterList` | `GET /api/filters` |
 | Open trades | `#tradesBody` | `GET /api/open-trades` or WS `open_trades` |
+| Alerts tab (вкладка «Alerts (алерты по цене)») | `#alertsBody`, form `#alertSymbol/#alertPrice/#alertDirection` | `GET/POST/DELETE /api/price-alerts` (lazy init в `alertsModule`) |
 
 ## Key Modules for Reproduction
 

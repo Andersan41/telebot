@@ -2269,6 +2269,68 @@ body {
   margin-top: 8px;
 }
 
+/* ── Alerts tab (one-shot price alerts) ── */
+.alerts-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.alerts-form input[type="text"],
+.alerts-form input[type="number"] {
+  background: #1a1a1a;
+  color: #ccc;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.alerts-form input[type="text"] { width: 170px; }
+.alerts-form input[type="number"] { width: 140px; }
+
+.alerts-form input:focus,
+.alerts-form select:focus {
+  outline: none;
+  border-color: #a3e635;
+}
+
+.alerts-error {
+  color: #f87171;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.alerts-status-active {
+  color: #a3e635;
+  font-weight: 600;
+}
+
+.alerts-status-triggered {
+  color: #888;
+}
+
+.alerts-row-triggered td {
+  color: #666;
+}
+
+.alerts-del-btn {
+  background: none;
+  border: 1px solid #333;
+  border-radius: 3px;
+  color: #f87171;
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+
+.alerts-del-btn:hover {
+  background: #2e1010;
+  border-color: #f87171;
+}
+
 /* ── Responsive ── */
 @media (max-width: 900px) {
   .main-row { grid-template-columns: 1fr; }

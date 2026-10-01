@@ -24,6 +24,7 @@
       <button class="tab-btn" data-tab="scan">Scan Engine (движок сканирования)</button>
       <button class="tab-btn" data-tab="sandbox">Логика сигналов</button>
       <button class="tab-btn" data-tab="token-analysis">Token Analysis</button>
+      <button class="tab-btn" data-tab="alerts">Alerts (алерты по цене)</button>
     </div>
 
     <!-- Dashboard tab -->
@@ -428,10 +429,52 @@
       </div>
     </div>
 
+    <!-- Alerts tab (one-shot price alerts -> Telegram admin DM) -->
+    <div class="tab-content hidden" id="tab-alerts">
+      <div class="scan-header">
+        <div class="scan-title">Alerts — уведомление в Telegram при касании уровня</div>
+      </div>
+
+      <!-- Create form -->
+      <div class="alerts-form">
+        <input type="text" id="alertSymbol" placeholder="Символ (BTC, ETH, SOL...)" />
+        <input type="number" id="alertPrice" placeholder="Цена уровня" step="any" min="0" />
+        <select id="alertDirection" class="scan-select">
+          <option value="ABOVE">↑ Рост до уровня (ABOVE)</option>
+          <option value="BELOW">↓ Падение до уровня (BELOW)</option>
+          <option value="ANY">↔ Касание с любой стороны (ANY)</option>
+        </select>
+        <button id="alertAddBtn" class="scan-btn">Добавить алерт</button>
+      </div>
+      <div class="alerts-error" id="alertError" style="display:none;"></div>
+
+      <!-- Alerts list -->
+      <div class="scan-section">
+        <div class="scan-section-title">Алерты</div>
+        <div class="trades-table-wrap">
+          <table class="trades-table" id="alertsTable">
+            <thead>
+              <tr>
+                <th>Символ</th>
+                <th>Уровень</th>
+                <th>Направление</th>
+                <th>Статус</th>
+                <th>Создан</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="alertsBody">
+              <tr><td colspan="6" class="trades-empty">Загрузка...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="/js/app.js?v=6"></script>
+  <script src="/js/app.js?v=7"></script>
   <script src="/js/token-analysis.js"></script>
 </body>
 </html>

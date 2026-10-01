@@ -251,6 +251,10 @@ async def main():
     from scheduler.outcome_tracker import outcome_tracker_loop
     asyncio.create_task(outcome_tracker_loop())
 
+    # Периодическая проверка веб-алертов на цену (вкладка Alerts)
+    from scheduler.price_alerts import price_alert_loop
+    asyncio.create_task(price_alert_loop())
+
     try:
         # Запускаем бота в режиме polling
         logger.info("Starting Telegram bot (polling mode)...")

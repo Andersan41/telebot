@@ -191,6 +191,26 @@ class SignalOutcome(Base):
     checked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class PriceAlert(Base):
+    """Веб-алерт: уведомить админа, когда цена протестировала уровень.
+
+    One-shot: после срабатывания active=False, triggered_at/triggered_price
+    фиксируют факт. prev_price нужен только direction=ANY (crossing).
+    """
+
+    __tablename__ = "price_alerts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    price = Column(Float, nullable=False)  # целевой уровень
+    direction = Column(String(10), nullable=False)  # ABOVE / BELOW / ANY
+    prev_price = Column(Float, nullable=True)  # цена прошлого тика (для ANY)
+    active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    triggered_at = Column(DateTime, nullable=True)
+    triggered_price = Column(Float, nullable=True)
+
+
 class SignalCandidate(Base):
     """Every signal_engine.evaluate() call — pass OR fail.
 
@@ -417,7 +437,7 @@ class SignalAuditLog(Base):
     hypothetical_p_tp = Column(Float, nullable=True)
     synthetic_plan = Column(Boolean, default=False)    # True if plan from hypothetical engine
 
-    outcome = Column(String(20), nullable=True)        # tp / sl / expired / NULL
+    outcome = Column(String(20), nullable=True)        # HIT_TP / HIT_SL / EXPIRED / NULL
     outcome_r = Column(Float, nullable=True)           # result in R-multiples
     mae_r = Column(Float, nullable=True)               # max adverse excursion in R
     mfe_r = Column(Float, nullable=True)               # max favorable excursion in R
@@ -988,6 +1008,72 @@ class Database:
 
     async def set_disabled_symbols(self, symbols: list[str]) -> None:
         await self.set_setting("disabled_symbols", ",".join(symbols))
+
+    # ── Price alerts (веб-вкладка Alerts) ─────────────────────────────────
+
+    async def add_price_alert(
+        self,
+        symbol: str,
+        price: float,
+        direction: str,
+        prev_price: Optional[float] = None,
+    ) -> int:
+        async with self._session_factory() as session:
+            alert = PriceAlert(
+                symbol=symbol,
+                price=price,
+                direction=direction,
+                prev_price=prev_price,
+            )
+            session.add(alert)
+            await session.flush()  # id до commit (без лишнего refresh)
+            await session.commit()
+            return alert.id
+
+    async def get_price_alerts(self, active_only: bool = True) -> List[PriceAlert]:
+        stmt = select(PriceAlert).order_by(desc(PriceAlert.created_at))
+        if active_only:
+            stmt = stmt.where(PriceAlert.active.is_(True))
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def delete_price_alert(self, alert_id: int) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PriceAlert).where(PriceAlert.id == alert_id)
+            )
+            alert = result.scalar_one_or_none()
+            if not alert:
+                return False
+            await session.delete(alert)
+            await session.commit()
+            return True
+
+    async def update_price_alert_prev(
+        self, alert_id: int, prev_price: float
+    ) -> None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PriceAlert).where(PriceAlert.id == alert_id)
+            )
+            alert = result.scalar_one_or_none()
+            if alert:
+                alert.prev_price = prev_price
+                await session.commit()
+
+    async def trigger_price_alert(self, alert_id: int, price: float) -> None:
+        """One-shot: гасит алерт и фиксирует факт срабатывания."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PriceAlert).where(PriceAlert.id == alert_id)
+            )
+            alert = result.scalar_one_or_none()
+            if alert:
+                alert.active = False
+                alert.triggered_at = datetime.now(timezone.utc)
+                alert.triggered_price = price
+                await session.commit()
 
     async def save_context_snapshot(
         self,
@@ -1696,15 +1782,32 @@ class Database:
             )
             await session.commit()
 
-    async def get_unresolved_audits(self) -> list:
-        """Return audit entries with outcome IS NULL (open hypotheticals)."""
+    async def get_unresolved_audits(
+        self,
+        limit: int = 300,
+        max_age_days: Optional[int] = None,
+    ) -> list:
+        """Return unresolved synthetic plans (open hypotheticals).
+
+        Filters: outcome IS NULL AND synthetic_plan=1 — rows written with
+        scanner._hyp_plan kwargs, awaiting scheduler/audit_resolver.py.
+        Ordered oldest-first so the backlog drains in chronological order.
+        """
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(SignalAuditLog).where(
-                    SignalAuditLog.outcome.is_(None),
-                    SignalAuditLog.synthetic_plan == True,
-                )
+            query = select(SignalAuditLog).where(
+                SignalAuditLog.outcome.is_(None),
+                SignalAuditLog.synthetic_plan == True,
+                # unresolvable plans must not stall the oldest-first queue
+                SignalAuditLog.hypothetical_entry > 0,
+                SignalAuditLog.hypothetical_sl > 0,
+                SignalAuditLog.hypothetical_tp > 0,
+                SignalAuditLog.direction.isnot(None),
             )
+            if max_age_days is not None:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+                query = query.where(SignalAuditLog.ts_event >= cutoff)
+            query = query.order_by(SignalAuditLog.ts_event).limit(limit)
+            result = await session.execute(query)
             return list(result.scalars().all())
 
     async def get_scan_stats(self, hours: int = 24) -> dict:

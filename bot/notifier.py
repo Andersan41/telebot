@@ -175,14 +175,16 @@ def _format_blocked_message(result: 'SignalResult', symbol: str, timeframe: str,
     return "\n".join(lines)
 
 
-async def send_error_alert(message: str, retries: int = 3):
-    """Отправляем уведомление об ошибке администраторам с повторными попытками."""
+async def _send_admins(text: str, retries: int = 3, label: str = "alert") -> None:
+    """Отправка HTML-текста всем админам; общий цикл ретраев.
+
+    Forbidden (бот-админ: User_bot_to_bot_disabled, блокировка) — постоянная
+    ошибка, без повторов.
+    """
     if not config.telegram.admin_ids:
         return
 
     bot = get_bot()
-    text = f"⚠️ <b>Ошибка бота:</b>\n<code>{html.escape(message)}</code>"
-
     for admin_id in config.telegram.admin_ids:
         for attempt in range(retries):
             try:
@@ -191,23 +193,57 @@ async def send_error_alert(message: str, retries: int = 3):
                     text=text,
                     parse_mode=ParseMode.HTML,
                 )
-                logger.info(f"Error alert sent to admin {admin_id}")
+                logger.info(f"{label} sent to admin {admin_id}")
                 break
             except TelegramError as e:
                 if isinstance(e, Forbidden):
-                    # постоянная ошибка (админ-бот: User_bot_to_bot_disabled,
-                    # блокировка, нет чата) — повторы только задержат и заспамят
-                    logger.error(f"Error alert to admin {admin_id} rejected: {e}")
+                    logger.error(f"{label} to admin {admin_id} rejected: {e}")
                     break
                 if attempt < retries - 1:
                     delay = 2 ** attempt
                     logger.warning(f"Admin alert send failed (attempt {attempt + 1}/{retries}), retrying in {delay}s: {e}")
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(f"Failed to send error alert to admin {admin_id} after {retries} attempts: {e}")
+                    logger.error(f"Failed to send {label} to admin {admin_id} after {retries} attempts: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error sending admin alert: {e}", exc_info=True)
                 break
+
+
+async def send_error_alert(message: str, retries: int = 3):
+    """Отправляем уведомление об ошибке администраторам с повторными попытками."""
+    text = f"⚠️ <b>Ошибка бота:</b>\n<code>{html.escape(message)}</code>"
+    await _send_admins(text, retries=retries, label="Error alert")
+
+
+def _fmt_price(value: float) -> str:
+    """65000.0 -> '65000', 0.00001234 -> '0.00001234' (без экспоненты)."""
+    return f"{value:.8f}".rstrip("0").rstrip(".")
+
+
+_PRICE_DIR_LABELS = {
+    "ABOVE": "↑ рост до уровня",
+    "BELOW": "↓ падение до уровня",
+    "ANY": "↔ касание с любой стороны",
+}
+
+
+async def send_price_alert(
+    symbol: str,
+    price: float,
+    current_price: float,
+    direction: str,
+    retries: int = 3,
+) -> None:
+    """Админу в личку: цена протестировала уровень (one-shot алерт из веба)."""
+    dir_label = _PRICE_DIR_LABELS.get(direction, direction)
+    text = (
+        "🎯 <b>Цена протестировала уровень</b>\n\n"
+        f"{html.escape(symbol)} — цель <b>{_fmt_price(price)}</b>\n"
+        f"Направление: {dir_label}\n"
+        f"Текущая цена: <b>{_fmt_price(current_price)}</b>"
+    )
+    await _send_admins(text, retries=retries, label="Price alert")
 
 
 # ── Hypothesis formatting (new pipeline) ─────────────────────────────

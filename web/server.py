@@ -1188,6 +1188,138 @@ async def api_token_report(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+# ─── Price Alerts API (вкладка Alerts) ────────────────────────────────────
+
+def _normalize_alert_symbol(text) -> str:
+    """BTCUSDT / BTC / btc/usdt -> BTC/USDT (как bot/menu.py::_normalize_symbol)."""
+    s = str(text or "").upper().strip()
+    if "/USDT" in s:
+        return s.split("/")[0] + "/USDT"
+    if s.endswith("USDT"):
+        return s[:-4] + "/USDT"
+    return s + "/USDT"
+
+
+def _alert_to_dict(alert) -> dict:
+    return {
+        "id": alert.id,
+        "symbol": alert.symbol,
+        "price": alert.price,
+        "direction": alert.direction,
+        "active": alert.active,
+        "created_at": alert.created_at.isoformat() if alert.created_at else None,
+        "triggered_at": alert.triggered_at.isoformat() if alert.triggered_at else None,
+        "triggered_price": alert.triggered_price,
+    }
+
+
+async def api_price_alerts(request):
+    """GET /api/price-alerts - все алерты (активные и сработавшие)."""
+    from storage.database import db
+    try:
+        alerts = await db.get_price_alerts(active_only=False)
+        return web.json_response({"alerts": [_alert_to_dict(a) for a in alerts]})
+    except Exception as e:
+        logger.error(f"api_price_alerts error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_price_alerts_create(request):
+    """POST /api/price-alerts - {symbol, price, direction} -> 201 | 400/503.
+
+    Первый POST-роут проекта: валидация символа/цены на стороне биржи,
+    уровень должен лежать на несработавшей стороне (иначе алерт сработал
+    бы мгновенно).
+    """
+    from data.exchange_client import exchange_client
+    from storage.database import db
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+
+    direction = str(body.get("direction", "")).upper().strip()
+    if direction not in ("ABOVE", "BELOW", "ANY"):
+        return web.json_response(
+            {"error": "direction must be ABOVE, BELOW or ANY"}, status=400
+        )
+
+    symbol = _normalize_alert_symbol(body.get("symbol"))
+    if not symbol or symbol == "/USDT":
+        return web.json_response({"error": "symbol is required"}, status=400)
+
+    try:
+        price = float(body.get("price"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "price must be a number"}, status=400)
+    if not price > 0:  # NaN/inf тоже отсекаются
+        return web.json_response({"error": "price must be > 0"}, status=400)
+
+    if not await exchange_client.is_symbol_available(symbol):
+        return web.json_response(
+            {"error": f"symbol {symbol} not available on exchange"}, status=400
+        )
+
+    current = await exchange_client.fetch_ticker_price(symbol)
+    if current is None:
+        return web.json_response(
+            {"error": f"cannot fetch current price for {symbol}"}, status=503
+        )
+
+    if direction == "ABOVE" and current >= price:
+        return web.json_response(
+            {"error": f"current price {current} is already at/above target {price}"},
+            status=400,
+        )
+    if direction == "BELOW" and current <= price:
+        return web.json_response(
+            {"error": f"current price {current} is already at/below target {price}"},
+            status=400,
+        )
+    if direction == "ANY" and current == price:
+        return web.json_response(
+            {"error": "current price equals target"}, status=400
+        )
+
+    try:
+        alert_id = await db.add_price_alert(
+            symbol, price, direction, prev_price=current
+        )
+    except Exception as e:
+        logger.error(f"api_price_alerts_create error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+    return web.json_response(
+        {
+            "id": alert_id,
+            "symbol": symbol,
+            "price": price,
+            "direction": direction,
+            "active": True,
+            "current_price": current,
+        },
+        status=201,
+    )
+
+
+async def api_price_alerts_delete(request):
+    """DELETE /api/price-alerts/{id}."""
+    from storage.database import db
+    try:
+        alert_id = int(request.match_info["id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "invalid id"}, status=400)
+    try:
+        deleted = await db.delete_price_alert(alert_id)
+    except Exception as e:
+        logger.error(f"api_price_alerts_delete error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+    if not deleted:
+        return web.json_response({"error": f"alert {alert_id} not found"}, status=404)
+    return web.json_response({"deleted": alert_id})
+
+
 # ─── App factory ────────────────────────────────────────────────────────
 
 def create_app() -> web.Application:
@@ -1212,6 +1344,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/sandbox/candles", api_sandbox_candles)
     app.router.add_get("/api/scan-stats", api_scan_stats)
     app.router.add_get("/api/token-report/{symbol}", api_token_report)
+
+    # Price Alerts (вкладка Alerts)
+    app.router.add_get("/api/price-alerts", api_price_alerts)
+    app.router.add_post("/api/price-alerts", api_price_alerts_create)
+    app.router.add_delete("/api/price-alerts/{id}", api_price_alerts_delete)
 
     # WebSocket
     app.router.add_get("/ws", ws_handler)

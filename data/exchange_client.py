@@ -296,6 +296,13 @@ class ExchangeClient:
             logger.warning(f"Failed to fetch full ticker for {symbol}: {e}")
             return None
 
+    async def is_symbol_available(self, symbol: str) -> bool:
+        """Публичная проверка символа — для веб-форм/алертов, без запроса цены."""
+        if self._exchange is None:
+            return False
+        await self._ensure_markets_loaded()
+        return self._resolve_symbol(symbol) in self._available_symbols
+
     def get_tick_size(self, symbol: str) -> Optional[float]:
         """Получаем минимальный шаг цены (tick size) из market info."""
         ccxt_symbol = self._resolve_symbol(symbol)

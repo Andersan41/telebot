@@ -833,6 +833,7 @@ async function fetchOpenTrades() {
 // ── Tab switching ─────────────────────────────────
 let currentTab = 'dashboard';
 let sandboxInited = false;
+let alertsInited = false;
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
@@ -847,6 +848,7 @@ function switchTab(tab) {
   document.getElementById('tab-scan')?.classList.toggle('hidden', tab !== 'scan');
   document.getElementById('tab-sandbox')?.classList.toggle('hidden', tab !== 'sandbox');
   document.getElementById('tab-token-analysis')?.classList.toggle('hidden', tab !== 'token-analysis');
+  document.getElementById('tab-alerts')?.classList.toggle('hidden', tab !== 'alerts');
 
   if (tab === 'scan') {
     loadScanStats();
@@ -855,7 +857,157 @@ function switchTab(tab) {
     sandboxInited = true;
     sandboxModule.init();
   }
+  if (tab === 'alerts') {
+    if (!alertsInited) {
+      alertsInited = true;
+      alertsModule.init();
+    } else {
+      alertsModule.load();
+    }
+  }
 }
+
+// ── Alerts: one-shot price alerts (вкладка Alerts) ──
+const alertsModule = (() => {
+  const DIR_LABELS = {
+    ABOVE: '↑ рост до уровня',
+    BELOW: '↓ падение до уровня',
+    ANY: '↔ касание',
+  };
+
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  function fmtPrice(p) {
+    const n = Number(p);
+    if (!isFinite(n)) return esc(p);
+    return n.toLocaleString('ru-RU', { maximumFractionDigits: 8 });
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString('ru-RU', {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+      });
+    } catch (e) { return esc(iso); }
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('alertError');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = '';
+  }
+
+  function hideError() {
+    const el = document.getElementById('alertError');
+    if (el) el.style.display = 'none';
+  }
+
+  function init() {
+    document.getElementById('alertAddBtn')?.addEventListener('click', create);
+    ['alertSymbol', 'alertPrice'].forEach(id => {
+      document.getElementById(id)?.addEventListener('keydown', e => {
+        if (e.key === 'Enter') create();
+      });
+    });
+    load();
+  }
+
+  async function load() {
+    try {
+      const resp = await fetch('/api/price-alerts');
+      const data = await resp.json();
+      render(data.alerts || []);
+    } catch (e) {
+      console.error('Price alerts load error:', e);
+      showError('Не удалось загрузить алерты');
+    }
+  }
+
+  async function create() {
+    const symbol = (document.getElementById('alertSymbol')?.value || '').trim();
+    const priceRaw = document.getElementById('alertPrice')?.value;
+    const direction = document.getElementById('alertDirection')?.value || 'ABOVE';
+    if (!symbol) { showError('Укажите символ'); return; }
+    if (!priceRaw || !(Number(priceRaw) > 0)) { showError('Укажите цену уровня (> 0)'); return; }
+
+    try {
+      const resp = await fetch('/api/price-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, price: Number(priceRaw), direction }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        showError(data.error || `Ошибка создания (HTTP ${resp.status})`);
+        return;
+      }
+      hideError();
+      const priceEl = document.getElementById('alertPrice');
+      if (priceEl) priceEl.value = '';
+      await load();
+    } catch (e) {
+      console.error('Price alert create error:', e);
+      showError('Не удалось создать алерт');
+    }
+  }
+
+  async function remove(id) {
+    try {
+      const resp = await fetch(`/api/price-alerts/${id}`, { method: 'DELETE' });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        showError(data.error || 'Не удалось удалить алерт');
+        return;
+      }
+      hideError();
+      await load();
+    } catch (e) {
+      console.error('Price alert delete error:', e);
+      showError('Не удалось удалить алерт');
+    }
+  }
+
+  function render(alerts) {
+    const body = document.getElementById('alertsBody');
+    if (!body) return;
+    if (!alerts.length) {
+      body.innerHTML = '<tr><td colspan="6" class="trades-empty">Алертов нет — добавьте символ и уровень выше</td></tr>';
+      return;
+    }
+    // активные сверху, сработавшие — ниже (приглушённо)
+    const sorted = [...alerts].sort((a, b) => (b.active - a.active) || (b.id - a.id));
+    body.innerHTML = sorted.map(a => {
+      const dir = DIR_LABELS[a.direction] || esc(a.direction);
+      const status = a.active
+        ? '<span class="alerts-status-active">active</span>'
+        : `<span class="alerts-status-triggered">сработал ${fmtTime(a.triggered_at)} @ ${fmtPrice(a.triggered_price)}</span>`;
+      const rowCls = a.active ? '' : ' class="alerts-row-triggered"';
+      const del = a.active
+        ? `<button class="alerts-del-btn" data-del="${a.id}">✕</button>`
+        : '';
+      return `<tr${rowCls}>
+        <td><b>${esc(a.symbol)}</b></td>
+        <td class="mono">${fmtPrice(a.price)}</td>
+        <td>${dir}</td>
+        <td>${status}</td>
+        <td>${fmtTime(a.created_at)}</td>
+        <td>${del}</td>
+      </tr>`;
+    }).join('');
+
+    body.querySelectorAll('[data-del]').forEach(btn => {
+      btn.addEventListener('click', () => remove(Number(btn.dataset.del)));
+    });
+  }
+
+  return { init, load };
+})();
 
 // ── Sandbox: Signal Logic Visualization ────────────
 const sandboxModule = (() => {
