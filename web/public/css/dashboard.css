@@ -1816,6 +1816,376 @@ body {
   font-style: italic;
 }
 
+/* ── Verdict block (top of report) ── */
+.ta-verdict {
+  background: #1a1a1a;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border-left: 4px solid #888;
+}
+
+.ta-verdict--bull { border-left-color: #a3e635; }
+.ta-verdict--bear { border-left-color: #f87171; }
+.ta-verdict--wait { border-left-color: #888; }
+
+.ta-verdict-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ta-verdict-label {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ta-verdict-value {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.ta-verdict--bull .ta-verdict-value { color: #a3e635; }
+.ta-verdict--bear .ta-verdict-value { color: #f87171; }
+.ta-verdict--wait .ta-verdict-value { color: #888; }
+
+.ta-verdict-votes {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.ta-verdict-total { color: #666; }
+
+.ta-verdict-reason {
+  font-size: 12.5px;
+  color: #aaa;
+  margin-top: 6px;
+}
+
+/* ── Collapsible sections ── */
+.ta-details > summary.ta-section-title {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0;
+  user-select: none;
+}
+
+.ta-details > summary.ta-section-title::-webkit-details-marker { display: none; }
+.ta-details > summary.ta-section-title::after {
+  content: '+';
+  color: #666;
+  font-weight: 400;
+  font-size: 14px;
+}
+.ta-details[open] > summary.ta-section-title { margin-bottom: 8px; }
+.ta-details[open] > summary.ta-section-title::after { content: '−'; }
+
+/* ── Indicators 1H vs 4H table ── */
+.ta-ind-table {
+  background: #1a1a1a;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ta-ind-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) minmax(90px, 1.4fr) minmax(90px, 1.4fr);
+  gap: 8px;
+  padding: 7px 10px;
+  align-items: center;
+  border-bottom: 0.5px solid #232323;
+}
+
+.ta-ind-row:last-child { border-bottom: none; }
+
+.ta-ind-head {
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: #161616;
+}
+
+.ta-ind-name {
+  font-size: 11.5px;
+  color: #888;
+}
+
+.ta-ind-cell {
+  font-size: 12.5px;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.ta-ind-val {
+  font-weight: 600;
+  color: #e0e0e0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ta-na {
+  font-size: 12px;
+  color: #555;
+  font-style: italic;
+}
+
+/* ── Per-TF consensus bars ── */
+.ta-tf-bars {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ta-tf-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.ta-tf-label {
+  color: #888;
+  font-weight: 600;
+  width: 22px;
+}
+
+.ta-bar {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.ta-bar i {
+  width: 14px;
+  height: 8px;
+  border-radius: 2px;
+  background: #333;
+}
+
+.ta-bar i.b-bull { background: #a3e635; }
+.ta-bar i.b-bear { background: #f87171; }
+.ta-bar i.b-neu { background: #333; }
+
+.ta-bar-sum { color: #666; }
+
+/* ── Levels vertical scale ── */
+.ta-scale {
+  background: #1a1a1a;
+  border-radius: 8px;
+  padding: 6px 0;
+}
+
+.ta-lvl {
+  display: grid;
+  grid-template-columns: 34px 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+
+.ta-lvl-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.ta-lvl-price {
+  font-weight: 600;
+  color: #e0e0e0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ta-lvl-tf {
+  font-size: 10px;
+  color: #555;
+}
+
+.ta-lvl-dist {
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+  text-align: right;
+}
+
+.ta-lvl.lvl-r .ta-lvl-tag { color: #f87171; }
+.ta-lvl.lvl-r .ta-lvl-dist { color: #f87171; }
+.ta-lvl.lvl-s .ta-lvl-tag { color: #a3e635; }
+.ta-lvl.lvl-s .ta-lvl-dist { color: #a3e635; }
+
+.ta-lvl-cur {
+  background: #222;
+  border-top: 0.5px solid #333;
+  border-bottom: 0.5px solid #333;
+  margin: 3px 0;
+}
+
+.ta-lvl-cur .ta-lvl-price { color: #a3e635; font-size: 13.5px; }
+.ta-lvl-cur .ta-lvl-dist { color: #a3e635; font-size: 11px; }
+
+/* ── Strategy details ── */
+.ta-strategy-details { font-size: 12.5px; }
+
+.ta-det {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 3px;
+  flex-wrap: wrap;
+}
+
+.ta-det-l {
+  color: #666;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  width: 42px;
+  flex-shrink: 0;
+}
+
+.ta-det-v { color: #ccc; }
+
+.ta-det-dist {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ta-rr {
+  font-size: 10.5px;
+  color: #888;
+  background: #222;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.ta-status {
+  font-size: 12px;
+  font-weight: 600;
+  background: #161616;
+  border-radius: 5px;
+  padding: 5px 8px;
+  margin-bottom: 8px;
+}
+
+.ta-cancel {
+  font-size: 11px;
+  color: #b8a06a;
+  background: rgba(230, 180, 80, 0.07);
+  border: 0.5px solid rgba(230, 180, 80, 0.25);
+  border-radius: 5px;
+  padding: 5px 8px;
+  margin: 6px 0;
+}
+
+.ta-conf {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-left: auto;
+}
+
+.conf-high { background: rgba(163, 230, 53, 0.12); color: #a3e635; }
+.conf-medium { background: rgba(200, 200, 200, 0.08); color: #888; }
+.conf-low { background: rgba(248, 113, 113, 0.1); color: #f87171; }
+
+/* ── Position calculator ── */
+.ta-calc {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: #161616;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 8px;
+}
+
+.ta-calc-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #666;
+}
+
+.ta-calc-in {
+  width: 68px;
+  background: #1a1a1a;
+  border: 0.5px solid #2a2a2a;
+  border-radius: 5px;
+  color: #e0e0e0;
+  font-size: 12px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+.ta-calc-in:focus { border-color: #a3e635; }
+
+.ta-calc-out {
+  font-size: 11.5px;
+  color: #aaa;
+  flex-basis: 100%;
+}
+
+.ta-calc-out b { color: #e0e0e0; }
+
+/* ── Observations with FOR/AGAINST/NEUTRAL balance ── */
+.ta-observation {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  background: #1a1a1a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #ccc;
+  border-left: 3px solid #888;
+}
+
+.ta-observation.obs-bull { border-left-color: #a3e635; }
+.ta-observation.obs-bear { border-left-color: #f87171; }
+.ta-observation.obs-neutral { border-left-color: #555; }
+
+.ta-obs-icon { flex-shrink: 0; }
+
+/* ── Context chips ── */
+.ta-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ta-chip {
+  background: #1a1a1a;
+  border: 0.5px solid #2a2a2a;
+  border-radius: 100px;
+  font-size: 11.5px;
+  color: #888;
+  padding: 4px 10px;
+}
+
+.ta-chip b { font-weight: 600; color: #ccc; }
+.ta-chip b.signal-bullish { color: #a3e635; }
+.ta-chip b.signal-bearish { color: #f87171; }
+
+.ta-chip--na {
+  color: #555;
+  border-style: dashed;
+}
+
+
 /* =====================================================
    NEW DASHBOARD — 4-level hierarchy
    ===================================================== */

@@ -26,6 +26,14 @@ class TradeStrategy:
     rr_ratio: str = ""
     reason: str = ""
     confidence: str = "MEDIUM"  # "HIGH" | "MEDIUM" | "LOW"
+    # Numeric values for the web dashboard (status, % distances, calculator)
+    entry_price: Optional[float] = None
+    sl_price: Optional[float] = None
+    tp1_price: Optional[float] = None
+    tp2_price: Optional[float] = None
+    tp3_price: Optional[float] = None
+    rr1: Optional[float] = None  # R:R to TP1
+    rr2: Optional[float] = None  # R:R to TP2
 
 
 @dataclass
@@ -55,10 +63,10 @@ class TokenReport:
     price: float = 0.0
     market_cap: Optional[int] = None
     market_cap_rank: Optional[int] = None
-    volume_24h: float = 0.0
-    change_24h: float = 0.0
-    change_7d: float = 0.0
-    change_30d: float = 0.0
+    volume_24h: Optional[float] = None
+    change_24h: Optional[float] = None
+    change_7d: Optional[float] = None
+    change_30d: Optional[float] = None
 
     # Indicators
     indicators_1h: Optional[IndicatorSnapshot] = None
@@ -87,6 +95,24 @@ class TokenReport:
     # Recommendation
     recommendation: str = "WAIT"
     recommendation_reason: str = ""
+    recommendation_votes: dict = field(default_factory=dict)  # {"bull": n, "bear": n, "neutral": n}
+
+
+def _fmt_px(v: float) -> str:
+    """Format a price with symbol-appropriate precision (no 4-decimal noise)."""
+    if v <= 0:
+        return "-"
+    if v < 0.001:
+        return f"${v:.8f}"
+    if v < 0.10:
+        return f"${v:.6f}"
+    if v < 1.0:
+        return f"${v:.4f}"
+    if v < 100:
+        return f"${v:.2f}"
+    if v < 1000:
+        return f"${v:,.1f}"
+    return f"${v:,.0f}"
 
 
 def _rsi_signal(rsi: float) -> str:
@@ -185,9 +211,13 @@ def _generate_strategies(report: TokenReport) -> List[TradeStrategy]:
 
     # Strategy 1: Short Rejection (if overbought near resistance)
     if rsi >= 60 and nearest_resistance and price >= nearest_resistance * 0.97:
-        sl = nearest_resistance * 1.03
+        entry = nearest_resistance
+        sl = entry * 1.03
         tp1 = nearest_support if nearest_support else price * 0.90
-        rr = (price - tp1) / (sl - price) if sl > price else 0
+        tp2 = tp1 * 0.95
+        risk = sl - entry
+        rr1 = (entry - tp1) / risk if risk > 0 else 0
+        rr2 = (entry - tp2) / risk if risk > 0 else 0
         reason_parts = [f"RSI {rsi}"]
         if ls_ratio and ls_ratio > 1.2:
             reason_parts.append(f"L/S {ls_ratio:.2f} (crowded longs)")
@@ -196,71 +226,106 @@ def _generate_strategies(report: TokenReport) -> List[TradeStrategy]:
         strategies.append(TradeStrategy(
             type="short_rejection",
             direction="SHORT",
-            entry=f"${price:.4f} - ${nearest_resistance:.4f}",
-            stop_loss=f"${sl:.4f}",
-            tp1=f"${tp1:.4f}",
-            tp2=f"${tp1 * 0.95:.4f}" if tp1 else "",
-            rr_ratio=f"1:{rr:.1f}" if rr > 0 else "N/A",
+            entry=f"{_fmt_px(price)} - {_fmt_px(entry)}",
+            stop_loss=_fmt_px(sl),
+            tp1=_fmt_px(tp1),
+            tp2=_fmt_px(tp2),
+            rr_ratio=f"1:{rr1:.1f}" if rr1 > 0 else "N/A",
             reason=", ".join(reason_parts),
             confidence="HIGH" if rsi >= 65 else "MEDIUM",
+            entry_price=entry,
+            sl_price=sl,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            rr1=round(rr1, 2) if rr1 > 0 else None,
+            rr2=round(rr2, 2) if rr2 > 0 else None,
         ))
 
     # Strategy 2: Long Retest (if oversold near support)
     if rsi <= 40 and nearest_support and price <= nearest_support * 1.03:
-        sl = nearest_support * 0.97
+        entry = nearest_support
+        sl = entry * 0.97
         tp1 = nearest_resistance if nearest_resistance else price * 1.10
-        rr = (tp1 - price) / (price - sl) if price > sl else 0
+        tp2 = tp1 * 1.05
+        risk = entry - sl
+        rr1 = (tp1 - entry) / risk if risk > 0 else 0
+        rr2 = (tp2 - entry) / risk if risk > 0 else 0
         reason_parts = [f"RSI {rsi}"]
         if ind_1h and ind_1h.macd_signal in ("Recovery", "Growth"):
             reason_parts.append("MACD recovering")
         strategies.append(TradeStrategy(
             type="long_retest",
             direction="LONG",
-            entry=f"${price:.4f} - ${nearest_support:.4f}",
-            stop_loss=f"${sl:.4f}",
-            tp1=f"${tp1:.4f}",
-            tp2=f"${tp1 * 1.05:.4f}" if tp1 else "",
-            rr_ratio=f"1:{rr:.1f}" if rr > 0 else "N/A",
+            entry=f"{_fmt_px(price)} - {_fmt_px(entry)}",
+            stop_loss=_fmt_px(sl),
+            tp1=_fmt_px(tp1),
+            tp2=_fmt_px(tp2),
+            rr_ratio=f"1:{rr1:.1f}" if rr1 > 0 else "N/A",
             reason=", ".join(reason_parts),
             confidence="HIGH" if rsi <= 35 else "MEDIUM",
+            entry_price=entry,
+            sl_price=sl,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            rr1=round(rr1, 2) if rr1 > 0 else None,
+            rr2=round(rr2, 2) if rr2 > 0 else None,
         ))
 
     # Strategy 3: Long Breakout (if price near resistance with momentum)
     if nearest_resistance and price >= nearest_resistance * 0.98 and price <= nearest_resistance * 1.02:
-        sl = nearest_resistance * 0.97
+        entry = nearest_resistance
+        sl = entry * 0.97
         tp1 = price * 1.05
         tp2 = price * 1.10
         tp3 = price * 1.15
-        rr = (tp1 - price) / (price - sl) if price > sl else 0
+        risk = entry - sl
+        rr1 = (tp1 - entry) / risk if risk > 0 else 0
+        rr2 = (tp2 - entry) / risk if risk > 0 else 0
         strategies.append(TradeStrategy(
             type="long_breakout",
             direction="LONG",
-            entry=f"Above ${nearest_resistance:.4f} (confirmation)",
-            stop_loss=f"${sl:.4f}",
-            tp1=f"${tp1:.4f}",
-            tp2=f"${tp2:.4f}",
-            tp3=f"${tp3:.4f}",
-            rr_ratio=f"1:{rr:.1f}" if rr > 0 else "N/A",
+            entry=f"Пробой выше {_fmt_px(entry)} (подтверждение)",
+            stop_loss=_fmt_px(sl),
+            tp1=_fmt_px(tp1),
+            tp2=_fmt_px(tp2),
+            tp3=_fmt_px(tp3),
+            rr_ratio=f"1:{rr1:.1f}" if rr1 > 0 else "N/A",
             reason="Breakout above resistance with momentum",
             confidence="MEDIUM",
+            entry_price=entry,
+            sl_price=sl,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            tp3_price=tp3,
+            rr1=round(rr1, 2) if rr1 > 0 else None,
+            rr2=round(rr2, 2) if rr2 > 0 else None,
         ))
 
     # Strategy 4: Short Breakdown (if price near support with weakness)
     if nearest_support and price <= nearest_support * 1.02 and price >= nearest_support * 0.98:
-        sl = nearest_support * 1.03
+        entry = nearest_support
+        sl = entry * 1.03
         tp1 = price * 0.95
         tp2 = price * 0.90
-        rr = (price - tp1) / (sl - price) if sl > price else 0
+        risk = sl - entry
+        rr1 = (entry - tp1) / risk if risk > 0 else 0
+        rr2 = (entry - tp2) / risk if risk > 0 else 0
         strategies.append(TradeStrategy(
             type="short_breakdown",
             direction="SHORT",
-            entry=f"Below ${nearest_support:.4f} (confirmation)",
-            stop_loss=f"${sl:.4f}",
-            tp1=f"${tp1:.4f}",
-            tp2=f"${tp2:.4f}",
-            rr_ratio=f"1:{rr:.1f}" if rr > 0 else "N/A",
+            entry=f"Пробой ниже {_fmt_px(entry)} (подтверждение)",
+            stop_loss=_fmt_px(sl),
+            tp1=_fmt_px(tp1),
+            tp2=_fmt_px(tp2),
+            rr_ratio=f"1:{rr1:.1f}" if rr1 > 0 else "N/A",
             reason="Breakdown below support with weakness",
             confidence="MEDIUM",
+            entry_price=entry,
+            sl_price=sl,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            rr1=round(rr1, 2) if rr1 > 0 else None,
+            rr2=round(rr2, 2) if rr2 > 0 else None,
         ))
 
     # Strategy 5: Wait (if no clear signal)
@@ -281,7 +346,11 @@ def _generate_strategies(report: TokenReport) -> List[TradeStrategy]:
 
 
 def _generate_observations(report: TokenReport) -> List[str]:
-    """Generate key observations from the report data."""
+    """Generate key observations from the report data.
+
+    Each item is prefixed with an icon: ✅ argument FOR (long),
+    ⚠️ argument AGAINST, ℹ️ neutral note.
+    """
     obs = []
 
     ind_1h = report.indicators_1h
@@ -289,109 +358,183 @@ def _generate_observations(report: TokenReport) -> List[str]:
 
     if ind_1h:
         if ind_1h.rsi >= 70:
-            obs.append(f"RSI 1H {ind_1h.rsi} — overbought, возможен откат")
+            obs.append(f"⚠️ RSI 1H {ind_1h.rsi} — перекуплен, возможен откат")
         elif ind_1h.rsi <= 30:
-            obs.append(f"RSI 1H {ind_1h.rsi} — oversold, возможен bounce")
+            obs.append(f"✅ RSI 1H {ind_1h.rsi} — перепродан, возможен отскок")
         elif ind_1h.rsi >= 60:
-            obs.append(f"RSI 1H {ind_1h.rsi} — bullish zone")
+            obs.append(f"✅ RSI 1H {ind_1h.rsi} — бычья зона")
         elif ind_1h.rsi <= 40:
-            obs.append(f"RSI 1H {ind_1h.rsi} — bearish zone")
+            obs.append(f"⚠️ RSI 1H {ind_1h.rsi} — медвежья зона")
 
     if report.long_short_ratio:
         if report.long_short_ratio > 1.5:
-            obs.append(f"L/S {report.long_short_ratio:.2f} — crowded longs, squeeze risk")
+            obs.append(f"⚠️ L/S {report.long_short_ratio:.2f} — перекошен в лонги, риск шорт-сквиза")
         elif report.long_short_ratio < 0.7:
-            obs.append(f"L/S {report.long_short_ratio:.2f} — crowded shorts, reversal risk")
+            obs.append(f"✅ L/S {report.long_short_ratio:.2f} — перекошен в шорты, риск реверса")
 
     if report.funding_rate:
         if report.funding_rate > 0.01:
-            obs.append(f"Funding {report.funding_rate:.4f} — high, shorts pay longs")
+            obs.append(f"⚠️ Funding {report.funding_rate:.4f} — высокий, лонги переплачивают")
         elif report.funding_rate < -0.01:
-            obs.append(f"Funding {report.funding_rate:.4f} — negative, longs pay shorts")
+            obs.append(f"✅ Funding {report.funding_rate:.4f} — отрицательный, шорты переплачивают")
 
     if report.fear_greed:
-        if report.fear_greed >= 75:
-            obs.append(f"F&G {report.fear_greed} (Greed) — caution, reversal zone")
+        if report.fear_greed >= 70:
+            obs.append(f"⚠️ F&G {report.fear_greed} ({report.fear_greed_label}) — перегрев, осторожность к лонгам")
         elif report.fear_greed <= 25:
-            obs.append(f"F&G {report.fear_greed} (Fear) — contrarian buy zone")
+            obs.append(f"✅ F&G {report.fear_greed} ({report.fear_greed_label}) — страх, контртрендовая зона покупки")
 
     if ind_1h and ind_4h:
         if ind_1h.supertrend_direction == 1 and ind_4h.supertrend_direction == 1:
-            obs.append("Supertrend bullish на 1H и 4H — бычий тренд")
+            obs.append("✅ Supertrend бычий на 1H и 4H — тренд согласован")
         elif ind_1h.supertrend_direction == -1 and ind_4h.supertrend_direction == -1:
-            obs.append("Supertrend bearish на 1H и 4H — медвежий тренд")
+            obs.append("⚠️ Supertrend медвежий на 1H и 4H — тренд согласован вниз")
         else:
-            obs.append("Supertrend конфликтует между TF — sideways")
+            obs.append("ℹ️ Supertrend конфликтует между TF — sideways, вход без подтверждения рискован")
 
     if report.change_7d and abs(report.change_7d) > 15:
         direction = "вырос" if report.change_7d > 0 else "упал"
-        obs.append(f"За 7D {direction} {abs(report.change_7d):.1f}% — сильное движение")
+        obs.append(f"ℹ️ За 7D {direction} {abs(report.change_7d):.1f}% — сильное движение, возможна коррекция")
 
     if not obs:
-        obs.append("Нет явных сигналов — ожидание")
+        obs.append("ℹ️ Нет явных сигналов — ожидание")
 
     return obs
 
 
-def _determine_recommendation(report: TokenReport) -> tuple[str, str]:
-    """Determine overall recommendation."""
-    ind_1h = report.indicators_1h
-    if not ind_1h:
-        return "WAIT", "Недостаточно данных"
+def _factor_votes(report: TokenReport) -> List[tuple]:
+    """Collect per-factor votes for/against a long setup.
 
-    score = 0
-    reasons = []
+    Returns list of (label, vote, weight) where vote is +1 (bull),
+    -1 (bear) or 0 (neutral). Weight: RSI counts double.
+    """
+    factors: List[tuple] = []
 
-    # RSI
-    if ind_1h.rsi <= 35:
-        score += 2
-        reasons.append("RSI oversold")
-    elif ind_1h.rsi >= 65:
-        score -= 2
-        reasons.append("RSI overbought")
-    elif ind_1h.rsi <= 45:
-        score += 1
-    elif ind_1h.rsi >= 55:
-        score -= 1
+    for tf, ind in (("1H", report.indicators_1h), ("4H", report.indicators_4h)):
+        if not ind:
+            continue
 
-    # MACD
-    if ind_1h.macd_signal in ("Growth", "Recovery"):
-        score += 1
-        reasons.append("MACD bullish")
-    elif ind_1h.macd_signal in ("Decline", "Falling"):
-        score -= 1
-        reasons.append("MACD bearish")
+        # RSI (weight 2)
+        if ind.rsi <= 35:
+            factors.append((f"RSI {tf} перепродан", 1, 2))
+        elif ind.rsi >= 65:
+            factors.append((f"RSI {tf} перекуплен", -1, 2))
+        elif ind.rsi <= 45:
+            factors.append((f"RSI {tf} ниже 45", 1, 2))
+        elif ind.rsi >= 55:
+            factors.append((f"RSI {tf} выше 55", -1, 2))
+        else:
+            factors.append((f"RSI {tf} нейтрален", 0, 2))
 
-    # Supertrend
-    if ind_1h.supertrend_direction == 1:
-        score += 1
-    else:
-        score -= 1
+        # MACD
+        if ind.macd_signal in ("Growth", "Recovery"):
+            factors.append((f"MACD {tf} растёт", 1, 1))
+        elif ind.macd_signal in ("Decline", "Falling"):
+            factors.append((f"MACD {tf} падает", -1, 1))
+        else:
+            factors.append((f"MACD {tf} нейтрален", 0, 1))
 
-    # Long/Short
+        # EMA alignment
+        if ind.ema_signal == "Aligned Up":
+            factors.append((f"EMA {tf} бычий срез", 1, 1))
+        elif ind.ema_signal == "Aligned Down":
+            factors.append((f"EMA {tf} медвежий срез", -1, 1))
+        else:
+            factors.append((f"EMA {tf} нейтрально", 0, 1))
+
+        # Supertrend direction
+        if ind.supertrend_direction == 1:
+            factors.append((f"Supertrend {tf} бычий", 1, 1))
+        elif ind.supertrend_direction == -1:
+            factors.append((f"Supertrend {tf} медвежий", -1, 1))
+        else:
+            factors.append((f"Supertrend {tf} нет данных", 0, 1))
+
+    # Context factors
     if report.long_short_ratio:
         if report.long_short_ratio > 1.5:
-            score -= 1
-            reasons.append("crowded longs")
+            factors.append(("перекос L/S в лонги", -1, 1))
         elif report.long_short_ratio < 0.7:
-            score += 1
-            reasons.append("crowded shorts")
+            factors.append(("перекос L/S в шорты", 1, 1))
 
-    # Fear & Greed
     if report.fear_greed:
         if report.fear_greed <= 25:
-            score += 1
-            reasons.append("extreme fear (contrarian)")
-        elif report.fear_greed >= 75:
-            score -= 1
-            reasons.append("extreme greed")
+            factors.append(("страх на рынке (контртенд)", 1, 1))
+        elif report.fear_greed >= 70:
+            factors.append(("жадность на рынке (перегрев)", -1, 1))
 
-    if score >= 3:
-        return "LONG", ", ".join(reasons[:3])
-    elif score <= -3:
-        return "SHORT", ", ".join(reasons[:3])
+    return factors
+
+
+def _entry_wait_phrase(strategy: TradeStrategy) -> str:
+    """One-line 'what are we waiting for' phrase for a strategy."""
+    if not strategy.entry_price:
+        return ""
+    px = _fmt_px(strategy.entry_price)
+    return {
+        "long_breakout": f"ждём пробоя {px}",
+        "short_breakdown": f"ждём пробоя ниже {px}",
+        "long_retest": f"ждём возврата к {px}",
+        "short_rejection": f"ждём реакции у {px}",
+    }.get(strategy.type, f"ждём входа у {px}")
+
+
+def _determine_recommendation(report: TokenReport) -> tuple:
+    """Determine overall recommendation.
+
+    Returns (recommendation, reason, votes) where votes is a dict
+    {"bull": n, "bear": n, "neutral": n, "total": n}.
+    """
+    factors = _factor_votes(report)
+    if not report.indicators_1h and not report.indicators_4h:
+        return "WAIT", "Недостаточно данных", {"bull": 0, "bear": 0, "neutral": 0, "total": 0}
+
+    score = sum(vote * weight for _, vote, weight in factors)
+    bull_labels = [label for label, vote, _ in factors if vote > 0]
+    bear_labels = [label for label, vote, _ in factors if vote < 0]
+    bulls = len(bull_labels)
+    bears = len(bear_labels)
+    neutral = len(factors) - bulls - bears
+    votes = {"bull": bulls, "bear": bears, "neutral": neutral, "total": len(factors)}
+
+    # 1H vs 4H Supertrend conflict
+    conflict = (
+        report.indicators_1h
+        and report.indicators_4h
+        and report.indicators_1h.supertrend_direction != report.indicators_4h.supertrend_direction
+    )
+
+    if score >= 4 and bulls > bears:
+        recommendation = "LONG"
+        base = ", ".join(bull_labels[:2])
+    elif score <= -4 and bears > bulls:
+        recommendation = "SHORT"
+        base = ", ".join(bear_labels[:2])
     else:
-        return "WAIT", ", ".join(reasons[:3]) if reasons else "Neutral signals"
+        recommendation = "WAIT"
+        if conflict:
+            base = "Тренды 1H и 4H расходятся"
+        elif neutral >= bulls and neutral >= bears:
+            base = f"Нейтральных сигналов больше ({neutral} из {len(factors)})"
+        elif bulls > bears:
+            base = f"Лёгкий перевес быков ({bulls}:{bears}), порог не набран"
+        else:
+            base = f"Лёгкий перевес медведей ({bears}:{bulls}), порог не набран"
+
+    # Link the reason to the active strategy, if any
+    active = next((s for s in report.strategies if s.type != "wait"), None)
+    if active:
+        wait_phrase = _entry_wait_phrase(active)
+        if recommendation == "WAIT" or active.direction == recommendation:
+            if wait_phrase:
+                base = f"{base}, {wait_phrase}" if base else wait_phrase
+        else:
+            base = f"{base}, сетап {active.direction} против вердикта — без входа"
+
+    if not base:
+        base = "Neutral signals"
+
+    return recommendation, base, votes
 
 
 async def generate_token_report(
@@ -482,14 +625,15 @@ async def generate_token_report(
             except Exception as e:
                 logger.debug(f"Failed to fetch F&G for {symbol}: {e}")
 
-            # CoinGecko market data
+            # CoinGecko market data (missing values stay None — UI shows "нет данных")
             coin_id = symbol.split("/")[0].lower()
             try:
                 cg = await context_fetcher.fetch_coingecko(coin_id)
                 if cg:
-                    report.change_24h = cg.get("price_change_24h") or 0
-                    report.change_7d = cg.get("price_change_7d") or 0
-                    report.volume_24h = cg.get("total_volume") or 0
+                    report.change_24h = cg.get("price_change_24h")
+                    report.change_7d = cg.get("price_change_7d")
+                    report.change_30d = cg.get("price_change_30d")
+                    report.volume_24h = cg.get("total_volume")
                     report.market_cap_rank = cg.get("market_cap_rank")
             except Exception as e:
                 logger.debug(f"Failed to fetch CoinGecko for {symbol}: {e}")
@@ -526,7 +670,11 @@ async def generate_token_report(
         report.observations = _generate_observations(report)
 
         # 10. Determine recommendation
-        report.recommendation, report.recommendation_reason = _determine_recommendation(report)
+        (
+            report.recommendation,
+            report.recommendation_reason,
+            report.recommendation_votes,
+        ) = _determine_recommendation(report)
 
         return report
 

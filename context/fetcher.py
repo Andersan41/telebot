@@ -113,6 +113,7 @@ class ContextFetcher:
                 result = {
                     "price_change_24h": market_data.get("price_change_percentage_24h"),
                     "price_change_7d": market_data.get("price_change_percentage_7d"),
+                    "price_change_30d": market_data.get("price_change_percentage_30d"),
                     "total_volume": market_data.get("total_volume", {}).get("usd"),
                     "market_cap_rank": market_data.get("market_cap_rank"),
                 }

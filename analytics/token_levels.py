@@ -29,6 +29,14 @@ class SRLevels:
     support: List[float]
 
 
+# Source priorities (lower = higher priority on dedupe)
+PRIO_OB = 1
+PRIO_FVG = 2
+PRIO_SWING = 3
+PRIO_EMA = 4
+PRIO_ROUND = 5
+
+
 def _round_number_levels(price: float) -> List[float]:
     """Generate round (psychological) price levels near current price."""
     levels = []
@@ -61,7 +69,7 @@ def _round_number_levels(price: float) -> List[float]:
 
 
 def _merge_and_filter(
-    candidates: List[float],
+    candidates: List[tuple],
     current_price: float,
     side: str,
     max_levels: int = 3,
@@ -71,34 +79,43 @@ def _merge_and_filter(
     Filter and keep top N levels closest to current price.
 
     Args:
-        candidates: raw price levels
+        candidates: list of (level, priority) tuples — lower priority wins
+            on dedupe (PRIO_* constants above)
         current_price: current market price
         side: "resistance" or "support"
         max_levels: number of levels to return
         min_distance_pct: minimum distance from price in %
+
+    Structure levels (OB/FVG/swings/EMA) are sorted by distance to price,
+    nearest first. Round (psychological) numbers are only used as a
+    fallback to fill slots left after structure levels.
     """
     if side == "resistance":
-        candidates = [l for l in candidates if l > current_price * (1 + min_distance_pct / 100)]
-        candidates.sort(key=lambda l: l - current_price)
+        cand = [c for c in candidates if c[0] > current_price * (1 + min_distance_pct / 100)]
+        cand.sort(key=lambda c: (c[0] - current_price, c[1]))
     else:
-        candidates = [l for l in candidates if l < current_price * (1 - min_distance_pct / 100)]
-        candidates.sort(key=lambda l: current_price - l, reverse=True)
+        # nearest support first (ascending distance) — was reverse=True,
+        # which returned the FARTHEST levels (S1 $1000 at price $2699)
+        cand = [c for c in candidates if c[0] < current_price * (1 - min_distance_pct / 100)]
+        cand.sort(key=lambda c: (current_price - c[0], c[1]))
 
-    # Remove duplicates (within 0.5% of each other)
-    filtered = []
-    for level in candidates:
-        if not filtered:
-            filtered.append(level)
-        else:
-            is_dup = False
-            for existing in filtered:
-                if abs(level - existing) / existing < 0.005:
-                    is_dup = True
-                    break
-            if not is_dup:
-                filtered.append(level)
-        if len(filtered) >= max_levels:
-            break
+    structure = [c[0] for c in cand if c[1] < PRIO_ROUND]
+    rounds = [c[0] for c in cand if c[1] >= PRIO_ROUND]
+
+    def _dedupe(levels: List[float], limit: int) -> List[float]:
+        out: List[float] = []
+        for level in levels:
+            if len(out) >= limit:
+                break
+            if any(abs(level - e) / e < 0.005 for e in out):
+                continue
+            out.append(level)
+        return out
+
+    filtered = _dedupe(structure, max_levels)
+    if len(filtered) < max_levels:
+        filler = [lvl for lvl in rounds if not any(abs(lvl - e) / e < 0.005 for e in filtered)]
+        filtered.extend(_dedupe(filler, max_levels - len(filtered)))
 
     return filtered
 
@@ -131,50 +148,48 @@ def calculate_levels(
         ("1h", df_1h, order_blocks_1h, fvgs_1h, swing_points_1h),
         ("4h", df_4h, order_blocks_4h, fvgs_4h, swing_points_4h),
     ]:
-        resistance_candidates = []
-        support_candidates = []
+        resistance_candidates: List[tuple] = []
+        support_candidates: List[tuple] = []
 
         # 1. Order Blocks (highest priority)
         if obs:
             for ob in obs:
                 if ob.type == "bearish":
-                    resistance_candidates.append(ob.high)
+                    resistance_candidates.append((ob.high, PRIO_OB))
                 else:
-                    support_candidates.append(ob.low)
+                    support_candidates.append((ob.low, PRIO_OB))
 
         # 2. FVG boundaries
         if fvgs:
             for fvg in fvgs:
                 if fvg.is_active:
                     if fvg.type == "bearish":
-                        resistance_candidates.append(fvg.top)
+                        resistance_candidates.append((fvg.top, PRIO_FVG))
                     else:
-                        support_candidates.append(fvg.bottom)
+                        support_candidates.append((fvg.bottom, PRIO_FVG))
 
         # 3. Swing Points
         if swings:
             for sp in swings:
                 if sp.type == "high":
-                    resistance_candidates.append(sp.price)
+                    resistance_candidates.append((sp.price, PRIO_SWING))
                 else:
-                    support_candidates.append(sp.price)
+                    support_candidates.append((sp.price, PRIO_SWING))
 
         # 4. EMA levels (if available)
         if indicators_1h and label == "1h":
-            resistance_candidates.append(indicators_1h.ema_slow)
-            resistance_candidates.append(indicators_1h.ema_trend)
-            support_candidates.append(indicators_1h.ema_slow)
-            support_candidates.append(indicators_1h.ema_trend)
+            for ema_val in (indicators_1h.ema_slow, indicators_1h.ema_trend):
+                resistance_candidates.append((ema_val, PRIO_EMA))
+                support_candidates.append((ema_val, PRIO_EMA))
         elif indicators_4h and label == "4h":
-            resistance_candidates.append(indicators_4h.ema_slow)
-            resistance_candidates.append(indicators_4h.ema_trend)
-            support_candidates.append(indicators_4h.ema_slow)
-            support_candidates.append(indicators_4h.ema_trend)
+            for ema_val in (indicators_4h.ema_slow, indicators_4h.ema_trend):
+                resistance_candidates.append((ema_val, PRIO_EMA))
+                support_candidates.append((ema_val, PRIO_EMA))
 
-        # 5. Round numbers
+        # 5. Round numbers — fallback filler only (added after structure levels)
         round_levels = _round_number_levels(current_price)
-        resistance_candidates.extend(round_levels)
-        support_candidates.extend(round_levels)
+        resistance_candidates.extend((lvl, PRIO_ROUND) for lvl in round_levels)
+        support_candidates.extend((lvl, PRIO_ROUND) for lvl in round_levels)
 
         # Filter and keep top 3 each side
         resistance = _merge_and_filter(resistance_candidates, current_price, "resistance")

@@ -7,6 +7,7 @@ let socket = null;
 let priceChart = null;
 let reconnectTimer = null;
 let currentTimeframe = null;
+let lastSubscribed = null; // symbol the dashboard view is currently showing
 
 // CVD chart (Lightweight Charts)
 let cvdChart = null;
@@ -45,6 +46,12 @@ function connect() {
 // ── Render ──────────────────────────────────────────
 function renderDashboard(data) {
   const { indicators, structure, liquidity, levels, signal, priceHistory, price, symbol, error, openInterest, volumeProfile, bookAnomalies, cvd, fundingRate, candleHistory, waveOverlay, breakoutQuality, fibZone, htfStructure } = data;
+
+  // Keep the shared symbol state current (silent — no cross-tab event)
+  if (symbol) {
+    Common.AppState.set(symbol, 'dashboard', true);
+    lastSubscribed = symbol;
+  }
 
   if (error) {
     updateStatus(`Ошибка: ${error}`);
@@ -679,10 +686,7 @@ function formatLargeNumber(n) {
 }
 
 function formatPrice(p) {
-  if (!p) return '0';
-  if (p >= 1000) return Number(p).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  if (p >= 1) return p.toFixed(4);
-  return p.toFixed(6);
+  return Common.priceNumber(p);
 }
 
 // ── Token picker ────────────────────────────────────
@@ -700,12 +704,25 @@ document.querySelectorAll('.qtok').forEach(btn => {
 });
 
 function subscribeToToken(symbol) {
+  lastSubscribed = symbol;
+  Common.AppState.set(symbol, 'dashboard');
+  const inp = document.getElementById('tokenInput');
+  if (inp) inp.value = symbol;
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: 'subscribe', symbol }));
     showLoader(`Загрузка ${symbol}...`);
     setTimeout(hideLoader, 2000);
   }
 }
+
+// Token Analysis picked a symbol → follow it on the live dashboard
+Common.AppState.onSymbolChange(({ symbol, source }) => {
+  if (source === 'dashboard') return;
+  const inp = document.getElementById('tokenInput');
+  if (inp) inp.value = symbol;
+  if (Common.normSymbol(symbol) === Common.normSymbol(lastSubscribed)) return;
+  subscribeToToken(symbol);
+});
 
 // ── Utils ───────────────────────────────────────────
 function setText(id, value) {
@@ -723,9 +740,7 @@ function updateStatus(text) {
 }
 
 function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
+  return Common.escapeHtml(str);
 }
 
 function showLoader(msg) {
@@ -853,6 +868,9 @@ function switchTab(tab) {
   if (tab === 'scan') {
     loadScanStats();
   }
+  if (tab === 'token-analysis') {
+    Common.AppState.emitTab('token-analysis');
+  }
   if (tab === 'sandbox' && !sandboxInited) {
     sandboxInited = true;
     sandboxModule.init();
@@ -876,15 +894,13 @@ const alertsModule = (() => {
   };
 
   function esc(s) {
-    return String(s ?? '').replace(/[&<>"']/g, c => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
+    return Common.escapeHtml(s);
   }
 
   function fmtPrice(p) {
     const n = Number(p);
     if (!isFinite(n)) return esc(p);
-    return n.toLocaleString('ru-RU', { maximumFractionDigits: 8 });
+    return Common.priceNumber(n);
   }
 
   function fmtTime(iso) {
@@ -1082,7 +1098,7 @@ const sandboxModule = (() => {
       }
       list.innerHTML = data.signals.map(s => {
         const cls = s.signal_type === 'BUY' ? 'sig-buy' : 'sig-sell';
-        const time = s.created_at ? formatSandboxTime(s.created_at) : '—';
+        const time = s.created_at ? formatTradeTime(s.created_at) : '—';
         return `<div class="sandbox-signal-row" data-id="${s.id}">
           <div class="sig-header"><span class="sig-dir ${cls}">${s.signal_type}</span><span class="sig-time">${time}</span></div>
           <div class="sig-prices">E: $${formatPrice(s.entry)} SL: $${formatPrice(s.sl)} TP: $${formatPrice(s.tp)}</div>
@@ -1291,19 +1307,6 @@ const sandboxModule = (() => {
     const g = parseInt(hex.slice(3, 5), 16);
     const b = parseInt(hex.slice(5, 7), 16);
     return `rgba(${r},${g},${b},${alpha})`;
-  }
-
-  function formatSandboxTime(isoStr) {
-    try {
-      const d = new Date(isoStr);
-      const day = d.getUTCDate().toString().padStart(2, '0');
-      const month = (d.getUTCMonth() + 1).toString().padStart(2, '0');
-      const hours = d.getUTCHours().toString().padStart(2, '0');
-      const mins = d.getUTCMinutes().toString().padStart(2, '0');
-      return `${day}.${month} ${hours}:${mins}`;
-    } catch {
-      return '—';
-    }
   }
 
   // ── Scan Engine ─────────────────────────────────────────────

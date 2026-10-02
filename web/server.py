@@ -1087,6 +1087,9 @@ async def api_scan_stats(request):
 
 # ─── Token Report API ──────────────────────────────────────────────
 
+_TOKEN_REPORT_CACHE: Dict[str, tuple] = {}  # symbol -> (monotonic_ts, data)
+_TOKEN_REPORT_CACHE_TTL = 60  # seconds
+
 async def api_token_report(request):
     """GET /api/token-report/{symbol} — detailed token analysis report."""
     from analytics.token_report import generate_token_report
@@ -1098,6 +1101,10 @@ async def api_token_report(request):
     symbol = request.match_info.get("symbol", "").upper()
     if "/" not in symbol:
         symbol = f"{symbol}/USDT"
+
+    cached = _TOKEN_REPORT_CACHE.get(symbol)
+    if cached and time.monotonic() - cached[0] < _TOKEN_REPORT_CACHE_TTL:
+        return web.json_response(cached[1])
 
     try:
         report = await generate_token_report(
@@ -1172,15 +1179,24 @@ async def api_token_report(request):
                     "rr_ratio": s.rr_ratio,
                     "reason": s.reason,
                     "confidence": s.confidence,
+                    "entry_price": s.entry_price,
+                    "sl_price": s.sl_price,
+                    "tp1_price": s.tp1_price,
+                    "tp2_price": s.tp2_price,
+                    "tp3_price": s.tp3_price,
+                    "rr1": s.rr1,
+                    "rr2": s.rr2,
                 }
                 for s in report.strategies
             ],
             "observations": report.observations,
             "recommendation": report.recommendation,
             "recommendation_reason": report.recommendation_reason,
+            "rec_votes": report.recommendation_votes,
             "formatted": format_token_report(report),
         }
 
+        _TOKEN_REPORT_CACHE[symbol] = (time.monotonic(), data)
         return web.json_response(data)
 
     except Exception as e:
@@ -1343,7 +1359,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/sandbox/trace/{signal_id}", api_sandbox_trace)
     app.router.add_get("/api/sandbox/candles", api_sandbox_candles)
     app.router.add_get("/api/scan-stats", api_scan_stats)
-    app.router.add_get("/api/token-report/{symbol}", api_token_report)
+    # {symbol:.*} so "ETH/USDT" (with slash) also matches — plain {symbol} 404s
+    app.router.add_get("/api/token-report/{symbol:.*}", api_token_report)
 
     # Price Alerts (вкладка Alerts)
     app.router.add_get("/api/price-alerts", api_price_alerts)

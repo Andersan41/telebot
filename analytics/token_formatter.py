@@ -27,8 +27,10 @@ def _fmt_price(price: float) -> str:
         return f"${price:,.2f}"
 
 
-def _fmt_volume(vol: float) -> str:
+def _fmt_volume(vol: Optional[float]) -> str:
     """Format volume with K/M/B suffix."""
+    if vol is None or vol <= 0:
+        return "N/A"
     if vol >= 1_000_000_000:
         return f"${vol / 1_000_000_000:.1f}B"
     elif vol >= 1_000_000:
